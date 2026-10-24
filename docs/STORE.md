@@ -1,7 +1,7 @@
 # Store & PPA copy
 
 Chữ và ảnh dùng khi phát hành: trang Launchpad PPA, website, GitHub, mạng xã hội. Phần chữ công khai viết bằng tiếng Anh; ghi chú cho Boss bằng tiếng Việt.
-Giữ đồng bộ với `packaging/com.homielab.MarkdownMate.metainfo.xml` (App Center / GNOME Software đọc file đó, không đọc file này). Chỉ ghi tính năng đã có: có công thức toán `$…$` (hiển thị bằng MathML qua `math-core`, từ 0.2.0); có sơ đồ Mermaid (```` ```mermaid ````, bản sau 0.3.0); chưa có Flatpak, sync.
+Giữ đồng bộ với `packaging/com.homielab.MarkdownMate.metainfo.xml` (App Center / GNOME Software đọc file đó, không đọc file này). Chỉ ghi tính năng đã có: có công thức toán `$…$` (hiển thị bằng MathML qua `math-core`, từ 0.2.0); có sơ đồ Mermaid (```` ```mermaid ````, từ 0.4.0); có Find in Preview, format bar, lệnh bảng, backlinks (từ 0.3.0–0.4.0); chưa có Flatpak, Snap, sync; chỉ Ubuntu 24.04 (noble). App còn đang phát triển sớm: bài đăng nói rõ điều đó.
 
 ## Ảnh
 
@@ -32,15 +32,16 @@ Trang PPA clean-my-ubuntu chỉ có một dòng mô tả ("Free up disk space an
 ```
 Write notes as plain Markdown files in your own folders.
 
-MarkdownMate is a native, local-first Markdown notes app for Ubuntu (GTK 4 + libadwaita). Open any folder and your notes are just .md files in it: no account, no cloud, no telemetry. Everything is saved automatically and never overwrites changes made by another app.
+MarkdownMate is a native, local-first Markdown notes app for Ubuntu (GTK 4 + libadwaita), in early development. Open any folder and your notes are just .md files in it: no account, no cloud, no telemetry. Everything is saved automatically and never overwrites changes made by another app.
 
 Features:
 - Folder sidebar that follows changes on disk
 - Edit, Preview and Side by side modes with synced scrolling and highlighted code
 - Math formulas and Mermaid diagrams in the preview, fully offline
-- Open Quickly by name and Find in Folder across all notes
-- Wiki links, tags, outline and autocompletion
-- Smart lists, to-do checkboxes, paste or drop images
+- Open Quickly by name, Find in Folder across all notes, Find in Preview
+- Wiki links, backlinks, tags, outline and autocompletion
+- Smart lists, to-do checkboxes, table editing and a Markdown format bar
+- Paste or drop images and files straight into a note
 - Default, Paper, Graphite and Solarized themes in light and dark
 - Export as HTML, Copy as HTML and Print to PDF
 
