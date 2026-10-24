@@ -375,6 +375,15 @@ pub fn skeleton(above: Option<&str>, line: &str, below: Option<&str>) -> Edit {
     }
 }
 
+/// A new aligned table from `rows` (the first is the header; every row has the same number
+/// of cells, at least one), no alignment markers. Cell text must already hold `\|` for pipes.
+pub fn from_rows(rows: &[Vec<String>]) -> String {
+    let n = rows.first().map_or(0, Vec::len);
+    let mut all = vec![rows[0].clone(), vec![]];
+    all.extend_from_slice(&rows[1..]);
+    render(&all, &vec![Align::None; n], n, (usize::MAX, 0)).0
+}
+
 /// Width of the list marker starting `body` (`- `, `* `, `+ `, `1. `, `10) `; a to-do box
 /// is item text), 0 if none.
 fn marker_width(body: &str) -> usize {

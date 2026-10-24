@@ -63,6 +63,26 @@ pub fn html_to_markdown(html: &str) -> Option<String> {
     (!md.is_empty()).then(|| drop_needless_escapes(md))
 }
 
+/// Spreadsheet cells (tab-separated plain text) as an aligned Markdown table: at least two
+/// rows with the same number (at least two) of cells; the first row is the header and `|` is
+/// escaped. None for anything else, which is then pasted as it is.
+pub fn tsv_to_table(text: &str) -> Option<String> {
+    let text = text.strip_suffix('\n').unwrap_or(text);
+    let text = text.strip_suffix('\r').unwrap_or(text);
+    let rows: Vec<Vec<String>> = text
+        .split('\n')
+        .map(|line| {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            line.split('\t')
+                .map(|cell| cell.trim().replace('|', "\\|"))
+                .collect()
+        })
+        .collect();
+    let n = rows.first()?.len();
+    (rows.len() >= 2 && n >= 2 && rows.iter().all(|r| r.len() == n))
+        .then(|| crate::table::from_rows(&rows))
+}
+
 /// Trial renders above this many escapes would be slow on a big clipboard; then only
 /// intraword `_` (never emphasis in CommonMark) is unescaped.
 const MAX_TRIALS: usize = 64;
@@ -192,6 +212,36 @@ mod tests {
             <script>alert(1)</script><p class="x" style="color:red"><strong>hi</strong></p>
             <img src="data:image/png;base64,AAAA"><img src="https://x.org/a.png" alt="pic"></body></html>"#;
         assert_eq!(md(html), "**hi**\n\n![pic](https://x.org/a.png)");
+    }
+
+    #[test]
+    fn tsv_becomes_a_table() {
+        assert_eq!(
+            tsv_to_table("Name\tQty\nApple\t3\nFig\t12\n").unwrap(),
+            "| Name  | Qty |\n| ----- | --- |\n| Apple | 3   |\n| Fig   | 12  |"
+        );
+        // CRLF, empty cells, padding trimmed.
+        assert_eq!(
+            tsv_to_table("a\tb\r\n 1 \t\r\n").unwrap(),
+            "| a   | b   |\n| --- | --- |\n| 1   |     |"
+        );
+    }
+
+    #[test]
+    fn tsv_escapes_pipes_and_aligns_wide_chars() {
+        let t = tsv_to_table("x|y\tz\n日本\tw").unwrap();
+        assert_eq!(t, "| x\\|y | z   |\n| ---- | --- |\n| 日本 | w   |");
+    }
+
+    #[test]
+    fn tsv_other_text_is_left_alone() {
+        assert_eq!(tsv_to_table("a\tb\nc"), None); // ragged
+        assert_eq!(tsv_to_table("a\tb\nc\td\te"), None);
+        assert_eq!(tsv_to_table("a\nb\nc"), None); // one column
+        assert_eq!(tsv_to_table("a\tb\tc"), None); // one row
+        assert_eq!(tsv_to_table("a\tb\tc\n"), None);
+        assert_eq!(tsv_to_table("plain text"), None);
+        assert_eq!(tsv_to_table(""), None);
     }
 
     #[test]

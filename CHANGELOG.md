@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Paste spreadsheet cells as a table: tab-separated text with two or more rows and the same two or more columns on every row pastes as an aligned Markdown table, the first row as the header. Shift+Ctrl+V still pastes plain text.
 - Code block languages: typing ```` ``` ```` (or `~~~`) and a letter at the start of a line pops up the languages the preview colours (`js`, `py`, `sh`, `yml`, …, plus `math` and `mermaid`).
 - Heading completion: typing `#` after `[[Note` pops up that note's headings, and `[[#` this note's.
 

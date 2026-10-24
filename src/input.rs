@@ -653,9 +653,10 @@ fn insert_dropped(editor: &Editor, paths: &[PathBuf]) {
     editor.view.grab_focus();
 }
 
-/// Text paste outside code, over a one-line selection or with `html` on the clipboard: the
+/// Text paste outside code (`html`: HTML on the clipboard): the
 /// clipboard is read (async) first, then a URL over the selection becomes `[text](url)`, HTML
-/// becomes Markdown (one undo step), and anything else is pasted as GTK would.
+/// becomes Markdown, tab-separated plain text (spreadsheet cells) a table (`paste::tsv_to_table`;
+/// one undo step each), and anything else is pasted as GTK would.
 fn paste_text(view: &sourceview5::View, clipboard: gtk::gdk::Clipboard, html: bool) {
     let buffer = view.buffer();
     let cursor = buffer.iter_at_mark(&buffer.get_insert());
@@ -664,9 +665,6 @@ fn paste_text(view: &sourceview5::View, clipboard: gtk::gdk::Clipboard, html: bo
         return;
     }
     let link = buffer.has_selection() && a.line() == b.line();
-    if !link && !html {
-        return;
-    }
     view.stop_signal_emission_by_name("paste-clipboard");
     let editable = view.is_editable();
     let view = view.clone();
@@ -686,7 +684,27 @@ fn paste_text(view: &sourceview5::View, clipboard: gtk::gdk::Clipboard, html: bo
             true => read_html(&clipboard).await,
             false => None,
         };
-        match markdown.as_deref().and_then(paste::html_to_markdown) {
+        let mut md = markdown.as_deref().and_then(paste::html_to_markdown);
+        if md.is_none() {
+            let text = clipboard.read_text_future().await.ok().flatten();
+            md = text.as_deref().and_then(paste::tsv_to_table).map(|table| {
+                // A table is a block: on its own lines.
+                let (a, b) = buffer.selection_bounds().unwrap_or_else(|| {
+                    let c = buffer.iter_at_mark(&buffer.get_insert());
+                    (c, c)
+                });
+                let before = buffer.text(&line_start(a), &a, false);
+                let mut after_end = b;
+                if !after_end.ends_line() {
+                    after_end.forward_to_line_end();
+                }
+                let after = buffer.text(&b, &after_end, false);
+                let head = if before.trim().is_empty() { "" } else { "\n\n" };
+                let tail = if after.trim().is_empty() { "" } else { "\n\n" };
+                format!("{head}{table}{tail}")
+            });
+        }
+        match md {
             Some(md) => {
                 buffer.begin_user_action();
                 buffer.delete_selection(true, editable);
