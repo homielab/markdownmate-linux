@@ -37,6 +37,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         &[
             ("New File", "win.new-note"),
             ("New Folder…", "win.new-folder"),
+            ("Today's Note", "win.todays-note"),
         ][..],
         &[
             ("Open File…", "win.open-file"),
@@ -445,6 +446,18 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     ));
     window.add_action(&new_note_action);
     app.set_accels_for_action("win.new-note", &["<Control>n"]);
+
+    // Disabled until a folder is open (load_folder enables it). Ctrl+D is not bound by GTK or
+    // GtkSourceView (Shift+Ctrl+D is Duplicate Line, `input.rs`).
+    let today_action = gio::SimpleAction::new("todays-note", None);
+    today_action.set_enabled(false);
+    today_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| editor.todays_note()
+    ));
+    window.add_action(&today_action);
+    app.set_accels_for_action("win.todays-note", &["<Control>d"]);
 
     // Disabled until a folder is open (load_folder enables it).
     let quick_action = gio::SimpleAction::new("open-quickly", None);
@@ -1241,6 +1254,7 @@ fn shortcuts_window() -> gtk::ShortcutsWindow {
                     "Files",
                     &[
                         ("<Control>n", "New file"),
+                        ("<Control>d", "Today's note"),
                         ("<Control>o", "Open folder"),
                         ("<Control>p", "Open quickly"),
                         ("<Shift><Control>f", "Find in folder"),

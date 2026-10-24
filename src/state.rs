@@ -132,6 +132,9 @@ pub struct Prefs {
     pub typewriter: bool,
     /// The format bar above the editor (Shift+Ctrl+M).
     pub format_bar: bool,
+    /// Today's Note's folder, relative to the open folder (`daily::folder`); empty = the open
+    /// folder itself.
+    pub daily_folder: String,
 }
 
 pub const ZOOM_MIN: u32 = 50;
@@ -161,6 +164,7 @@ impl Default for Prefs {
             ignore_colours: true,
             typewriter: false,
             format_bar: false,
+            daily_folder: crate::daily::DEFAULT_FOLDER.to_string(),
         }
     }
 }
@@ -242,6 +246,8 @@ impl State {
                 Some(("format_bar", v)) => {
                     state.prefs.format_bar = v.parse().unwrap_or(state.prefs.format_bar)
                 }
+                // Kept as typed (an empty value is a choice: the open folder).
+                Some(("daily_folder", v)) => state.prefs.daily_folder = v.to_string(),
                 Some(("indent", v @ ("2" | "4"))) => state.prefs.indent = v.parse().unwrap_or(4),
                 Some(("zoom", v)) => {
                     if let Ok(z) = v.parse::<u32>() {
@@ -283,7 +289,7 @@ impl State {
             out += &format!("font={font}\n");
         }
         out += &format!(
-            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\n",
+            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\ndaily_folder={}\n",
             p.line_numbers,
             p.wrap,
             p.indent,
@@ -294,7 +300,8 @@ impl State {
             p.tags,
             p.ignore_colours,
             p.typewriter,
-            p.format_bar
+            p.format_bar,
+            p.daily_folder.replace('\n', " ")
         );
         out
     }
@@ -668,6 +675,7 @@ mod tests {
             ignore_colours: false,
             typewriter: true,
             format_bar: true,
+            daily_folder: " Journal/2026 ".into(),
         };
         let state = State {
             prefs: prefs.clone(),
@@ -680,6 +688,9 @@ mod tests {
         assert!(old.prefs.wrap && old.prefs.indent == 4 && old.prefs.font.is_none());
         assert!(old.prefs.sync_scroll && old.prefs.tags && old.prefs.ignore_colours);
         assert!(!old.prefs.typewriter && !old.prefs.format_bar);
+        assert_eq!(old.prefs.daily_folder, "Daily");
+        // An empty daily notes folder (the open folder) stays empty.
+        assert_eq!(State::parse("daily_folder=\n").prefs.daily_folder, "");
         // Broken values keep the default.
         let bad = State::parse(
             "font= \nline_numbers=yes\nwrap=1\nindent=3\nindent=x\ntheme=neon\nstyle=dim\nsync_scroll=no\ntags=0\nignore_colours=off\ntypewriter=on\nformat_bar=yes\n",

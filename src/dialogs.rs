@@ -214,10 +214,29 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
     let tag_group = adw::PreferencesGroup::builder().title("Tags").build();
     tag_group.add(&tags_on);
     tag_group.add(&colours);
+    // Saved as typed; nothing to re-apply (Today's Note reads it when used).
+    let daily = adw::EntryRow::builder()
+        .title("Daily Notes Folder")
+        .text(prefs.daily_folder.as_str())
+        .build();
+    daily.connect_changed(clone!(
+        #[strong]
+        editor,
+        move |row| {
+            editor.prefs.borrow_mut().daily_folder = row.text().to_string();
+            editor.remember();
+        }
+    ));
+    let notes_group = adw::PreferencesGroup::builder()
+        .title("Notes")
+        .description("Today's Note (Ctrl+D) opens YYYY-MM-DD.md in this folder of the open folder; empty: the open folder itself")
+        .build();
+    notes_group.add(&daily);
     let page = adw::PreferencesPage::new();
     page.add(&group);
     page.add(&look);
     page.add(&tag_group);
+    page.add(&notes_group);
     let dialog = adw::PreferencesDialog::new();
     dialog.set_search_enabled(true);
     dialog.add(&page);

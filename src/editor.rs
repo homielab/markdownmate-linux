@@ -1091,7 +1091,13 @@ impl Editor {
             self.expanded.borrow_mut().retain(|d| d.starts_with(dir));
         }
         self.root.replace(Some(dir.to_path_buf()));
-        for name in ["new-note", "new-folder", "open-quickly", "find-in-folder"] {
+        for name in [
+            "new-note",
+            "new-folder",
+            "todays-note",
+            "open-quickly",
+            "find-in-folder",
+        ] {
             if let Some(a) = self.window.lookup_action(name)
                 && let Ok(a) = a.downcast::<gio::SimpleAction>()
             {
@@ -1290,6 +1296,49 @@ impl Editor {
                 self.schedule_rescan();
             }
             Err(e) => self.toast(&format!("Cannot create a note: {e}")),
+        }
+    }
+
+    /// Today's Note (Ctrl+D): opens `<open folder>/<daily notes folder>/YYYY-MM-DD.md` for the
+    /// local date (`daily`); a missing one is created (with its folders) as `# YYYY-MM-DD` and
+    /// a blank line and opens with the cursor at its end. Nothing without an open folder.
+    pub(crate) fn todays_note(self: &Rc<Self>) {
+        let Some(root) = self.root.borrow().clone() else {
+            return;
+        };
+        let Ok(now) = glib::DateTime::now_local() else {
+            self.toast("Cannot read today's date");
+            return;
+        };
+        let date =
+            crate::daily::date_string(now.year(), now.month() as u32, now.day_of_month() as u32);
+        let path = crate::daily::path(&root, &self.prefs.borrow().daily_folder, &date);
+        if self.path.borrow().as_deref() == Some(path.as_path()) {
+            return;
+        }
+        if !self.save() {
+            return;
+        }
+        let created =
+            match crate::daily::create_if_missing(&path, &crate::daily::initial_text(&date)) {
+                Ok(created) => created,
+                Err(e) => {
+                    self.toast(&format!("Cannot create today's note: {e}"));
+                    return;
+                }
+            };
+        if let Some(dir) = path.parent() {
+            self.expand_to(dir);
+        }
+        if created {
+            self.update_note_list(None, Some(&path));
+            self.schedule_rescan();
+        }
+        self.open(&path);
+        if created && self.path.borrow().as_deref() == Some(path.as_path()) {
+            self.buffer.place_cursor(&self.buffer.end_iter());
+            self.view
+                .scroll_to_mark(&self.buffer.get_insert(), 0.0, true, 0.0, 0.3);
         }
     }
 
