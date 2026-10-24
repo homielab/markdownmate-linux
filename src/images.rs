@@ -74,6 +74,42 @@ pub fn store_file(note: &Path, src: &Path) -> io::Result<String> {
     })
 }
 
+/// `path` (an image, see `is_image`) as a `data:` URL with its MIME type, for Copy as Rich
+/// Text: the pasted HTML carries the image itself. None if it cannot be read.
+pub fn data_url(path: &Path) -> Option<String> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        _ => return None,
+    };
+    let bytes = fs::read(path).ok()?;
+    Some(format!("data:{mime};base64,{}", base64(&bytes)))
+}
+
+/// Standard base64 with `=` padding.
+fn base64(bytes: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, &b)| n | (u32::from(b) << (16 - 8 * i)));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() {
+                ABC[((n >> (18 - 6 * i)) & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    out
+}
+
 fn assets_dir(note: &Path) -> PathBuf {
     note.parent().unwrap_or(Path::new(".")).join(ASSETS)
 }
@@ -122,6 +158,41 @@ mod tests {
         assert_eq!(in_folder(&root.join("x.png"), root), None);
         assert_eq!(in_folder(&root.join("run.sh"), root), None);
         assert_eq!(in_folder(&root.join("nope.png"), root), None);
+    }
+
+    #[test]
+    fn base64_pads() {
+        for (raw, b64) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64(raw.as_bytes()), b64, "{raw}");
+        }
+        assert_eq!(base64(&[0xff, 0xfe, 0x00]), "//4A");
+    }
+
+    #[test]
+    fn data_urls_carry_the_mime_type() {
+        let dir = TempDir::new("dataurl");
+        fs::write(dir.0.join("a.PNG"), b"foo").unwrap();
+        fs::write(dir.0.join("b.svg"), b"<svg/>").unwrap();
+        fs::write(dir.0.join("c.txt"), b"foo").unwrap();
+        assert_eq!(
+            data_url(&dir.0.join("a.PNG")).as_deref(),
+            Some("data:image/png;base64,Zm9v")
+        );
+        assert!(
+            data_url(&dir.0.join("b.svg"))
+                .unwrap()
+                .starts_with("data:image/svg+xml;base64,")
+        );
+        assert_eq!(data_url(&dir.0.join("c.txt")), None);
+        assert_eq!(data_url(&dir.0.join("gone.png")), None);
     }
 
     #[test]

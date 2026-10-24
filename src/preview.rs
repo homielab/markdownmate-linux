@@ -428,18 +428,59 @@ pub(crate) fn copy_as_html(editor: &Rc<Editor>) {
     let Some(note) = editor.path.borrow().clone() else {
         return;
     };
+    let text = copy_source(editor);
+    let notes = editor.note_list.borrow().to_vec(); // the Rc cannot cross threads
+    let root = editor.root.borrow().clone().unwrap_or_default();
+    copy_html_and_text(editor, "Copied as HTML", move || {
+        let wiki = |t: &str| render::resolve_wiki(t, &notes, &root, Some(&note)).cloned();
+        let dir = note.parent().unwrap_or(Path::new("/"));
+        (render::html_fragment(&text, dir, &wiki), text)
+    });
+}
+
+/// Copy as Rich Text: the selection (or the whole note, unsaved edits included) as
+/// `render::rich_text_page` (`text/html`, local images inside the open folder inlined) plus
+/// `plain::plain_text` (`text/plain`, as Export as Plain Text) on the clipboard, so it pastes
+/// formatted into LibreOffice, Thunderbird or web mail and without Markdown syntax elsewhere.
+pub(crate) fn copy_as_rich_text(editor: &Rc<Editor>) {
+    let Some(note) = editor.path.borrow().clone() else {
+        return;
+    };
+    let text = copy_source(editor);
+    let notes = editor.note_list.borrow().to_vec(); // the Rc cannot cross threads
+    let dir = note.parent().unwrap_or(Path::new("/")).to_path_buf();
+    let root = editor.root.borrow().clone().unwrap_or_else(|| dir.clone());
+    let page_uri = editor.page_uri();
+    copy_html_and_text(editor, "Copied as Rich Text", move || {
+        let wiki = |t: &str| render::resolve_wiki(t, &notes, &root, Some(&note)).cloned();
+        // Same rule as Ctrl+click on an image: a file inside the open folder.
+        let image = |src: &str| {
+            let uri =
+                glib::Uri::resolve_relative(Some(&page_uri), src, glib::UriFlags::NONE).ok()?;
+            let path = gio::File::for_uri(&uri).path()?;
+            crate::images::data_url(&crate::images::in_folder(&path, &root)?)
+        };
+        let html = render::rich_text_page(&text, &dir, &wiki, &image);
+        (html, crate::plain::plain_text(&text))
+    });
+}
+
+/// The editor's selection, or its whole text (unsaved edits included) when nothing is selected.
+fn copy_source(editor: &Editor) -> String {
     let (start, end) = editor
         .buffer
         .selection_bounds()
         .unwrap_or_else(|| editor.buffer.bounds());
-    let text = editor.buffer.text(&start, &end, true).to_string();
-    let notes = editor.note_list.borrow().to_vec(); // the Rc cannot cross threads
-    let root = editor.root.borrow().clone().unwrap_or_default();
-    let job = move || {
-        let wiki = |t: &str| render::resolve_wiki(t, &notes, &root, Some(&note)).cloned();
-        let dir = note.parent().unwrap_or(Path::new("/"));
-        (render::html_fragment(&text, dir, &wiki), text)
-    };
+    editor.buffer.text(&start, &end, true).to_string()
+}
+
+/// Runs `job` off the main thread, then puts its `(html, text)` on the clipboard as
+/// `text/html` and `text/plain` and toasts `done`.
+fn copy_html_and_text(
+    editor: &Rc<Editor>,
+    done: &'static str,
+    job: impl FnOnce() -> (String, String) + Send + 'static,
+) {
     let editor = Rc::clone(editor);
     glib::spawn_future_local(async move {
         let Ok((html, text)) = gio::spawn_blocking(job).await else {
@@ -454,7 +495,7 @@ pub(crate) fn copy_as_html(editor: &Rc<Editor>) {
             ),
         ]);
         match editor.window.clipboard().set_content(Some(&provider)) {
-            Ok(()) => editor.toast("Copied as HTML"),
+            Ok(()) => editor.toast(done),
             Err(e) => editor.toast(&format!("Could not copy: {e}")),
         }
     });

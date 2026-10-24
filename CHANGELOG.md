@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Copy as Rich Text (main menu): copies the selection or the whole note so it pastes formatted into LibreOffice, Thunderbird and web mail (headings, bold, lists, links, tables, the note's images) and as plain text elsewhere. Copy as HTML is in the main menu too.
 - Export as Plain Text…: the main menu saves the note as a `.txt` without Markdown syntax (bullets as `• `, links as `text (url)`, code kept, formulas as TeX, tables as tab-separated rows, front matter left out).
 - Math typeset by KaTeX: `$…$`, `$$…$$` and ```` ```math ```` formulas (fractions, matrices, most LaTeX macros) look as in the macOS app in Preview and Side by side (light and dark), Print, Export as PDF and Export as HTML; a broken formula shows its source in red with the error on hover. KaTeX is bundled and loaded only for notes with math. Copy as HTML keeps MathML.
 - Paste spreadsheet cells as a table: tab-separated text with two or more rows and the same two or more columns on every row pastes as an aligned Markdown table, the first row as the header. Shift+Ctrl+V still pastes plain text.

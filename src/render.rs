@@ -750,6 +750,65 @@ pub fn html_fragment(md: &str, note_dir: &Path, wiki: &dyn Fn(&str) -> Option<Pa
     )
 }
 
+/// Copy as Rich Text: the note's (or selection's) HTML as a whole document for word
+/// processors and mail (LibreOffice, Thunderbird, web mail), which paste it formatted. The body
+/// is Copy as HTML's (links, MathML, diagrams as code) plus a small style sheet (table borders,
+/// monospace code) those apps read; `<img>`s go through `inline_images` with `image`.
+pub fn rich_text_page(
+    md: &str,
+    note_dir: &Path,
+    wiki: &dyn Fn(&str) -> Option<PathBuf>,
+    image: &dyn Fn(&str) -> Option<String>,
+) -> String {
+    let body = inline_images(&portable_body(md, note_dir, wiki, false), image);
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><style>\
+table {{ border-collapse: collapse; }} th, td {{ border: 1px solid #999; padding: 2px 6px; }} \
+pre, code {{ font-family: monospace; }}</style></head><body>{body}</body></html>"
+    )
+}
+
+/// `body` with each `<img>` whose `src` is neither a `data:` nor a web URL replaced: its `src`
+/// (entities decoded) becomes `image(src)` (a `data:` URL), or the tag is dropped when that
+/// gives None. A pasted relative path points nowhere; web images stay for the target app.
+fn inline_images(body: &str, image: &dyn Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut rest = body;
+    while let Some(start) = rest.find("<img ") {
+        out.push_str(&rest[..start]);
+        let Some(len) = rest[start..].find('>') else {
+            rest = &rest[start..];
+            break;
+        };
+        let tag = &rest[start..=start + len];
+        rest = &rest[start + len + 1..];
+        let Some((before, src, after)) = tag
+            .split_once(" src=\"")
+            .and_then(|(b, r)| r.split_once('"').map(|(s, a)| (b, s, a)))
+        else {
+            continue;
+        };
+        let src = src
+            .replace("&quot;", "\"")
+            .replace("&#x27;", "'")
+            .replace("&#39;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&");
+        let lower = src.to_ascii_lowercase();
+        if ["data:", "http://", "https://"]
+            .iter()
+            .any(|p| lower.starts_with(p))
+        {
+            out.push_str(tag);
+        } else if let Some(data) = image(&src) {
+            out.push_str(&format!("{before} src=\"{data}\"{after}"));
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// `body_html` with wiki links relative to `note_dir` and unresolved ones as plain text.
 fn portable_body(
     md: &str,
@@ -1532,6 +1591,59 @@ mod tests {
         ] {
             assert!(!f.contains(bad), "{bad} in {f}");
         }
+    }
+
+    #[test]
+    fn rich_text_document() {
+        let found = |t: &str| (t == "A").then(|| PathBuf::from("/r/A.md"));
+        let asked = std::cell::RefCell::new(Vec::new());
+        let image = |src: &str| {
+            asked.borrow_mut().push(src.to_string());
+            (src != "gone.png").then(|| "data:image/png;base64,Zm9v".to_string())
+        };
+        let md = "# Title\n\n**bold** *it* [web](https://x.org) [[A]]\n\n- one\n- two\n\n\
+| a | b |\n|---|---|\n| 1 | 2 |\n\n$x^2$\n\n```mermaid\ngraph TD\n```\n\n\
+![p](assets/my%20p.png?a&b) ![g](gone.png) ![w](https://x.org/w.png)\n";
+        let p = rich_text_page(md, Path::new("/r"), &found, &image);
+        assert!(
+            p.starts_with("<!doctype html><html><head><meta charset=\"utf-8\"><style>"),
+            "{p}"
+        );
+        assert!(p.ends_with("</body></html>"));
+        for want in [
+            "<h1 id=\"title\">Title</h1>",
+            "<strong>bold</strong>",
+            "<em>it</em>",
+            "<a href=\"https://x.org\">web</a>",
+            "<a href=\"A.md\"",
+            "<li>one</li>",
+            "<table>",
+            "<td>1</td>",
+            "<math",
+            "graph TD",
+            "border-collapse",
+            "<img src=\"data:image/png;base64,Zm9v\" alt=\"p\"",
+            "<img src=\"https://x.org/w.png\" alt=\"w\"",
+        ] {
+            assert!(p.contains(want), "{want} missing in {p}");
+        }
+        assert!(!p.contains("gone.png") && !p.contains("alt=\"g\""), "{p}");
+        assert!(!p.contains("<script") && !p.contains("class=\"math"), "{p}");
+        // The source as written, entities decoded; web images not asked for.
+        assert_eq!(*asked.borrow(), ["assets/my%20p.png?a&b", "gone.png"]);
+    }
+
+    #[test]
+    fn inline_images_keeps_text_around() {
+        let none = |_: &str| None;
+        assert_eq!(inline_images("a <img src=\"x.png\" /> b", &none), "a  b");
+        assert_eq!(inline_images("no images", &none), "no images");
+        assert_eq!(inline_images("cut <img src=\"x", &none), "cut <img src=\"x");
+        let data = |_: &str| Some("data:image/gif;base64,R0".to_string());
+        assert_eq!(
+            inline_images("<p><img src=\"a.gif\" alt=\"A\" /></p>", &data),
+            "<p><img src=\"data:image/gif;base64,R0\" alt=\"A\" /></p>"
+        );
     }
 
     #[test]
