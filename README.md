@@ -246,6 +246,8 @@ No Rust or GTK needed on the host, only Docker (e.g. OrbStack on macOS). `./dev.
 ./dev.sh            # interactive shell in the container
 ```
 
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` on every push and pull request to `main`, on `ubuntu-24.04`; run the same three commands through `./dev.sh` before pushing.
+
 The cargo registry and build output live in Docker volumes (`markdownmate-cargo-registry`, `markdownmate-target`), so later runs are fast and no `target/` appears in the repo. Reset them with `docker volume rm markdownmate-cargo-registry markdownmate-target`. The container has no display, but the app can be smoke-tested headless:
 
 ```sh
