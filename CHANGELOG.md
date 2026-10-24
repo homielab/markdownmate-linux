@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- New screenshots showing KaTeX math, Mermaid diagrams and the format bar.
 - Today's Note (Ctrl+D, or the main menu): opens today's `YYYY-MM-DD.md` in the open folder's `Daily` folder, creating it as `# YYYY-MM-DD` with the cursor at the end when it doesn't exist yet. The folder is set in Preferences ▸ Notes (empty = the open folder itself).
 - Faster preview while typing in large notes: only the blocks you changed are rendered and replaced on the page, instead of the whole note, so formulas, diagrams and the scroll position stay put. Notes with footnotes or reference links, and edits to front matter, still refresh the whole page.
 - Copy as Rich Text (main menu): copies the selection or the whole note so it pastes formatted into LibreOffice, Thunderbird and web mail (headings, bold, lists, links, tables, the note's images) and as plain text elsewhere. Copy as HTML is in the main menu too.

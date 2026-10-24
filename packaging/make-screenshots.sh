@@ -52,6 +52,15 @@ cat > "$N/Projects/API Notes.md" <<'EOF'
 
 The sync endpoint returns notes changed since a cursor. #work
 
+```mermaid
+sequenceDiagram
+    App->>Server: GET /notes?since=cursor
+    Server-->>App: changed notes + new cursor
+    App->>App: merge and save
+```
+
+A busy server answers 429: retry after $t_n = \min(60, 2^n)$ seconds.
+
 ## Fetch changes
 
 ```python
@@ -87,6 +96,32 @@ fn titles(notes: &[Note]) -> Vec<&str> {
 ```
 
 See also [[Website Redesign]].
+EOF
+cat > "$N/Projects/Sync Design.md" <<'EOF'
+# Sync Design
+
+How two devices agree on a note. Related: [[API Notes]].
+
+## Flow
+
+```mermaid
+flowchart LR
+    Edit[Edit on laptop] --> Push[Push change]
+    Push --> Check{Newer on server?}
+    Check -- No --> Save[Save]
+    Check -- Yes --> Merge[Merge both]
+    Merge --> Save
+```
+
+## Retry budget
+
+With a first wait $t_0$ and doubling after each failure, the total wait after $n$ retries is
+
+$$
+T_n = \sum_{k=0}^{n-1} t_0 \, 2^k = t_0 \left(2^n - 1\right)
+$$
+
+so five retries from one second add up to $T_5 = 31$ s.
 EOF
 cat > "$N/Projects/Design System.md" <<'EOF'
 # Design System
@@ -233,11 +268,14 @@ folder_y() { case $1 in Journal) echo 76 ;; Projects) echo 114 ;; Recipes) echo 
 act_quick() { xdotool key ctrl+p; sleep 1; xdotool type 'no'; sleep 1; }
 act_tags() { xdotool mousemove 80 768 click 1 mousemove 640 28; sleep 1; }
 
-shot 1-editor.png "Projects/Website Redesign.md" mode=edit
-shot 2-side-by-side.png "Projects/API Notes.md" mode=split
+act_diagrams() { sleep 3; }
+
+shot 1-editor.png "Projects/Website Redesign.md" "$(printf 'mode=edit\nformat_bar=true')"
+shot 2-side-by-side.png "Projects/API Notes.md" mode=split act_diagrams
 shot 3-preview.png "Recipes/Pho Bo.md" mode=preview
 shot 4-open-quickly.png "Projects/Website Redesign.md" mode=edit act_quick
 shot 5-tags.png "Journal/2026-10-20.md" mode=split act_tags
-ADW_DEBUG_COLOR_SCHEME=prefer-dark shot 6-dark.png "Projects/API Notes.md" mode=split
+ADW_DEBUG_COLOR_SCHEME=prefer-dark shot 6-dark.png "Projects/API Notes.md" mode=split act_diagrams
 shot 7-themes.png "Recipes/Pho Bo.md" "$(printf 'mode=split\ntheme=solarized')"
+shot 8-math-diagrams.png "Projects/Sync Design.md" mode=preview act_diagrams
 exit $fail

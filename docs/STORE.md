@@ -19,7 +19,7 @@ Giữ đồng bộ với `packaging/com.homielab.MarkdownMate.metainfo.xml` (App
 Kích thước Launchpad lấy từ mã nguồn Launchpad (`lib/lp/registry/interfaces/person.py`, form `+branding`): icon đúng 14×14 ≤ 5 KB, logo đúng 64×64 ≤ 50 KB, brand đúng 192×192 ≤ 100 KB.
 **Lưu ý:** PPA không có ảnh riêng — branding thuộc về chủ PPA `~homielab` (người dùng, đã có logo + mugshot HomieLab) và hiện trên mọi PPA của HomieLab, kể cả clean-my-ubuntu. Đề nghị giữ ảnh HomieLab; ảnh `launchpad-*` chỉ dùng nếu sau này tạo team riêng cho MarkdownMate.
 
-Ảnh chụp màn hình: `docs/screenshots/1-editor.png` … `7-themes.png` (`./dev.sh packaging/make-screenshots.sh`).
+Ảnh chụp màn hình: `docs/screenshots/1-editor.png` … `8-math-diagrams.png` (8 chưa có trong metainfo: thêm khi website đã có ảnh) (`./dev.sh packaging/make-screenshots.sh`).
 
 ## Launchpad PPA (`ppa:homielab/markdownmate`)
 

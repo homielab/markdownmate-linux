@@ -15,11 +15,15 @@ The Linux sibling of [MarkdownMate for macOS](https://github.com/homielab/markdo
 > **Status:** early development. The feature list below is the target, matched against the macOS app.
 
 <p align="center">
-  <img src="docs/screenshots/2-side-by-side.png" alt="Editor and preview side by side, with highlighted code and a table" width="800" />
+  <img src="docs/screenshots/2-side-by-side.png" alt="Editor and preview side by side, with a Mermaid diagram, a KaTeX formula and highlighted code" width="800" />
 </p>
 <p align="center">
-  <img src="docs/screenshots/1-editor.png" alt="Note folder in the sidebar and the Markdown editor" width="400" />
+  <img src="docs/screenshots/1-editor.png" alt="Note folder in the sidebar, the format bar and the Markdown editor with a table" width="400" />
   <img src="docs/screenshots/6-dark.png" alt="Dark style" width="400" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/8-math-diagrams.png" alt="Preview of a note with a Mermaid flowchart and KaTeX math" width="800" />
 </p>
 
 More in [`docs/screenshots/`](docs/screenshots/) (regenerate with `./dev.sh packaging/make-screenshots.sh`).
