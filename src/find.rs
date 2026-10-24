@@ -47,7 +47,7 @@ pub fn fold(text: &str) -> String {
 
 /// Byte ranges (in `line`) of the non-overlapping matches of `query` (already `fold`ed,
 /// non-empty).
-fn matches(line: &str, query: &str) -> Vec<Range<usize>> {
+pub fn matches(line: &str, query: &str) -> Vec<Range<usize>> {
     // For each byte of the folded line: the original char it came from.
     let mut folded = String::with_capacity(line.len());
     let mut origin: Vec<Range<usize>> = Vec::with_capacity(line.len());
@@ -71,7 +71,7 @@ fn matches(line: &str, query: &str) -> Vec<Range<usize>> {
 }
 
 /// Cuts long lines to a window around the first match; ranges are shifted to match.
-fn snippet(line: &str, ranges: Vec<Range<usize>>) -> (String, Vec<Range<usize>>) {
+pub fn snippet(line: &str, ranges: Vec<Range<usize>>) -> (String, Vec<Range<usize>>) {
     if line.chars().count() <= SNIPPET_CHARS {
         return (line.to_string(), ranges);
     }
@@ -164,7 +164,7 @@ pub fn search(
     Some(found)
 }
 
-fn read_utf8(path: &Path) -> Option<String> {
+pub fn read_utf8(path: &Path) -> Option<String> {
     String::from_utf8(std::fs::read(path).ok()?).ok()
 }
 

@@ -30,6 +30,20 @@ pub fn at(above: &str, line: &str, col: usize) -> Option<Target> {
 
 /// The links of one line (outside code spans), with their byte ranges, in order.
 pub fn spans(line: &str) -> Vec<(Range<usize>, Target)> {
+    scan(line, &mut Vec::new())
+}
+
+/// Byte ranges of `line` covered by a code span or a link (any kind), in order.
+pub fn code_and_links(line: &str) -> Vec<Range<usize>> {
+    let mut code = Vec::new();
+    let mut all: Vec<Range<usize>> = scan(line, &mut code).into_iter().map(|(r, _)| r).collect();
+    all.extend(code);
+    all.sort_by_key(|r| r.start);
+    all
+}
+
+/// The links of `line`; the code spans' ranges go to `code`.
+fn scan(line: &str, code: &mut Vec<Range<usize>>) -> Vec<(Range<usize>, Target)> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < line.len() {
@@ -37,7 +51,9 @@ pub fn spans(line: &str) -> Vec<(Range<usize>, Target)> {
         let len = if rest.starts_with('`') {
             // Code span to the closing run of the same length (unclosed: just the run).
             let run = rest.len() - rest.trim_start_matches('`').len();
-            rest[run..].find(&rest[..run]).map_or(run, |c| 2 * run + c)
+            let len = rest[run..].find(&rest[..run]).map_or(run, |c| 2 * run + c);
+            code.push(i..i + len);
+            len
         } else if let Some((len, target)) = wiki(rest)
             .or_else(|| md_link(rest))
             .or_else(|| url(line, i))
@@ -131,6 +147,13 @@ mod tests {
         assert_eq!(at("", line, 40), href("mailto:a@b.c"));
         assert_eq!(at("", "xhttps://a.b", 3), None);
         assert_eq!(at("", "a <b> c", 3), None);
+    }
+
+    #[test]
+    fn code_and_link_ranges() {
+        let line = "a `x` [[W]] [t](u) b";
+        assert_eq!(code_and_links(line), [2..5, 6..11, 12..18]);
+        assert!(code_and_links("plain").is_empty());
     }
 
     #[test]

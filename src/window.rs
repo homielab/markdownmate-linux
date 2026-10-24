@@ -2,6 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use adw::prelude::*;
 use gtk::gio;
@@ -233,6 +234,19 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     outline_column.append(&outline);
     outline_column.append(&backlinks_title);
     outline_column.append(&backlinks);
+    // Unlinked Mentions: notes naming the open note without a link; collapsed by default and
+    // searched only while expanded.
+    let mentions = gtk::ListBox::new();
+    mentions.add_css_class("navigation-sidebar");
+    let mentions_title = gtk::Label::new(Some("Unlinked Mentions"));
+    mentions_title.add_css_class("heading");
+    let mentions_expander = gtk::Expander::builder()
+        .label_widget(&mentions_title)
+        .child(&mentions)
+        .margin_start(6)
+        .margin_top(12)
+        .build();
+    outline_column.append(&mentions_expander);
     let outline_panel = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     outline_panel.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     outline_panel.append(
@@ -261,6 +275,10 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         backlinks,
         backlink_targets: RefCell::default(),
         backlinks_gen: Cell::new(0),
+        mentions_expander,
+        mentions,
+        mention_targets: RefCell::default(),
+        mentions_gen: Arc::default(),
         tag_timer: RefCell::new(None),
         preview,
         print_view: RefCell::new(None),
@@ -569,6 +587,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             if show {
                 editor.refresh_outline();
                 editor.refresh_backlinks();
+                editor.refresh_mentions();
                 // Keyboard: Up/Down + Enter right away, from the cursor's section if any.
                 if let Some(row) = editor
                     .outline
@@ -604,6 +623,23 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             let target = usize::try_from(row.index())
                 .ok()
                 .and_then(|i| editor.backlink_targets.borrow().get(i).cloned());
+            if let Some((path, line)) = target {
+                editor.open_at_line(&path, line);
+            }
+        }
+    ));
+    editor.mentions_expander.connect_expanded_notify(clone!(
+        #[strong]
+        editor,
+        move |_| editor.refresh_mentions()
+    ));
+    editor.mentions.connect_row_activated(clone!(
+        #[strong]
+        editor,
+        move |_, row| {
+            let target = usize::try_from(row.index())
+                .ok()
+                .and_then(|i| editor.mention_targets.borrow().get(i).cloned());
             if let Some((path, line)) = target {
                 editor.open_at_line(&path, line);
             }

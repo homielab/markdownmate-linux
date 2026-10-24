@@ -2,6 +2,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use adw::prelude::*;
 use gtk::gio;
@@ -15,8 +17,8 @@ use crate::{
     UNTITLED, file_name, state_file,
 };
 use crate::{
-    backlinks, complete, images, links, lists, naming, notes, outline, quick, render, save,
-    sidebar, state, stats, tags, title, url,
+    backlinks, complete, images, links, lists, mentions, naming, notes, outline, quick, render,
+    save, sidebar, state, stats, tags, title, url,
 };
 
 /// The window's widgets and the open note. Shared (Rc) by sidebar buttons, the auto-save
@@ -39,6 +41,13 @@ pub(crate) struct Editor {
     pub(crate) backlinks: gtk::ListBox,
     pub(crate) backlink_targets: RefCell<Vec<(PathBuf, usize)>>,
     pub(crate) backlinks_gen: Cell<u64>,
+    /// Unlinked Mentions under Backlinks (collapsed by default): the expander, its rows, the
+    /// (note, 1-based line) of each, and the request generation (shared with the background
+    /// search, which stops when it changes).
+    pub(crate) mentions_expander: gtk::Expander,
+    pub(crate) mentions: gtk::ListBox,
+    pub(crate) mention_targets: RefCell<Vec<(PathBuf, usize)>>,
+    pub(crate) mentions_gen: Arc<AtomicU64>,
     /// Pending re-colouring of `#tags` in the editor.
     pub(crate) tag_timer: RefCell<Option<glib::SourceId>>,
     pub(crate) preview: webkit6::WebView,
@@ -454,44 +463,49 @@ impl Editor {
     }
 
     fn fill_backlinks(&self, found: Vec<backlinks::Backlink>) {
-        while let Some(row) = self.backlinks.first_child() {
-            self.backlinks.remove(&row);
+        let rows = found.into_iter().map(|b| (b.path, b.line, b.snippet));
+        let targets = fill_note_rows(&self.backlinks, rows.collect(), "No backlinks");
+        self.backlink_targets.replace(targets);
+    }
+
+    /// Lists the notes naming the open note without a link (Unlinked Mentions, under
+    /// Backlinks). Only while that section is expanded and the panel shown, so it costs nothing
+    /// otherwise; reads every note from disk on a background thread, and an older search still
+    /// running is cancelled.
+    pub(crate) fn refresh_mentions(self: &Rc<Self>) {
+        let generation = self.mentions_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        let (Some(target), Some(_)) = (self.path.borrow().clone(), self.root.borrow().as_ref())
+        else {
+            return self.fill_mentions(Vec::new());
+        };
+        if !self.outline_panel.is_visible() || !self.mentions_expander.is_expanded() {
+            return;
         }
-        if found.is_empty() {
-            let label = gtk::Label::builder()
-                .label("No backlinks")
-                .xalign(0.0)
-                .margin_start(6)
-                .margin_top(4)
-                .build();
-            label.add_css_class("dim-label");
-            self.backlinks.append(&label);
-            if let Some(row) = self.backlinks.row_at_index(0) {
-                row.set_activatable(false);
-                row.set_selectable(false);
+        let notes = self.note_list.borrow().to_vec(); // the Rc cannot cross threads
+        let current = self.mentions_gen.clone();
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let Ok(Some(found)) = gio::spawn_blocking(move || {
+                mentions::find(&notes, &target, &|| {
+                    current.load(Ordering::SeqCst) != generation
+                })
+            })
+            .await
+            else {
+                return;
+            };
+            if let Some(editor) = weak.upgrade()
+                && editor.mentions_gen.load(Ordering::SeqCst) == generation
+            {
+                editor.fill_mentions(found);
             }
-        }
-        for b in &found {
-            let name = file_name(&b.path);
-            let row = gtk::Box::new(gtk::Orientation::Vertical, 2);
-            row.set_margin_start(6);
-            row.set_margin_end(6);
-            row.set_margin_top(4);
-            row.set_margin_bottom(4);
-            for (text, class) in [(name.as_str(), "heading"), (b.snippet.as_str(), "caption")] {
-                let label = gtk::Label::builder()
-                    .label(text)
-                    .xalign(0.0)
-                    .ellipsize(gtk::pango::EllipsizeMode::End)
-                    .build();
-                label.add_css_class(class);
-                row.append(&label);
-            }
-            row.set_tooltip_text(Some(&format!("{name}:{}\n{}", b.line, b.snippet)));
-            self.backlinks.append(&row);
-        }
-        self.backlink_targets
-            .replace(found.into_iter().map(|b| (b.path, b.line)).collect());
+        });
+    }
+
+    fn fill_mentions(&self, found: Vec<mentions::Mention>) {
+        let rows = found.into_iter().map(|m| (m.path, m.line, m.snippet));
+        let targets = fill_note_rows(&self.mentions, rows.collect(), "No unlinked mentions");
+        self.mention_targets.replace(targets);
     }
 
     /// Highlights the outline row of the section holding the cursor, without activating it
@@ -623,6 +637,7 @@ impl Editor {
         self.refresh_preview();
         self.remember();
         self.refresh_backlinks();
+        self.refresh_mentions();
     }
 
     /// Đặt con trỏ ở vị trí đã nhớ của `path` (kẹp nếu file ngắn đi; chưa nhớ: đầu note) và
@@ -1068,6 +1083,7 @@ impl Editor {
         // Wiki links resolve against the scan: render again with the new note list.
         self.refresh_preview();
         self.refresh_backlinks();
+        self.refresh_mentions();
         // The Tags panel is kept across rescans (its own refresh: `load_tags`).
         if let Some(parent) = self.tags_panel.parent().and_downcast::<gtk::Box>() {
             parent.remove(&self.tags_panel);
@@ -1591,4 +1607,51 @@ fn fragment(uri: &str) -> Option<String> {
     let (_, fragment) = uri.split_once('#')?;
     let fragment = glib::Uri::unescape_string(fragment, None::<&str>)?;
     (!fragment.is_empty()).then(|| fragment.into())
+}
+
+/// Fills a Backlinks-style list: per (note, 1-based line, snippet) a row with the note name
+/// and the snippet; `empty` as a dimmed, inert row when there are none. Returns the (note,
+/// line) of each row, in order.
+fn fill_note_rows(
+    list: &gtk::ListBox,
+    rows: Vec<(PathBuf, usize, String)>,
+    empty: &str,
+) -> Vec<(PathBuf, usize)> {
+    while let Some(row) = list.first_child() {
+        list.remove(&row);
+    }
+    if rows.is_empty() {
+        let label = gtk::Label::builder()
+            .label(empty)
+            .xalign(0.0)
+            .margin_start(6)
+            .margin_top(4)
+            .build();
+        label.add_css_class("dim-label");
+        list.append(&label);
+        if let Some(row) = list.row_at_index(0) {
+            row.set_activatable(false);
+            row.set_selectable(false);
+        }
+    }
+    for (path, line, snippet) in &rows {
+        let name = file_name(path);
+        let row = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        row.set_margin_start(6);
+        row.set_margin_end(6);
+        row.set_margin_top(4);
+        row.set_margin_bottom(4);
+        for (text, class) in [(name.as_str(), "heading"), (snippet.as_str(), "caption")] {
+            let label = gtk::Label::builder()
+                .label(text)
+                .xalign(0.0)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .build();
+            label.add_css_class(class);
+            row.append(&label);
+        }
+        row.set_tooltip_text(Some(&format!("{name}:{line}\n{snippet}")));
+        list.append(&row);
+    }
+    rows.into_iter().map(|(p, l, _)| (p, l)).collect()
 }

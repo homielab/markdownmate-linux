@@ -11,6 +11,7 @@ mod input;
 mod lines;
 mod links;
 mod lists;
+mod mentions;
 mod naming;
 mod notes;
 mod outline;

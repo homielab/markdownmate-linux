@@ -566,6 +566,26 @@ act_backlinks() {
         || { echo "FAIL backlinks: Ref2.md not opened at line 2"; bad=1; }
 }
 
+# Unlinked Mentions under Backlinks (collapsed; searched only once expanded): Mentions.md
+# names Roadmap in code, in a wiki link and as "roadmaps" (none count), then on line 4; Tab
+# from the outline past Backlinks to the section, Enter expands it, Tab + Enter opens line 4.
+act_mentions() {
+    timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
+    xdotool key alt+ctrl+o
+    sleep 2
+    scrot -o "$OUT/mentions-collapsed.png"
+    xdotool key Tab Tab Return
+    sleep 2
+    scrot -o "$OUT/mentions-panel.png"
+    xdotool key Tab Return
+    sleep 1
+    xdotool type 'X'
+    sleep 2
+    scrot -o "$OUT/mentions-open.png"
+    sed -n 4p "$NOTES/Mentions.md" | grep -qx 'XOur roadmap here' \
+        || { echo "FAIL mentions: Mentions.md not opened at line 4"; bad=1; }
+}
+
 # Tags: the sidebar lists #việc-làm, #work (2 notes), #project under it. Clicking #work lists
 # its notes; Enter opens the first (Projects/Tagged.md), then typing goes into it.
 act_tags() {
@@ -890,6 +910,10 @@ run print_preview mode=preview
 run print_split mode=split
 NOTE="$NOTES/Outline.md" run outline mode=preview
 NOTE="$NOTES/Target.md" run backlinks mode=edit
+echo '# Roadmap' > "$NOTES/Roadmap.md"
+printf '`roadmap` in code\n[[Roadmap]] linked\nroadmaps plural\nOur roadmap here\n' > "$NOTES/Mentions.md"
+NOTE="$NOTES/Roadmap.md" run mentions mode=edit
+rm "$NOTES/Roadmap.md" "$NOTES/Mentions.md"
 NOTE="$NOTES/Tags.md" run tags mode=split
 # pref <row title>: opens Preferences (Ctrl+,) and focuses that row through the dialog's own
 # search (Ctrl+F, the title, Tab to the first result, Space jumps to the real row; Enter does
