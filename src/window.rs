@@ -18,7 +18,7 @@ use crate::input::{
     Completer, LineCommand, image_input, in_table, insert_table, line_command, smart_lists,
     table_command,
 };
-use crate::preview::{copy_as_html, export_html, export_pdf, print_note};
+use crate::preview::{copy_as_html, export_html, export_pdf, export_text, print_note};
 use crate::{
     APP_ID, MATH_STYLE, SCRIPT_WORLD, SYNC_DELAY, TABLE_STYLE, TAG_STYLE, UNTITLED, state_file,
 };
@@ -43,6 +43,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         &[
             ("Export as PDF…", "win.export-pdf"),
             ("Export as HTML…", "win.export-html"),
+            ("Export as Plain Text…", "win.export-text"),
             ("Print…", "win.print"),
         ],
         &[
@@ -735,6 +736,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     simple("open-file", choose_file);
     // Does nothing without an open note.
     simple("export-pdf", export_pdf);
+    simple("export-text", export_text);
     simple("about", about_dialog);
     // Disabled until a folder is open (load_folder enables it).
     simple("new-folder", |editor| {

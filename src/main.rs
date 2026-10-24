@@ -20,6 +20,7 @@ mod outline;
 mod paste;
 #[cfg(test)]
 mod perf;
+mod plain;
 mod preview;
 mod previewfind;
 mod quick;

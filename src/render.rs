@@ -303,7 +303,7 @@ fn mathml(latex: &str, display: bool, delim: &str) -> String {
 }
 
 /// Markdown options shared by rendering and `code_block_at`.
-fn options() -> comrak::Options<'static> {
+pub(crate) fn options() -> comrak::Options<'static> {
     let mut options = comrak::Options::default();
     let ext = &mut options.extension;
     ext.table = true;

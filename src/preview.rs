@@ -388,6 +388,40 @@ fn write_export(editor: &Rc<Editor>, dest: std::path::PathBuf, html: String) {
     });
 }
 
+/// Export as Plain Text…: save dialog suggesting `<note>.txt` next to the note, then writes
+/// `plain::plain_text` of the editor's text (unsaved edits included).
+pub(crate) fn export_text(editor: &Rc<Editor>) {
+    let Some(note) = editor.path.borrow().clone() else {
+        return;
+    };
+    let dialog = gtk::FileDialog::builder()
+        .title("Export as Plain Text")
+        .modal(true)
+        .initial_name(format!("{}.txt", stem(&note)))
+        .build();
+    if let Some(dir) = note.parent() {
+        dialog.set_initial_folder(Some(&gio::File::for_path(dir)));
+    }
+    let editor = Rc::clone(editor);
+    dialog.save(
+        Some(&editor.window.clone()),
+        gio::Cancellable::NONE,
+        move |result| {
+            let Some(dest) = result.ok().and_then(|f| f.path()) else {
+                return;
+            };
+            let (start, end) = editor.buffer.bounds();
+            let text = editor.buffer.text(&start, &end, true).to_string();
+            glib::spawn_future_local(async move {
+                match gio::spawn_blocking(move || crate::plain::plain_text(&text)).await {
+                    Ok(plain) => write_export(&editor, dest, plain),
+                    Err(_) => editor.toast("Could not export the note"),
+                }
+            });
+        },
+    );
+}
+
 /// Copy as HTML: the selection (or the whole note, unsaved edits included) as
 /// `render::html_fragment` (`text/html`) plus its Markdown (`text/plain`) on the clipboard.
 pub(crate) fn copy_as_html(editor: &Rc<Editor>) {
