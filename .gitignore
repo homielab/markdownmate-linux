@@ -1,0 +1,14 @@
+agent-team/board.json
+agent-team/.state
+/target/
+/screenshots/
+/dist/
+# Debian/PPA build leftovers (debian/rules, packaging/build-source.sh)
+/vendor/
+debian/.debhelper/
+debian/markdownmate/
+debian/cargo-home/
+debian/debhelper-build-stamp
+debian/files
+debian/*.substvars
+debian/*.debhelper.log

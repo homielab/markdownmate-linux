@@ -1,0 +1,3 @@
+# Vendored crate test/bench data (cargo vendor, see packaging/build-source.sh); not shipped in the .deb.
+markdownmate source: source-is-missing [vendor/htmd/examples/*.html]
+markdownmate source: source-is-missing [vendor/html5ever/data/bench/*.html]

@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 HomieLab -->
+<component type="desktop-application">
+  <id>com.homielab.MarkdownMate</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+
+  <name>MarkdownMate</name>
+  <summary>Write notes as plain Markdown files in your own folders</summary>
+  <developer id="com.homielab">
+    <name>HomieLab</name>
+  </developer>
+
+  <description>
+    <p>
+      MarkdownMate is a native, local-first Markdown notes app. Open any folder and your notes
+      are just .md files in it: no account, no cloud, no telemetry. Everything is saved
+      automatically and never overwrites changes made by another app.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Folder sidebar that follows changes on disk, with new note, folder, rename and move to Trash</li>
+      <li>Edit, Preview and Side by side modes with synced scrolling and highlighted code</li>
+      <li>Open Quickly by name and Find in Folder across all notes</li>
+      <li>Wiki links, tags, outline and autocompletion for links and tags</li>
+      <li>Smart lists, to-do checkboxes and bold, italic and link shortcuts</li>
+      <li>Paste or drop images straight into a note</li>
+      <li>Default, Paper, Graphite and Solarized themes in light and dark</li>
+      <li>Export as HTML, Copy as HTML and Print to PDF</li>
+      <li>Folder bookmarks, recent folders and a markdownmate:// URL scheme for automation</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">com.homielab.MarkdownMate.desktop</launchable>
+  <provides>
+    <binary>markdownmate</binary>
+    <mediatype>text/markdown</mediatype>
+  </provides>
+
+  <url type="homepage">https://markdownmate.homielab.com/</url>
+  <url type="contact">https://homielab.com</url>
+  <url type="donation">https://ko-fi.com/homielab</url>
+  <update_contact>contact@homielab.com</update_contact>
+
+  <categories>
+    <category>Office</category>
+    <category>TextEditor</category>
+  </categories>
+  <keywords>
+    <keyword>markdown</keyword>
+    <keyword>notes</keyword>
+    <keyword>editor</keyword>
+    <keyword>wiki</keyword>
+    <keyword>writing</keyword>
+  </keywords>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>Edit and preview a note side by side</caption>
+      <image>https://markdownmate.homielab.com/ubuntu/screenshots/2-side-by-side.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Plain Markdown files from your own folder</caption>
+      <image>https://markdownmate.homielab.com/ubuntu/screenshots/1-editor.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Clean preview with highlighted code</caption>
+      <image>https://markdownmate.homielab.com/ubuntu/screenshots/3-preview.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Open any note quickly by name</caption>
+      <image>https://markdownmate.homielab.com/ubuntu/screenshots/4-open-quickly.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Browse notes by tag</caption>
+      <image>https://markdownmate.homielab.com/ubuntu/screenshots/5-tags.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Follows the system dark style</caption>
+      <image>https://markdownmate.homielab.com/ubuntu/screenshots/6-dark.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Choose from several themes</caption>
+      <image>https://markdownmate.homielab.com/ubuntu/screenshots/7-themes.png</image>
+    </screenshot>
+  </screenshots>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#deddda</color>
+    <color type="primary" scheme_preference="dark">#3d3846</color>
+  </branding>
+
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.3.0" date="2026-10-22">
+      <description>
+        <p>Backlinks to the current note, recent notes in Open Quickly, links that jump to a heading in the preview, inserting a table with Shift+Ctrl+T, table editing inside quotes and lists, monospace table rows, Show in Files and Copy Path in the sidebar, cleaner pasted web text, and a smoother preview with large notes.</p>
+      </description>
+    </release>
+    <release version="0.2.0" date="2026-10-22">
+      <description>
+        <p>Math formulas in the preview, pasting rich text as Markdown, table editing with Tab and Enter, find and replace, typewriter scrolling, image previews on hover, drag and drop in the sidebar, a Light/Dark style setting, a faster Side by side view, and many fixes.</p>
+      </description>
+    </release>
+    <release version="0.1.1" date="2026-10-21">
+      <description>
+        <p>First release in the PPA, with app store metadata and screenshots.</p>
+      </description>
+    </release>
+    <release version="0.1.0" date="2026-10-21">
+      <description>
+        <p>First release, available from a PPA with updates through Software Updater.</p>
+      </description>
+    </release>
+  </releases>
+</component>

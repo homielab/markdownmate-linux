@@ -1,0 +1,23 @@
+markdownmate (0.3.0-0ppa1) noble; urgency=medium
+
+  * New upstream release.
+
+ -- HomieLab <contact@homielab.com>  Thu, 22 Oct 2026 15:46:54 +0700
+
+markdownmate (0.2.0-0ppa1) noble; urgency=medium
+
+  * New upstream release.
+
+ -- HomieLab <contact@homielab.com>  Thu, 22 Oct 2026 09:28:01 +0700
+
+markdownmate (0.1.1-0ppa1) noble; urgency=medium
+
+  * First release in the PPA: AppStream metainfo, screenshots. See CHANGELOG.md.
+
+ -- HomieLab <contact@homielab.com>  Wed, 21 Oct 2026 14:04:43 +0700
+
+markdownmate (0.1.0-0ppa1) noble; urgency=medium
+
+  * First release in the PPA. See CHANGELOG.md.
+
+ -- HomieLab <contact@homielab.com>  Tue, 20 Oct 2026 22:00:00 +0700

@@ -1,0 +1,16 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: markdownmate
+Upstream-Contact: HomieLab <contact@homielab.com>
+Source: https://markdownmate.homielab.com/
+
+Files: *
+Copyright: 2026 HomieLab
+License: proprietary
+ Copyright 2026 HomieLab. All rights reserved.
+
+Files: vendor/*
+Copyright: the authors of each Rust crate, see vendor/<crate>/Cargo.toml
+License: various
+ Third-party Rust crates bundled for the offline build. Each crate keeps its
+ own licence (mostly MIT and/or Apache-2.0); see the LICENSE* / COPYING files
+ and the "license" field of vendor/<crate>/Cargo.toml.

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Theme Graphite Dark của MarkdownMate: chỉ đổi màu nền/chữ, phần tô cú pháp kế thừa Adwaita-dark. -->
+<style-scheme id="markdownmate-graphite-dark" name="MarkdownMate Graphite Dark" version="1.0" parent-scheme="Adwaita-dark">
+  <style name="text" foreground="#d0d0d0" background="#232323"/>
+  <style name="line-numbers" foreground="#6a6a6a" background="#232323"/>
+  <style name="current-line" background="#2c2c2c"/>
+  <style name="selection" background="#4a5058"/>
+  <style name="cursor" foreground="#d0d0d0"/>
+</style-scheme>

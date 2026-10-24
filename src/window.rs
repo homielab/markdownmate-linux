@@ -1,0 +1,1058 @@
+use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use adw::prelude::*;
+use gtk::gio;
+use gtk::glib::{self, clone};
+use sourceview5::prelude::*;
+use webkit6::prelude::*;
+
+use crate::dialogs::{
+    bookmarks_dialog, find_in_folder, go_to_line, open_quickly, preferences_dialog, reload_note,
+};
+use crate::editor::Editor;
+use crate::input::{Completer, image_input, insert_table, smart_lists};
+use crate::preview::{copy_as_html, export_html, export_pdf, print_note};
+use crate::{
+    APP_ID, MATH_STYLE, SCRIPT_WORLD, SYNC_DELAY, TABLE_STYLE, TAG_STYLE, UNTITLED, state_file,
+};
+use crate::{choose_file, choose_folder, open_path};
+use crate::{links, render, sidebar, state, title};
+
+/// `target`: a folder or note given on the command line; `None` reopens the last session.
+pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
+    let header = adw::HeaderBar::new();
+    // Open Recent is refilled by `Editor::fill_recent_menu`.
+    let recent_menu = gio::Menu::new();
+    let menu = gio::Menu::new();
+    for items in [
+        &[
+            ("New File", "win.new-note"),
+            ("New Folder…", "win.new-folder"),
+        ][..],
+        &[
+            ("Open File…", "win.open-file"),
+            ("Open Folder…", "win.open-folder"),
+        ],
+        &[
+            ("Export as PDF…", "win.export-pdf"),
+            ("Export as HTML…", "win.export-html"),
+            ("Print…", "win.print"),
+        ],
+        &[
+            ("Keyboard Shortcuts", "win.show-help-overlay"),
+            ("About MarkdownMate", "win.about"),
+        ],
+    ] {
+        let section = gio::Menu::new();
+        for (label, action) in items {
+            section.append(Some(label), Some(action));
+        }
+        if items[0].1 == "win.open-file" {
+            section.append_submenu(Some("Open Recent"), &recent_menu);
+        }
+        menu.append_section(None, &section);
+    }
+    // Smoke tests activate the actions, not this menu (an open GtkPopover logs Gdk-CRITICAL
+    // under Xvfb). F10 opens it (`primary`).
+    header.pack_start(
+        &gtk::MenuButton::builder()
+            .icon_name("open-menu-symbolic")
+            .tooltip_text("Main Menu")
+            .menu_model(&menu)
+            .primary(true)
+            .build(),
+    );
+    header.pack_start(
+        &gtk::Button::builder()
+            .icon_name("user-bookmarks-symbolic")
+            .tooltip_text("Bookmarks (Alt+1…Alt+9 open one)")
+            .action_name("win.bookmarks")
+            .build(),
+    );
+
+    let split = adw::OverlaySplitView::builder()
+        .vexpand(true)
+        .show_sidebar(false)
+        .content(
+            &adw::StatusPage::builder()
+                .icon_name("folder-open-symbolic")
+                .title("No folder open")
+                .description("Open a folder of Markdown notes to get started.")
+                .build(),
+        )
+        .build();
+    let toasts = adw::ToastOverlay::new();
+    toasts.set_child(Some(&split));
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&toasts);
+
+    let window = adw::ApplicationWindow::builder()
+        .application(app)
+        .title(title::window_title(None))
+        .default_width(900)
+        .default_height(600)
+        .content(&content)
+        .build();
+
+    let buffer = sourceview5::Buffer::new(None);
+    buffer.set_language(
+        sourceview5::LanguageManager::default()
+            .language("markdown")
+            .as_ref(),
+    );
+    // Readable on light and dark schemes; only the colour changes, never the text.
+    buffer.create_tag(Some(TAG_STYLE), &[("foreground", &"#3584e4")]);
+    buffer.create_tag(Some(TABLE_STYLE), &[("family", &"monospace")]);
+    // Mid-tone purple, readable on light and dark schemes like the tag blue.
+    buffer.create_tag(Some(MATH_STYLE), &[("foreground", &"#9141ac")]);
+    let style = adw::StyleManager::default();
+    let view = sourceview5::View::builder()
+        .buffer(&buffer)
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .monospace(true)
+        .css_classes(["mm-editor"])
+        .left_margin(12)
+        .right_margin(12)
+        .top_margin(12)
+        .bottom_margin(crate::editor::BOTTOM_MARGIN)
+        .build();
+    let scroll = gtk::ScrolledWindow::builder()
+        .child(&view)
+        .vexpand(true)
+        .build();
+    let status = gtk::Label::builder()
+        .xalign(0.0)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(4)
+        .margin_bottom(4)
+        .css_classes(["caption", "dim-label"])
+        .build();
+    let editor_pane = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    // The `[[` suggestions float over the editor in this overlay.
+    let overlay = gtk::Overlay::builder().child(&scroll).vexpand(true).build();
+    editor_pane.append(&overlay);
+    editor_pane.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    editor_pane.append(&status);
+    let completer = Completer::new(&view, &overlay);
+    smart_lists(&view, &completer);
+
+    let preview = webkit6::WebView::new();
+    if let Some(settings) = WebViewExt::settings(&preview) {
+        // No scripts from the page (the CSP blocks them too). JavaScript itself stays on only
+        // so the app can read/restore the scroll position (evaluate_javascript needs it).
+        settings.set_enable_javascript_markup(false);
+    }
+    preview.set_visible(false);
+    let panes = gtk::Paned::builder()
+        .start_child(&editor_pane)
+        .end_child(&preview)
+        .shrink_start_child(false)
+        .shrink_end_child(false)
+        .hexpand(true)
+        .build();
+
+    // Outline (Alt+Ctrl+O): a side panel, not a popover (GtkPopover logs Gdk-CRITICAL under
+    // Xvfb, which fails the smoke test).
+    let outline = gtk::ListBox::new();
+    outline.add_css_class("navigation-sidebar");
+    // Backlinks: notes linking to the open note, listed under the outline.
+    let backlinks = gtk::ListBox::new();
+    backlinks.add_css_class("navigation-sidebar");
+    let backlinks_title = gtk::Label::builder()
+        .label("Backlinks")
+        .xalign(0.0)
+        .margin_start(12)
+        .margin_top(12)
+        .build();
+    backlinks_title.add_css_class("heading");
+    let outline_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    outline_column.append(&outline);
+    outline_column.append(&backlinks_title);
+    outline_column.append(&backlinks);
+    let outline_panel = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    outline_panel.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+    outline_panel.append(
+        &gtk::ScrolledWindow::builder()
+            .child(&outline_column)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .width_request(220)
+            .build(),
+    );
+    outline_panel.set_visible(false);
+    let (tags_panel, tags_list) = sidebar::tags_panel();
+    let note_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    note_box.append(&panes);
+    note_box.append(&outline_panel);
+
+    let editor = Rc::new(Editor {
+        window: window.clone(),
+        toasts,
+        split,
+        panes,
+        note_box,
+        outline_panel,
+        outline,
+        outline_lines: RefCell::default(),
+        outline_timer: RefCell::new(None),
+        backlinks,
+        backlink_targets: RefCell::default(),
+        backlinks_gen: Cell::new(0),
+        tag_timer: RefCell::new(None),
+        preview,
+        print_view: RefCell::new(None),
+        print_busy: Cell::new(false),
+        mode: Cell::new(state::Mode::Edit),
+        preview_timer: RefCell::new(None),
+        preview_generation: Cell::new(0),
+        preview_render: Cell::default(),
+        sync_timer: RefCell::new(None),
+        preview_poll: RefCell::new(None),
+        preview_y: Cell::new(0.0),
+        preview_anchor: RefCell::new(None),
+        buffer: buffer.clone(),
+        view: view.clone(),
+        status,
+        counts: Cell::new((0, 0)),
+        status_timer: RefCell::new(None),
+        path: RefCell::new(None),
+        saved: RefCell::new(String::new()),
+        timer: RefCell::new(None),
+        close_anyway: Cell::new(false),
+        note_monitor: RefCell::new(None),
+        missing_told: Cell::new(false),
+        root: RefCell::new(None),
+        dir_monitors: RefCell::new(Vec::new()),
+        rescan_timer: RefCell::new(None),
+        expanded: RefCell::new(HashSet::new()),
+        scan_gen: Cell::new(0),
+        applied_gen: Cell::new(0),
+        scan_dir: RefCell::new(None),
+        note_list: RefCell::default(),
+        tags_panel,
+        tags_list: tags_list.clone(),
+        tag_index: RefCell::default(),
+        tags_gen: Cell::new(0),
+        tags_timer: RefCell::new(None),
+        bookmarks: RefCell::default(),
+        recent: RefCell::default(),
+        positions: RefCell::default(),
+        prefs: RefCell::default(),
+        recent_menu,
+        font_css: gtk::CssProvider::new(),
+    });
+    // Window-wide so the rule (class `mm-editor`) beats the theme's `.monospace` font.
+    gtk::style_context_add_provider_for_display(
+        &gtk::prelude::WidgetExt::display(&window),
+        &editor.font_css,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+    tags_list.connect_row_activated(clone!(
+        #[weak]
+        editor,
+        move |_, row| {
+            let tag = usize::try_from(row.index())
+                .ok()
+                .and_then(|i| editor.tag_index.borrow().get(i).cloned());
+            if let Some((tag, notes)) = tag {
+                sidebar::tag_notes(&editor, &tag, &notes);
+            }
+        }
+    ));
+
+    image_input(&view, &editor);
+    crate::search::find_bar(&editor, &editor_pane, app);
+    crate::editor::typewriter_scrolling(&editor, &scroll);
+
+    buffer.connect_changed(clone!(
+        #[strong]
+        editor,
+        #[strong]
+        completer,
+        move |_| {
+            editor.schedule_save();
+            editor.schedule_preview();
+            editor.schedule_status();
+            editor.schedule_outline();
+            editor.schedule_tags();
+            completer.update(&editor);
+        }
+    ));
+    buffer.connect_mark_set(clone!(
+        #[strong]
+        editor,
+        #[strong]
+        completer,
+        move |buffer, _, mark| {
+            if *mark == buffer.get_insert() || *mark == buffer.selection_bound() {
+                editor.schedule_status();
+                editor.select_outline_at_cursor();
+                completer.update(&editor);
+            }
+        }
+    ));
+    let focus = gtk::EventControllerFocus::new();
+    focus.connect_leave(clone!(
+        #[strong]
+        completer,
+        move |_| completer.panel.set_visible(false)
+    ));
+    view.add_controller(focus);
+
+    let save_action = gio::SimpleAction::new("save", None);
+    save_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| {
+            editor.save();
+        }
+    ));
+    window.add_action(&save_action);
+    app.set_accels_for_action("win.save", &["<Control>s"]);
+    // Thoát không qua đóng cửa sổ (main.rs: SIGTERM, logout, shutdown): lưu một lần, không
+    // chặn — lỗi đã được `save` ghi stderr.
+    let flush_action = gio::SimpleAction::new("flush", None);
+    flush_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| {
+            editor.save();
+            editor.remember();
+        }
+    ));
+    window.add_action(&flush_action);
+
+    // Disabled until a folder is open (load_folder enables it).
+    let new_note_action = gio::SimpleAction::new("new-note", None);
+    new_note_action.set_enabled(false);
+    new_note_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| {
+            if let Some(dir) = editor.current_dir() {
+                editor.new_note(&dir, UNTITLED);
+            }
+        }
+    ));
+    window.add_action(&new_note_action);
+    app.set_accels_for_action("win.new-note", &["<Control>n"]);
+
+    // Disabled until a folder is open (load_folder enables it).
+    let quick_action = gio::SimpleAction::new("open-quickly", None);
+    quick_action.set_enabled(false);
+    quick_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| open_quickly(&editor)
+    ));
+    window.add_action(&quick_action);
+    app.set_accels_for_action("win.open-quickly", &["<Control>p"]);
+
+    // Disabled until a folder is open (load_folder enables it).
+    let find_action = gio::SimpleAction::new("find-in-folder", None);
+    find_action.set_enabled(false);
+    find_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| find_in_folder(&editor)
+    ));
+    window.add_action(&find_action);
+    app.set_accels_for_action("win.find-in-folder", &["<Shift><Control>f"]);
+
+    // Ctrl+L is not bound by GTK or GtkSourceView; does nothing without an open note.
+    let goto_action = gio::SimpleAction::new("go-to-line", None);
+    goto_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| go_to_line(&editor)
+    ));
+    window.add_action(&goto_action);
+    app.set_accels_for_action("win.go-to-line", &["<Control>l"]);
+
+    // Insert Table. Alt+Ctrl+T opens a terminal on Ubuntu; Shift+Ctrl+T is not bound by GTK or
+    // GtkSourceView. Does nothing without an open note; Preview switches to Edit like Go to Line.
+    let table_action = gio::SimpleAction::new("insert-table", None);
+    table_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| {
+            if editor.path.borrow().is_none() {
+                return;
+            }
+            if editor.mode.get() == state::Mode::Preview {
+                editor.set_mode(state::Mode::Edit);
+            }
+            if insert_table(editor.buffer.upcast_ref()) {
+                editor.view.grab_focus();
+            } else {
+                editor.toast("Cannot insert a table inside a code block");
+            }
+        }
+    ));
+    window.add_action(&table_action);
+    app.set_accels_for_action("win.insert-table", &["<Shift><Control>t"]);
+
+    // Ctrl+R is not bound by GTK or GtkSourceView; does nothing without an open note.
+    let reload_action = gio::SimpleAction::new("reload", None);
+    reload_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| reload_note(&editor)
+    ));
+    window.add_action(&reload_action);
+    app.set_accels_for_action("win.reload", &["<Control>r"]);
+
+    // Outline panel on/off. Clicking (or Enter on) a heading jumps to its line in the editor.
+    let outline_action = gio::SimpleAction::new_stateful("outline", None, &false.to_variant());
+    outline_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |action, _| {
+            let show = !editor.outline_panel.is_visible();
+            action.set_state(&show.to_variant());
+            editor.outline_panel.set_visible(show);
+            if show {
+                editor.refresh_outline();
+                editor.refresh_backlinks();
+                // Keyboard: Up/Down + Enter right away, from the cursor's section if any.
+                if let Some(row) = editor
+                    .outline
+                    .selected_row()
+                    .or_else(|| editor.outline.row_at_index(0))
+                {
+                    row.grab_focus();
+                }
+            } else if editor.mode.get() != state::Mode::Preview {
+                editor.view.grab_focus();
+            }
+        }
+    ));
+    window.add_action(&outline_action);
+    app.set_accels_for_action("win.outline", &["<Alt><Control>o"]);
+    editor.outline.connect_row_activated(clone!(
+        #[strong]
+        editor,
+        move |_, row| {
+            let line = usize::try_from(row.index())
+                .ok()
+                .and_then(|i| editor.outline_lines.borrow().get(i).copied());
+            if let Some(line) = line {
+                editor.go_to(line, None);
+            }
+        }
+    ));
+    editor.outline_menu();
+    editor.backlinks.connect_row_activated(clone!(
+        #[strong]
+        editor,
+        move |_, row| {
+            let target = usize::try_from(row.index())
+                .ok()
+                .and_then(|i| editor.backlink_targets.borrow().get(i).cloned());
+            if let Some((path, line)) = target {
+                editor.open_at_line(&path, line);
+            }
+        }
+    ));
+    header.pack_end(
+        &gtk::ToggleButton::builder()
+            .icon_name("view-list-symbolic")
+            .tooltip_text("Outline (Alt+Ctrl+O)")
+            .action_name("win.outline")
+            .build(),
+    );
+
+    // Shift+Ctrl+E is not bound by GTK or GtkSourceView; does nothing without an open note.
+    let export_action = gio::SimpleAction::new("export-html", None);
+    export_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| export_html(&editor)
+    ));
+    window.add_action(&export_action);
+    app.set_accels_for_action("win.export-html", &["<Shift><Control>e"]);
+
+    // Main menu. Ctrl+O is not bound by GTK or GtkSourceView.
+    let simple = |name: &str, run: fn(&Rc<Editor>)| {
+        let action = gio::SimpleAction::new(name, None);
+        action.connect_activate(clone!(
+            #[strong]
+            editor,
+            move |_, _| run(&editor)
+        ));
+        window.add_action(&action);
+        action
+    };
+    simple("open-folder", choose_folder);
+    app.set_accels_for_action("win.open-folder", &["<Control>o"]);
+    simple("open-file", choose_file);
+    // Does nothing without an open note.
+    simple("export-pdf", export_pdf);
+    simple("about", about_dialog);
+    // Disabled until a folder is open (load_folder enables it).
+    simple("new-folder", |editor| {
+        let Some(dir) = editor.current_dir() else {
+            return;
+        };
+        let e = Rc::clone(editor);
+        sidebar::ask_name(editor, "New Folder", "New Folder", "Create", move |name| {
+            e.new_folder(&dir, name)
+        });
+    })
+    .set_enabled(false);
+    let open_recent = gio::SimpleAction::new("open-recent", Some(glib::VariantTy::STRING));
+    open_recent.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, param| {
+            if let Some(dir) = param.and_then(|p| p.str()) {
+                editor.open_recent(std::path::Path::new(dir));
+            }
+        }
+    ));
+    window.add_action(&open_recent);
+    // Adds win.show-help-overlay; Ctrl+? is the GNOME convention.
+    window.set_help_overlay(Some(&shortcuts_window()));
+    app.set_accels_for_action("win.show-help-overlay", &["<Control>question"]);
+
+    // Alt+Shift+Ctrl+C is not bound by GTK or GtkSourceView; does nothing without an open note.
+    let copy_html_action = gio::SimpleAction::new("copy-html", None);
+    copy_html_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| copy_as_html(&editor)
+    ));
+    window.add_action(&copy_html_action);
+    app.set_accels_for_action("win.copy-html", &["<Alt><Shift><Control>c"]);
+
+    // Ctrl+Shift+P differs from Open Quickly (Ctrl+P) by Shift; GTK/GtkSourceView don't bind it.
+    let print_action = gio::SimpleAction::new("print", None);
+    print_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| print_note(&editor)
+    ));
+    window.add_action(&print_action);
+    app.set_accels_for_action("win.print", &["<Shift><Control>p"]);
+
+    // Bookmarks: a dialog list, not a header MenuButton (its GtkPopover logs Gdk-CRITICAL under
+    // Xvfb, which fails the smoke test). Alt+1…9 are not bound by GTK or GtkSourceView here.
+    let bookmarks_action = gio::SimpleAction::new("bookmarks", None);
+    bookmarks_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| bookmarks_dialog(&editor)
+    ));
+    window.add_action(&bookmarks_action);
+    let open_bookmark = gio::SimpleAction::new("open-bookmark", Some(glib::VariantTy::STRING));
+    open_bookmark.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, param| {
+            if let Some(n) = param
+                .and_then(|p| p.str())
+                .and_then(|n| n.parse::<usize>().ok())
+            {
+                editor.open_bookmark(n.saturating_sub(1));
+            }
+        }
+    ));
+    window.add_action(&open_bookmark);
+    let url_action = gio::SimpleAction::new("url", Some(glib::VariantTy::STRING));
+    url_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, param| {
+            if let Some(uri) = param.and_then(|p| p.str()) {
+                editor.open_link(uri);
+            }
+        }
+    ));
+    window.add_action(&url_action);
+    for n in 1..=9 {
+        app.set_accels_for_action(&format!("win.open-bookmark::{n}"), &[&format!("<Alt>{n}")]);
+    }
+
+    // Ctrl+, is the GNOME convention for Preferences; GTK/GtkSourceView don't bind it.
+    let prefs_action = gio::SimpleAction::new("preferences", None);
+    prefs_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| preferences_dialog(&editor)
+    ));
+    window.add_action(&prefs_action);
+    app.set_accels_for_action("win.preferences", &["<Control>comma"]);
+    header.pack_end(
+        &gtk::Button::builder()
+            .icon_name("preferences-system-symbolic")
+            .tooltip_text("Preferences (Ctrl+,)")
+            .action_name("win.preferences")
+            .build(),
+    );
+
+    // Zoom editor + preview (not sidebar/header): Ctrl+= / Ctrl++ in, Ctrl+- out, Ctrl+0 reset.
+    // None of these is bound by GTK, GtkSourceView or the app's other shortcuts.
+    for (name, steps, accels) in [
+        (
+            "zoom-in",
+            1,
+            &["<Control>equal", "<Control>plus", "<Control>KP_Add"][..],
+        ),
+        (
+            "zoom-out",
+            -1,
+            &["<Control>minus", "<Control>KP_Subtract"][..],
+        ),
+        ("zoom-reset", 0, &["<Control>0", "<Control>KP_0"][..]),
+    ] {
+        let action = gio::SimpleAction::new(name, None);
+        action.connect_activate(clone!(
+            #[strong]
+            editor,
+            move |_, _| {
+                let zoom = state::zoom_step(editor.prefs.borrow().zoom, steps);
+                editor.prefs.borrow_mut().zoom = zoom;
+                editor.apply_prefs();
+                editor.remember();
+            }
+        ));
+        window.add_action(&action);
+        app.set_accels_for_action(&format!("win.{name}"), accels);
+    }
+
+    // Edit / Preview / Side by side. Ctrl+1/2/3 are not bound by GTK or GtkSourceView.
+    let mode_action = gio::SimpleAction::new_stateful(
+        "mode",
+        Some(glib::VariantTy::STRING),
+        &state::Mode::Edit.name().to_variant(),
+    );
+    mode_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |action, param| {
+            let Some(mode) = param.and_then(|p| p.str()).and_then(state::Mode::from_name) else {
+                return;
+            };
+            action.set_state(&mode.name().to_variant());
+            editor.apply_mode(mode);
+        }
+    ));
+    window.add_action(&mode_action);
+    let mode_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    mode_buttons.add_css_class("linked");
+    for (n, (mode, icon, label)) in [
+        (state::Mode::Edit, "document-edit-symbolic", "Edit"),
+        (state::Mode::Preview, "view-reveal-symbolic", "Preview"),
+        (state::Mode::Split, "view-dual-symbolic", "Side by Side"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let detailed = format!("win.mode::{}", mode.name());
+        app.set_accels_for_action(&detailed, &[&format!("<Control>{}", n + 1)]);
+        let button = gtk::ToggleButton::builder()
+            .icon_name(icon)
+            .tooltip_text(format!("{label} (Ctrl+{})", n + 1))
+            .build();
+        button.set_detailed_action_name(&detailed);
+        mode_buttons.append(&button);
+    }
+    header.pack_end(&mode_buttons);
+    style.connect_dark_notify(clone!(
+        #[strong]
+        editor,
+        move |_| {
+            editor.apply_scheme();
+            editor.refresh_preview()
+        }
+    ));
+
+    // First layout in side by side: split in the middle (a dragged position is kept).
+    editor.panes.connect_max_position_notify(|panes| {
+        if !panes.is_position_set() && panes.max_position() > 0 {
+            panes.set_position(panes.max_position() / 2);
+        }
+    });
+
+    // Side by side: the preview follows editor scrolling (throttled).
+    let weak = Rc::downgrade(&editor);
+    scroll.vadjustment().connect_value_changed(move |_| {
+        let Some(editor) = weak.upgrade() else {
+            return;
+        };
+        // While the editor follows the preview, syncing back would fight the user's scrolling.
+        if editor.sync_timer.borrow().is_some() || editor.preview_poll.borrow().is_some() {
+            return;
+        }
+        let e = Rc::clone(&editor);
+        let id = glib::timeout_add_local_once(SYNC_DELAY, move || {
+            e.sync_timer.take();
+            e.sync_preview();
+        });
+        editor.sync_timer.replace(Some(id));
+    });
+
+    // Side by side: the editor follows the preview when the user scrolls it (wheel/touchpad,
+    // keys, dragging the scrollbar). Watched from GTK, so the page's scripts stay off; the app's
+    // own scrolling of the preview sends no input events, so it never syncs back.
+    let input = gtk::EventControllerLegacy::new();
+    input.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let weak = Rc::downgrade(&editor);
+    input.connect_event(move |_, event| {
+        let user_scroll = match event.event_type() {
+            gtk::gdk::EventType::Scroll | gtk::gdk::EventType::KeyPress => true,
+            gtk::gdk::EventType::MotionNotify => event
+                .modifier_state()
+                .contains(gtk::gdk::ModifierType::BUTTON1_MASK),
+            _ => false,
+        };
+        if let Some(editor) = weak.upgrade().filter(|_| user_scroll) {
+            editor.follow_preview();
+        }
+        glib::Propagation::Proceed
+    });
+    editor.preview.add_controller(input);
+    // A click on a link to a heading or footnote of the note scrolls the preview with no
+    // scroll input: the URI changes (same page, not loading) once it has scrolled.
+    let weak = Rc::downgrade(&editor);
+    editor.preview.connect_uri_notify(move |preview| {
+        if let Some(editor) = weak.upgrade().filter(|_| !preview.is_loading()) {
+            editor.follow_preview();
+        }
+    });
+
+    // After a load (side by side, scroll sync on): follow the editor. A new note starts at
+    // the top; re-renders of the same note update in place (refresh_preview).
+    let weak = Rc::downgrade(&editor);
+    editor.preview.connect_load_changed(move |_, event| {
+        if event != webkit6::LoadEvent::Finished {
+            return;
+        }
+        let Some(editor) = weak.upgrade() else {
+            return;
+        };
+        match editor.preview_anchor.take() {
+            Some(id) => editor.preview.evaluate_javascript(
+                &format!(
+                    "var e=document.getElementById({});if(e)e.scrollIntoView();0",
+                    render::js_string(&id)
+                ),
+                Some(SCRIPT_WORLD),
+                None,
+                gio::Cancellable::NONE,
+                |_| {},
+            ),
+            None => editor.sync_preview(),
+        }
+    });
+
+    // The web process died (crash, out of memory): the app keeps running; the next edit or
+    // Reload starts a new one.
+    let weak = Rc::downgrade(&editor);
+    editor
+        .preview
+        .connect_web_process_terminated(move |_, reason| {
+            let Some(editor) = weak.upgrade() else {
+                return;
+            };
+            let title = match reason {
+                webkit6::WebProcessTerminationReason::ExceededMemoryLimit => {
+                    "Preview ran out of memory"
+                }
+                _ => "Preview stopped unexpectedly",
+            };
+            let toast = adw::Toast::builder()
+                .title(title)
+                .button_label("Reload")
+                .build();
+            let weak = Rc::downgrade(&editor);
+            toast.connect_button_clicked(move |_| {
+                if let Some(editor) = weak.upgrade() {
+                    editor.load_preview();
+                }
+            });
+            editor.toasts.add_toast(toast);
+        });
+
+    // Ctrl+click on a link in the editor opens it like a click in the preview; the pointer
+    // turns into a hand over links while Ctrl is held.
+    let click = gtk::GestureClick::new();
+    click.set_button(1);
+    click.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let weak = Rc::downgrade(&editor);
+    click.connect_pressed(move |click, _, x, y| {
+        let ctrl = click
+            .current_event_state()
+            .contains(gtk::gdk::ModifierType::CONTROL_MASK);
+        if let Some(editor) = weak.upgrade().filter(|_| ctrl)
+            && let Some(target) = editor.link_at(x, y)
+        {
+            click.set_state(gtk::EventSequenceState::Claimed);
+            editor.open_editor_link(target);
+        }
+    });
+    editor.view.add_controller(click);
+    let motion = gtk::EventControllerMotion::new();
+    let weak = Rc::downgrade(&editor);
+    // shortcut: the cursor updates on pointer motion only, not when Ctrl alone is pressed.
+    motion.connect_motion(move |motion, x, y| {
+        let Some(editor) = weak.upgrade() else {
+            return;
+        };
+        let ctrl = motion
+            .current_event_state()
+            .contains(gtk::gdk::ModifierType::CONTROL_MASK);
+        let hand = ctrl && editor.link_at(x, y).is_some();
+        editor
+            .view
+            .set_cursor_from_name(Some(if hand { "pointer" } else { "text" }));
+    });
+    editor.view.add_controller(motion);
+
+    // Hovering an image link shows a thumbnail (max 320x240) of an image in the open folder.
+    // The last one is kept: query-tooltip runs on every pointer move.
+    // shortcut: cached by path only, an image edited on disk shows stale until another is hovered.
+    editor.view.set_has_tooltip(true);
+    let weak = Rc::downgrade(&editor);
+    let last: RefCell<Option<(PathBuf, gtk::gdk::Texture)>> = RefCell::default();
+    editor
+        .view
+        .connect_query_tooltip(move |_, x, y, keyboard, tooltip| {
+            let Some(editor) = weak.upgrade().filter(|_| !keyboard) else {
+                return false;
+            };
+            let Some(links::Target::Href(href)) = editor.link_at(f64::from(x), f64::from(y)) else {
+                return false;
+            };
+            let Some(path) = editor.image_path(&href) else {
+                return false;
+            };
+            let mut last = last.borrow_mut();
+            if last.as_ref().is_none_or(|(p, _)| *p != path) {
+                // Only shrink (at_scale also enlarges); broken / unsupported file: no tooltip.
+                use gtk::gdk_pixbuf::Pixbuf;
+                let Some((_, w, h)) = Pixbuf::file_info(&path) else {
+                    return false;
+                };
+                let pixbuf = if w <= 320 && h <= 240 {
+                    Pixbuf::from_file(&path)
+                } else {
+                    Pixbuf::from_file_at_scale(&path, 320, 240, true)
+                };
+                let Ok(pixbuf) = pixbuf else {
+                    return false;
+                };
+                *last = Some((path, gtk::gdk::Texture::for_pixbuf(&pixbuf)));
+            }
+            let texture = &last.as_ref().expect("set above").1;
+            tooltip.set_custom(Some(&gtk::Picture::for_paintable(texture)));
+            true
+        });
+
+    // The preview never navigates away from the note: web links open in the default app,
+    // anchors (footnotes) scroll, links to notes in the open folder open them in the editor
+    // (relative hrefs arrive resolved against the note's file:// URI), anything else is ignored.
+    let weak = Rc::downgrade(&editor);
+    editor
+        .preview
+        .connect_decide_policy(move |_, decision, kind| {
+            use webkit6::PolicyDecisionType as T;
+            if !matches!(kind, T::NavigationAction | T::NewWindowAction) {
+                return false;
+            }
+            let Some(editor) = weak.upgrade() else {
+                return false;
+            };
+            let uri = decision
+                .downcast_ref::<webkit6::NavigationPolicyDecision>()
+                .and_then(|d| d.navigation_action())
+                .and_then(|mut a| a.request())
+                .and_then(|r| r.uri());
+            match uri.map(|u| (render::link_action(&u, &editor.page_uri()), u)) {
+                Some((render::Link::Follow, _)) => return false,
+                Some((link, uri)) => editor.follow(link, &uri),
+                None => {}
+            }
+            decision.ignore();
+            true
+        });
+
+    // Closing the window (= quitting) saves first. If that fails, the first close is refused
+    // so the text is not lost silently; closing again quits without saving.
+    window.connect_close_request(clone!(
+        #[strong]
+        editor,
+        move |_| {
+            if editor.save() || editor.close_anyway.replace(true) {
+                editor.remember();
+                glib::Propagation::Proceed
+            } else {
+                editor.toast("Unsaved changes. Close again to quit without saving.");
+                glib::Propagation::Stop
+            }
+        }
+    ));
+
+    // Reopen last session; anything gone since is skipped silently.
+    let mut last = state::load(&state_file()).usable();
+    // Before anything calls `remember`, or the saved bookmarks would be overwritten.
+    editor
+        .bookmarks
+        .replace(std::mem::take(&mut last.bookmarks));
+    editor.recent.replace(std::mem::take(&mut last.recent));
+    editor.fill_recent_menu();
+    editor.prefs.replace(std::mem::take(&mut last.prefs));
+    editor
+        .positions
+        .replace(std::mem::take(&mut last.positions));
+    // Chỉ dùng khi thư mục mở ra chính là thư mục đã lưu (`show_folder` lọc theo thư mục).
+    editor
+        .expanded
+        .replace(std::mem::take(&mut last.expanded).into_iter().collect());
+    editor.apply_prefs();
+    // After the saved Style is applied: no light/dark flash on start.
+    window.present();
+    if let Some(target) = target {
+        open_path(&editor, &target);
+    } else if let Some(folder) = &last.folder {
+        editor.load_folder(folder);
+        if let Some(note) = &last.note {
+            editor.open(note);
+            if editor.path.borrow().is_some() {
+                editor.set_mode(last.mode);
+            }
+        }
+    }
+}
+
+/// About MarkdownMate: name, version, links (same as the metainfo).
+fn about_dialog(editor: &Rc<Editor>) {
+    let dialog = adw::AboutDialog::builder()
+        .application_name("MarkdownMate")
+        .application_icon(APP_ID)
+        .version(env!("CARGO_PKG_VERSION"))
+        .comments("Write notes as plain Markdown files in your own folders.")
+        .developer_name("HomieLab")
+        .website("https://markdownmate.homielab.com/")
+        .copyright("© 2026 HomieLab")
+        .license_type(gtk::License::Custom)
+        .license("All rights reserved.")
+        .build();
+    dialog.add_link("Donate", "https://ko-fi.com/homielab");
+    dialog.present(Some(&editor.window));
+}
+
+/// Keyboard shortcuts (`gtk::ShortcutsWindow`, Ctrl+?): what `build_window`, `search.rs` and
+/// `input.rs` bind. Built from UI XML: GTK 4.14 has no API to add groups to a section.
+/// Two named sections (title-bar switcher) of two columns each: all of it on one page is
+/// taller than a 600 px screen, and GTK puts at most two columns on a page.
+fn shortcuts_window() -> gtk::ShortcutsWindow {
+    type Group = (&'static str, &'static [(&'static str, &'static str)]);
+    const SECTIONS: &[(&str, &str, &[Group])] = &[
+        (
+            "files",
+            "Files and Editing",
+            &[
+                (
+                    "Files",
+                    &[
+                        ("<Control>n", "New file"),
+                        ("<Control>o", "Open folder"),
+                        ("<Control>p", "Open quickly"),
+                        ("<Shift><Control>f", "Find in folder"),
+                        ("<Control>s", "Save"),
+                        ("<Control>r", "Reload from disk"),
+                        ("<Alt>1...<Alt>9", "Open bookmark 1–9"),
+                        ("<Control>l", "Go to line"),
+                    ],
+                ),
+                (
+                    "Editing",
+                    &[
+                        ("<Control>f", "Find"),
+                        ("<Control>h", "Find and replace"),
+                        ("<Control>g", "Next match"),
+                        ("<Shift><Control>g", "Previous match"),
+                        ("<Control>b", "Bold"),
+                        ("<Control>i", "Italic"),
+                        ("<Control>k", "Link"),
+                        ("<Shift><Control>t", "Insert table"),
+                        ("Tab <Shift>Tab", "Next / previous table cell"),
+                        ("<Shift><Control>v", "Paste as plain text"),
+                    ],
+                ),
+            ],
+        ),
+        (
+            "view",
+            "View and Export",
+            &[
+                (
+                    "View",
+                    &[
+                        ("<Control>1", "Edit"),
+                        ("<Control>2", "Preview"),
+                        ("<Control>3", "Side by side"),
+                        ("<Alt><Control>o", "Outline"),
+                        ("<Control>equal", "Zoom in"),
+                        ("<Control>minus", "Zoom out"),
+                        ("<Control>0", "Reset zoom"),
+                    ],
+                ),
+                (
+                    "Export",
+                    &[
+                        ("<Shift><Control>e", "Export as HTML"),
+                        ("<Alt><Shift><Control>c", "Copy as HTML"),
+                        ("<Shift><Control>p", "Print"),
+                    ],
+                ),
+                (
+                    "General",
+                    &[
+                        ("F10", "Main menu"),
+                        ("<Control>comma", "Preferences"),
+                        ("<Control>question", "Keyboard shortcuts"),
+                    ],
+                ),
+            ],
+        ),
+    ];
+    let esc = |t: &str| glib::markup_escape_text(t);
+    let mut xml = String::from(
+        "<interface><object class=\"GtkShortcutsWindow\" id=\"w\"><property name=\"modal\">1</property>",
+    );
+    for (name, title, groups) in SECTIONS {
+        // max-height 10: the tallest group (9 shortcuts + title) fills one column.
+        xml += &format!(
+            "<child><object class=\"GtkShortcutsSection\"><property name=\"section-name\">{name}</property>\
+             <property name=\"title\">{}</property><property name=\"max-height\">10</property>",
+            esc(title)
+        );
+        for (title, keys) in *groups {
+            xml += &format!(
+                "<child><object class=\"GtkShortcutsGroup\"><property name=\"title\">{}</property>",
+                esc(title)
+            );
+            for (accel, label) in *keys {
+                xml += &format!(
+                    "<child><object class=\"GtkShortcutsShortcut\"><property name=\"accelerator\">{}</property>\
+                     <property name=\"title\">{}</property></object></child>",
+                    esc(accel),
+                    esc(label)
+                );
+            }
+            xml += "</object></child>";
+        }
+        xml += "</object></child>";
+    }
+    xml += "</object></interface>";
+    gtk::Builder::from_string(&xml)
+        .object("w")
+        .expect("shortcuts window XML")
+}

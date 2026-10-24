@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Theme Paper của MarkdownMate: chỉ đổi màu nền/chữ, phần tô cú pháp kế thừa Adwaita. -->
+<style-scheme id="markdownmate-paper" name="MarkdownMate Paper" version="1.0" parent-scheme="Adwaita">
+  <style name="text" foreground="#3b3228" background="#f8f4e8"/>
+  <style name="line-numbers" foreground="#a89c84" background="#f8f4e8"/>
+  <style name="current-line" background="#f0ead8"/>
+  <style name="selection" background="#e3d3ab"/>
+  <style name="cursor" foreground="#3b3228"/>
+</style-scheme>

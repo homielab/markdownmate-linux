@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Theme Paper Dark của MarkdownMate: chỉ đổi màu nền/chữ, phần tô cú pháp kế thừa Adwaita-dark. -->
+<style-scheme id="markdownmate-paper-dark" name="MarkdownMate Paper Dark" version="1.0" parent-scheme="Adwaita-dark">
+  <style name="text" foreground="#e8e0d0" background="#2a2620"/>
+  <style name="line-numbers" foreground="#7d7464" background="#2a2620"/>
+  <style name="current-line" background="#332e27"/>
+  <style name="selection" background="#5a4e3a"/>
+  <style name="cursor" foreground="#e8e0d0"/>
+</style-scheme>

@@ -1,0 +1,41 @@
+#!/usr/bin/make -f
+# Launchpad builds without network: crates come from vendor/ (added to the
+# .orig tarball by packaging/build-source.sh, not kept in git). The file
+# layout lives in scripts/package-deb.sh --stage (shared with the manual .deb).
+
+export PATH := /usr/lib/rust-1.91/bin:$(PATH)
+# The builder's HOME is not writable; keep cargo's files in the build tree.
+export CARGO_HOME := $(CURDIR)/debian/cargo-home
+export CARGO_TARGET_DIR := $(CURDIR)/target
+# Vendored crates instead of crates.io; flags, not .cargo/config.toml, so ./dev.sh is not affected.
+CARGO := cargo --offline --locked \
+	--config 'source.crates-io.replace-with="vendored-sources"' \
+	--config 'source.vendored-sources.directory="vendor"'
+
+%:
+	dh $@
+
+override_dh_auto_clean:
+	rm -rf target debian/cargo-home
+
+# dh_clean deletes *.orig, but vendored crates' Cargo.toml.orig is in their checksums.
+override_dh_clean:
+	dh_clean -XCargo.toml.orig
+
+override_dh_auto_configure:
+
+override_dh_auto_build:
+	$(CARGO) build --release
+
+override_dh_auto_test:
+ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
+	# unit tests only (pure logic, no display); the GUI smoke test needs Xvfb
+	$(CARGO) test --release
+endif
+
+override_dh_auto_install:
+	bash scripts/package-deb.sh --stage debian/markdownmate
+
+override_dh_installchangelogs:
+	# copied from agent-team/CHANGELOG.md by packaging/build-source.sh
+	dh_installchangelogs CHANGELOG.md

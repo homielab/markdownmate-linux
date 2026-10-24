@@ -1,0 +1,14 @@
+# Ubuntu 23.10+ lets only apps with an AppArmor profile allowing `userns` create user
+# namespaces (kernel.apparmor_restrict_unprivileged_userns=1). WebKit's web process sandbox
+# (bubblewrap) needs them; without this the preview cannot start. Same as Ubuntu's own
+# profiles for WebKitGTK apps (epiphany, devhelp, geary): allows everything, only adds userns.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile markdownmate /usr/bin/markdownmate flags=(unconfined) {
+  userns,
+
+  # Site-specific additions and overrides. See local/README for details.
+  include if exists <local/markdownmate>
+}

@@ -1,0 +1,23 @@
+Source: markdownmate
+Section: editors
+Priority: optional
+Maintainer: HomieLab <contact@homielab.com>
+Build-Depends: debhelper-compat (= 13),
+               rustc-1.91,
+               cargo-1.91,
+               pkgconf,
+               libgtk-4-dev,
+               libadwaita-1-dev (>= 1.5),
+               libgtksourceview-5-dev,
+               libwebkitgtk-6.0-dev
+Standards-Version: 4.6.2
+Homepage: https://markdownmate.homielab.com/
+Rules-Requires-Root: no
+
+Package: markdownmate
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: local-first, native Markdown note-taking app
+ MarkdownMate keeps notes as plain .md files in your own folders: no cloud,
+ no account, no telemetry. It is a GTK 4 + libadwaita app with a Markdown
+ editor, live preview, wiki links, tags, quick open and search in folder.

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=MarkdownMate
+Comment=Local-first Markdown notes
+Exec=markdownmate %U
+Icon=com.homielab.MarkdownMate
+Terminal=false
+Categories=Office;
+MimeType=text/markdown;text/x-markdown;x-scheme-handler/markdownmate;
+Keywords=markdown;notes;editor;
+StartupNotify=true

@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+# Load the AppArmor profile now (it lets WebKit's sandbox create user namespaces), not only
+# at the next boot. Also used as DEBIAN/postinst by scripts/package-deb.sh.
+if [ "$1" = configure ] && command -v apparmor_parser > /dev/null && aa-enabled --quiet 2> /dev/null; then
+    apparmor_parser -r -T /etc/apparmor.d/markdownmate || true
+fi
+
+#DEBHELPER#

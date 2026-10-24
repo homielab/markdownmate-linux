@@ -1,0 +1,22 @@
+[package]
+name = "markdownmate"
+version = "0.3.0"
+edition = "2024"
+description = "A lightweight, local-first, native markdown note-taking app for Ubuntu"
+# All rights reserved (see debian/copyright); never published to crates.io.
+publish = false
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.10", features = ["v4_10"] }
+adw = { package = "libadwaita", version = "0.8", features = ["v1_5"] }
+sourceview5 = "0.10"
+webkit6 = "0.5"
+# renameat2(RENAME_NOREPLACE) và số signal; đã có sẵn trong cây dependency (qua glib).
+libc = "0.2"
+comrak = { version = "0.56", default-features = false }
+# `$…$` formulas → MathML in the preview/export (pure Rust; 0.8+ needs rustc 1.96, PPA builds with 1.91).
+math-core = "0.7"
+# Code highlighting in the preview; fancy-regex (pure Rust) instead of onig (C library).
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "html", "regex-fancy"] }
+# Rich paste: clipboard text/html → Markdown (pure Rust, Apache-2.0; html5ever 0.38 builds with rustc 1.91).
+htmd = "0.5"
