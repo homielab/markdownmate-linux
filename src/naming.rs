@@ -40,6 +40,40 @@ pub fn numbered(stem: &str, ext: &str, n: u32) -> String {
     }
 }
 
+/// Where the note for a missing `[[target]]` goes: `Name.md` at the top level of `root` (the
+/// open folder), else beside the open note (`doc_dir`); `Folder/Name` only into a folder that
+/// exists (`is_dir`). `|text` and `#heading` are dropped and `.md` is added unless the name has
+/// `.md`/`.markdown`. None without a place, for an empty name, a part that is empty, `.`, `..`,
+/// starts with `.` (the sidebar hides it) or holds `:` or NUL, and for a missing folder.
+pub fn wiki_note_path(
+    target: &str,
+    root: Option<&Path>,
+    doc_dir: Option<&Path>,
+    is_dir: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let base = root.or(doc_dir)?;
+    let name = target.split('|').next()?.split('#').next()?;
+    let parts: Vec<&str> = name.split('/').map(str::trim).collect();
+    if parts
+        .iter()
+        .any(|p| p.is_empty() || p.starts_with('.') || p.contains([':', '\0']))
+    {
+        return None;
+    }
+    let (file, folders) = parts.split_last()?;
+    let dir = folders.iter().fold(base.to_path_buf(), |d, f| d.join(f));
+    if !folders.is_empty() && !is_dir(&dir) {
+        return None;
+    }
+    let lower = file.to_ascii_lowercase();
+    let file = if lower.ends_with(".md") || lower.ends_with(".markdown") {
+        file.to_string()
+    } else {
+        format!("{file}.md")
+    };
+    Some(dir.join(file))
+}
+
 /// Creates an empty note named `name` (e.g. "Ideas.md") in `dir`, numbered "Ideas 2.md", …
 /// if taken. Uses create_new (O_EXCL), so an entry that appears meanwhile is never overwritten.
 pub fn create_note(dir: &Path, name: &str) -> io::Result<PathBuf> {
@@ -206,6 +240,44 @@ mod tests {
         assert_eq!(note_name("Ideas.markdown").unwrap(), "Ideas.markdown");
         assert_eq!(note_name("v1.2").unwrap(), "v1.2.md");
         assert_eq!(note_name("todo.txt").unwrap(), "todo.txt.md");
+    }
+
+    #[test]
+    fn wiki_note_goes_to_the_open_folder_top_level() {
+        let root = Path::new("/r");
+        let doc = Path::new("/r/sub");
+        let dirs = |p: &Path| p == Path::new("/r/Folder");
+        let path = |t| wiki_note_path(t, Some(root), Some(doc), dirs);
+        assert_eq!(path("New idea"), Some("/r/New idea.md".into()));
+        assert_eq!(path("New|shown"), Some("/r/New.md".into()));
+        assert_eq!(path("New#Heading"), Some("/r/New.md".into()));
+        assert_eq!(path(" New "), Some("/r/New.md".into()));
+        assert_eq!(path("a.md"), Some("/r/a.md".into()));
+        assert_eq!(path("a.MARKDOWN"), Some("/r/a.MARKDOWN".into()));
+        assert_eq!(path("v1.2"), Some("/r/v1.2.md".into()));
+        assert_eq!(path("Folder/New"), Some("/r/Folder/New.md".into()));
+        assert_eq!(path("Nope/New"), None);
+    }
+
+    #[test]
+    fn wiki_note_without_folder_goes_beside_the_note() {
+        let doc = Some(Path::new("/d"));
+        assert_eq!(
+            wiki_note_path("A", None, doc, |_| false),
+            Some("/d/A.md".into())
+        );
+        assert_eq!(wiki_note_path("A", None, None, |_| true), None);
+    }
+
+    #[test]
+    fn wiki_note_refuses_invalid_names() {
+        let root = Some(Path::new("/r"));
+        for bad in [
+            "", " ", "#H", "|t", ".", "..", "../x", "a/../b", ".hidden", "a:b", "a//b", "/a", "a/",
+            "a\0b",
+        ] {
+            assert_eq!(wiki_note_path(bad, root, None, |_| true), None, "{bad:?}");
+        }
     }
 
     #[test]

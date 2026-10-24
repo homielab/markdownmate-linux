@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Clicking a `[[wiki link]]` to a note that doesn't exist (Ctrl+click in the editor, click in the preview) creates it empty and opens it, as in the macOS app: `Name.md` at the open folder's top level (beside the note when no folder is open), `[[Folder/Name]]` only into an existing folder; `#heading` and `|text` are ignored. Names that can't be a file still show the message.
 - New screenshots showing KaTeX math, Mermaid diagrams and the format bar.
 - Today's Note (Ctrl+D, or the main menu): opens today's `YYYY-MM-DD.md` in the open folder's `Daily` folder, creating it as `# YYYY-MM-DD` with the cursor at the end when it doesn't exist yet. The folder is set in Preferences ▸ Notes (empty = the open folder itself).
 - Faster preview while typing in large notes: only the blocks you changed are rendered and replaced on the page, instead of the whole note, so formulas, diagrams and the scroll position stay put. Notes with footnotes or reference links, and edits to front matter, still refresh the whole page.

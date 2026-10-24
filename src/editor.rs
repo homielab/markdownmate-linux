@@ -907,7 +907,7 @@ impl Editor {
                     None => self.toast("The code block has changed; try again"),
                 }
             }
-            render::Link::Missing(name) => self.toast(&format!("No note named “{name}” in folder")),
+            render::Link::Missing(name) => self.open_or_create_wiki_note(&name),
             render::Link::External => {
                 let weak = Rc::downgrade(self);
                 gtk::UriLauncher::new(uri).launch(
@@ -1297,6 +1297,31 @@ impl Editor {
             }
             Err(e) => self.toast(&format!("Cannot create a note: {e}")),
         }
+    }
+
+    /// A click on a `[[missing]]` link: opens the note it names if the file is already there
+    /// (the index not refreshed yet), else creates it empty (`naming::wiki_note_path`) and opens
+    /// it, so the link stops being red. An unusable name or a failure: a toast.
+    fn open_or_create_wiki_note(self: &Rc<Self>, name: &str) {
+        let root = self.root.borrow().clone();
+        let doc_dir = self
+            .path
+            .borrow()
+            .as_ref()
+            .and_then(|p| p.parent().map(Path::to_path_buf));
+        let Some(path) =
+            naming::wiki_note_path(name, root.as_deref(), doc_dir.as_deref(), |p| p.is_dir())
+        else {
+            return self.toast(&format!("No note named “{name}” in folder"));
+        };
+        if path.is_file() {
+            self.open(&path);
+            return;
+        }
+        let (Some(dir), Some(file)) = (path.parent(), path.file_name()) else {
+            return;
+        };
+        self.new_note(dir, &file.to_string_lossy());
     }
 
     /// Today's Note (Ctrl+D): opens `<open folder>/<daily notes folder>/YYYY-MM-DD.md` for the
