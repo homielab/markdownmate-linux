@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use adw::prelude::*;
 use gtk::gio;
@@ -18,7 +19,7 @@ use crate::{
 };
 use crate::{
     backlinks, complete, images, links, lists, mentions, naming, notes, outline, quick, relink,
-    render, save, sidebar, state, stats, tags, title, url,
+    render, save, sidebar, state, stats, tags, timing, title, url,
 };
 
 /// The window's widgets and the open note. Shared (Rc) by sidebar buttons, the auto-save
@@ -461,15 +462,17 @@ impl Editor {
         }
         let notes = self.note_list.borrow().to_vec(); // the Rc cannot cross threads
         let weak = Rc::downgrade(self);
+        let start = Instant::now();
         glib::spawn_future_local(async move {
             let Ok(found) =
-                gio::spawn_blocking(move || backlinks::find(&notes, &root, &target)).await
+                gio::spawn_blocking(move || backlinks::find(notes, &root, &target)).await
             else {
                 return;
             };
             if let Some(editor) = weak.upgrade()
                 && editor.backlinks_gen.get() == generation
             {
+                timing::took(start, "backlinks listed");
                 editor.fill_backlinks(found);
             }
         });
@@ -651,6 +654,7 @@ impl Editor {
         self.remember();
         self.refresh_backlinks();
         self.refresh_mentions();
+        timing::mark(|| format!("note opened {}", file_name(path)));
     }
 
     /// Đặt con trỏ ở vị trí đã nhớ của `path` (kẹp nếu file ngắn đi; chưa nhớ: đầu note) và
@@ -1016,6 +1020,7 @@ impl Editor {
         self.scan_dir.replace(Some(dir.to_path_buf()));
         let dir = dir.to_path_buf();
         let weak = Rc::downgrade(self);
+        let start = Instant::now();
         glib::spawn_future_local(async move {
             let d = dir.clone();
             let result =
@@ -1028,6 +1033,7 @@ impl Editor {
                 return;
             }
             editor.applied_gen.set(scan_gen);
+            timing::took(start, "folder scanned");
             match result {
                 Ok(Ok((tree, folders))) => return editor.show_folder(&dir, &tree, &folders),
                 Ok(Err(e)) => editor.toast(&format!("Cannot open {}: {e}", dir.display())),
@@ -1051,6 +1057,7 @@ impl Editor {
         }
         let notes = self.note_list.borrow().clone();
         let weak = Rc::downgrade(self);
+        let start = Instant::now();
         glib::spawn_future_local(async move {
             let list = notes.to_vec();
             let Ok(index) = gio::spawn_blocking(move || tags::index(&list)).await else {
@@ -1059,6 +1066,7 @@ impl Editor {
             if let Some(editor) = weak.upgrade()
                 && editor.tags_gen.get() == tags_gen
             {
+                timing::took(start, "tags indexed");
                 sidebar::fill_tags(&editor.tags_list, &editor.tags_panel, &index);
                 editor.tag_index.replace(index);
             }
@@ -1129,6 +1137,7 @@ impl Editor {
         self.split.set_show_sidebar(true);
         settings.set_gtk_enable_animations(animate);
         self.dir_monitors.replace(watch_dirs(self, folders));
+        timing::mark(|| format!("sidebar filled ({} notes)", self.note_list.borrow().len()));
         if changed {
             state::push_recent(&mut self.recent.borrow_mut(), dir);
             self.remember();

@@ -5,7 +5,8 @@
 use std::path::{Component, Path, PathBuf};
 
 use crate::links::{self, Target};
-use crate::{lists, render, state};
+use crate::render::WikiIndex;
+use crate::{lists, state};
 
 /// Snippets longer than this (in chars) are cut.
 const SNIPPET_CHARS: usize = 100;
@@ -22,16 +23,19 @@ pub struct Backlink {
 
 /// Lines of `notes` (other than `target`) linking to `target`, in `notes` order.
 /// Unreadable or non-UTF-8 notes are skipped.
-pub fn find(notes: &[PathBuf], root: &Path, target: &Path) -> Vec<Backlink> {
+pub fn find(notes: Vec<PathBuf>, root: &Path, target: &Path) -> Vec<Backlink> {
+    // Every wiki link of every note is resolved: by name through the index, not against
+    // every note (10,000 notes: 95 s → well under a second).
+    let index = WikiIndex::new(notes, root);
     let mut out = Vec::new();
-    for note in notes.iter().filter(|n| n.as_path() != target) {
+    for note in index.notes().iter().filter(|n| n.as_path() != target) {
         let Some(text) = std::fs::read(note)
             .ok()
             .and_then(|b| String::from_utf8(b).ok())
         else {
             continue;
         };
-        for line in lines_linking(&text, note, target, notes, root) {
+        for line in lines_linking(&text, note, target, &index) {
             let full = text.lines().nth(line - 1).unwrap_or("").trim();
             out.push(Backlink {
                 path: note.clone(),
@@ -45,13 +49,7 @@ pub fn find(notes: &[PathBuf], root: &Path, target: &Path) -> Vec<Backlink> {
 
 /// 1-based lines of `text` (the note at `note`) with a link to `target`, outside fenced code
 /// and code spans.
-pub fn lines_linking(
-    text: &str,
-    note: &Path,
-    target: &Path,
-    notes: &[PathBuf],
-    root: &Path,
-) -> Vec<usize> {
+pub fn lines_linking(text: &str, note: &Path, target: &Path, index: &WikiIndex) -> Vec<usize> {
     let mut out = Vec::new();
     let mut open = None;
     for (i, line) in text.lines().enumerate() {
@@ -60,8 +58,7 @@ pub fn lines_linking(
         }
         let hit = links::spans(line).into_iter().any(|(_, t)| match t {
             Target::Wiki(name) => {
-                render::resolve_wiki(&name, notes, root, Some(note)).map(PathBuf::as_path)
-                    == Some(target)
+                index.resolve(&name, Some(note)).map(PathBuf::as_path) == Some(target)
             }
             Target::Href(href) => href_path(&href, note).as_deref() == Some(target),
         });
@@ -110,7 +107,8 @@ mod tests {
             .iter()
             .map(PathBuf::from)
             .collect();
-        lines_linking(text, Path::new(note), Path::new("/n/Name.md"), &notes, root)
+        let index = WikiIndex::new(notes, root);
+        lines_linking(text, Path::new(note), Path::new("/n/Name.md"), &index)
     }
 
     #[test]
@@ -135,9 +133,9 @@ mod tests {
             lines("[a](https://x/Name.md)", "/n/A.md"),
             Vec::<usize>::new()
         );
-        let notes = [PathBuf::from("/n/My Note.md")];
-        let found =
-            |t: &str| lines_linking(t, Path::new("/n/A.md"), &notes[0], &notes, Path::new("/n"));
+        let target = PathBuf::from("/n/My Note.md");
+        let index = WikiIndex::new(vec![target.clone()], Path::new("/n"));
+        let found = |t: &str| lines_linking(t, Path::new("/n/A.md"), &target, &index);
         assert_eq!(found("[a](My%20Note.md)"), [1]);
     }
 
@@ -159,7 +157,7 @@ mod tests {
         let long = format!("  see [[Name]] {}", "x".repeat(200));
         std::fs::write(&a, format!("intro\n{long}\n")).unwrap();
         let notes = vec![a.clone(), name.clone()];
-        let found = find(&notes, &dir, &name);
+        let found = find(notes, &dir, &name);
         assert_eq!(found.len(), 1);
         assert_eq!((found[0].path.as_path(), found[0].line), (a.as_path(), 2));
         assert!(found[0].snippet.starts_with("see [[Name]] x"));

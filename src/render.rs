@@ -792,6 +792,13 @@ pub fn resolve_wiki<'a>(
     root: &Path,
     current: Option<&Path>,
 ) -> Option<&'a PathBuf> {
+    let target = wiki_key(target)?;
+    best_wiki_match(notes.iter(), &target, root, current)
+}
+
+/// `target` as `resolve_wiki` compares it: no `#heading`, no outer `/`, no extension, lower
+/// case; None when nothing is left.
+fn wiki_key(target: &str) -> Option<String> {
     let target = target
         .split('#')
         .next()
@@ -799,18 +806,78 @@ pub fn resolve_wiki<'a>(
         .trim()
         .trim_matches('/');
     let target = strip_note_ext(target).to_lowercase();
-    if target.is_empty() {
-        return None;
-    }
+    (!target.is_empty()).then_some(target)
+}
+
+/// Note `path` as wiki keys are matched against it: relative to `root`, no extension, lower case.
+fn note_key(path: &Path, root: &Path) -> String {
+    let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
+    strip_note_ext(&rel).to_lowercase()
+}
+
+/// The last part of a key (after its last `/`). A note matches a key only when theirs are
+/// equal: it is the key itself, or it ends with `/` + the key.
+fn last_part(key: &str) -> &str {
+    key.rsplit('/').next().unwrap_or(key)
+}
+
+fn best_wiki_match<'a>(
+    notes: impl Iterator<Item = &'a PathBuf>,
+    target: &str,
+    root: &Path,
+    current: Option<&Path>,
+) -> Option<&'a PathBuf> {
     let here = current.and_then(Path::parent);
+    let suffix = format!("/{target}");
     notes
-        .iter()
         .filter(|p| {
-            let rel = p.strip_prefix(root).unwrap_or(p).to_string_lossy();
-            let rel = strip_note_ext(&rel).to_lowercase();
-            rel == target || rel.ends_with(&format!("/{target}"))
+            let rel = note_key(p, root);
+            rel == target || rel.ends_with(&suffix)
         })
         .min_by_key(|p| (p.parent() != here, p.as_os_str().len(), p.as_os_str()))
+}
+
+/// `resolve_wiki` for many links against the same notes (Backlinks, link updates): the notes
+/// grouped by the last part of their name, so a link only compares the notes of its name
+/// instead of every note of the folder. Same results as `resolve_wiki`.
+#[derive(Debug, Clone, Default)]
+pub struct WikiIndex {
+    root: PathBuf,
+    notes: Vec<PathBuf>,
+    by_name: HashMap<String, Vec<usize>>,
+}
+
+impl WikiIndex {
+    pub fn new(notes: Vec<PathBuf>, root: &Path) -> Self {
+        let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, note) in notes.iter().enumerate() {
+            let key = note_key(note, root);
+            by_name
+                .entry(last_part(&key).to_string())
+                .or_default()
+                .push(i);
+        }
+        WikiIndex {
+            root: root.to_path_buf(),
+            notes,
+            by_name,
+        }
+    }
+
+    pub fn notes(&self) -> &[PathBuf] {
+        &self.notes
+    }
+
+    pub fn resolve(&self, target: &str, current: Option<&Path>) -> Option<&PathBuf> {
+        let target = wiki_key(target)?;
+        let found = self.by_name.get(last_part(&target))?;
+        best_wiki_match(
+            found.iter().map(|&i| &self.notes[i]),
+            &target,
+            &self.root,
+            current,
+        )
+    }
 }
 
 fn strip_note_ext(name: &str) -> &str {
@@ -1924,6 +1991,65 @@ mod tests {
         assert_eq!(r("ork/Plan", None), None);
         assert_eq!(r("Nope", None), None);
         assert_eq!(r("", None), None);
+    }
+
+    #[test]
+    fn wiki_index_resolves_like_resolve_wiki() {
+        let root = Path::new("/r");
+        let notes: Vec<PathBuf> = [
+            "/r/Plan.md",
+            "/r/Work/plan.markdown",
+            "/r/Work/Deep/Note.md",
+            "/r/Other/Note.md",
+            "/r/Long/Note.md",
+            "/r/a/b.md",
+            "/r/x/a/b.md",
+            "/r/Ünïcode/ΣΊΣΥΦΟΣ.md",
+            "/elsewhere/Note.md",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+        let index = WikiIndex::new(notes.clone(), root);
+        let targets = [
+            "plan",
+            "PLAN.md",
+            "Work/Plan",
+            "Note",
+            "Deep/Note#Heading",
+            "ork/Plan",
+            "Nope",
+            "",
+            "#Heading",
+            "/Note/",
+            "b",
+            "a/b",
+            "x/a/b",
+            "y/a/b",
+            "σίσυφος",
+            "ünïcode/ΣΊΣΥΦΟΣ.md",
+            "elsewhere/Note",
+            "Note.markdown",
+            "a/",
+            "/",
+        ];
+        let currents = [
+            None,
+            Some("/r/Work/x.md"),
+            Some("/r/x/a/c.md"),
+            Some("/r/Other/n.md"),
+        ];
+        for t in targets {
+            for cur in currents {
+                let cur = cur.map(Path::new);
+                assert_eq!(
+                    index.resolve(t, cur),
+                    resolve_wiki(t, &notes, root, cur),
+                    "{t:?} from {cur:?}"
+                );
+            }
+        }
+        assert_eq!(index.notes(), &notes[..]);
     }
 
     #[test]

@@ -1188,6 +1188,12 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     editor.apply_prefs();
     let show_format_bar = editor.prefs.borrow().format_bar;
     format_action.change_state(&show_format_bar.to_variant());
+    if crate::timing::enabled() {
+        window.add_tick_callback(|_, _| {
+            crate::timing::mark(|| "window shown".into());
+            glib::ControlFlow::Break
+        });
+    }
     // After the saved Style is applied: no light/dark flash on start.
     window.present();
     if let Some(target) = target {

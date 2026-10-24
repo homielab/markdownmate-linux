@@ -1,4 +1,6 @@
-# Performance with large notes
+# Performance with large notes and folders
+
+Large notes first; a folder of 10,000 notes: [below](#a-folder-of-10000-notes).
 
 `src/perf.rs` has an ignored test that times what makes a multi-megabyte note slow:
 
@@ -97,8 +99,67 @@ operations, while swapping in a 72 MB body was not even part of the old number.
 the whole render (`SEED=<n> cargo test random_edits` for other edits); `perf::large_notes`
 checks it too.
 
+## A folder of 10,000 notes
+
+`scripts/measure-folder.sh` times launch, the sidebar, the Tags list and Backlinks with a large
+folder, and the app's memory. It writes the folder with `examples/generate_notes.rs` (the same
+on every run): 10,000 notes, 13.6 MB (40 MB on disk), 20 areas × 10 topics (220 folders, 50
+notes each). Each note has a heading, 1–3 tags out of 170 plus a nested `#areaN/topicM` tag,
+2–6 sections with sentences, lists, tasks and quotes, a wiki link to a random note per section,
+a fenced code block holding a `#tag` and a `[[link]]` that must be ignored, and, one time in
+three, a relative link to a note of its folder.
+
+```sh
+./dev.sh scripts/measure-folder.sh          # 10,000 notes, 3 launches; or: <notes> <launches>
+```
+
+Each launch reopens the folder with every subfolder expanded and `Area 0/Topic 0/Note 0.md` in
+the editor, then shows the Outline (Backlinks under it, Alt+Ctrl+O), switches to another note
+through a `markdownmate://open` link, and appends a tag to a third note on disk (the Tags list
+is indexed again). The times come from the app itself: with `MARKDOWNMATE_TIMING` set it
+prints `markdownmate-timing: <ms since main started> <what>` lines to stderr (`src/timing.rs`):
+*window shown* (first frame), *note opened*, *folder scanned* (the background folder walk),
+*sidebar filled*, *tags indexed* and *backlinks listed* (background jobs, with their own
+duration). Memory is the resident size (`VmRSS`) of the app and of its WebKit processes. The
+script runs on Xvfb inside the container and removes the folder, the session and every process
+it started when it ends, also on failure. It takes about a minute.
+
+### Results
+
+Apple Silicon, 12 cores, Docker (OrbStack), release build, 2026-10-25. Before: one launch; after:
+three (the first launch of each is the slowest, files not yet cached).
+
+| Step | Before | After |
+|------|-------:|------:|
+| window shown (after main started) | 1.47 s | 0.34–1.03 s |
+| folder scanned (background) | 0.43 s | 0.09–0.31 s |
+| sidebar filled, 10,000 notes, all folders open | 1.90 s | 0.42–1.35 s |
+| tags indexed (background, every note read) | 0.51 s | 0.17–0.26 s |
+| **Backlinks of a note** (background, every note read) | **94.6 s** | **0.28–0.40 s** |
+| Backlinks after switching note | over 120 s | 0.22–0.37 s |
+| tags indexed again after a note changed on disk | (not reached) | 0.12–0.17 s |
+| memory after launch: app + WebKit | 339 + 44 MB | 300–343 + 45 MB |
+| memory after the outline, a note switch and a change | — | 304–341 + 37–45 MB |
+
+Launch and the sidebar were already fine: the folder is walked on a background thread and the
+sidebar builds plain list items with widgets only for the visible rows. The cost was Backlinks:
+every wiki link of every note was resolved by comparing it with every note of the folder
+(about 40,000 links × 10,000 notes, each comparison building lower-case strings), so the panel
+stayed empty for a minute and a half after each note switch while a core was busy. Wiki links
+are now resolved through an index of the notes by name (`render::WikiIndex`): a link only
+compares the notes that have its name, with the same result as before (a test checks the index
+against the plain search). Link updates after a sidebar rename or move resolve their links the
+same way.
+
+Memory doesn't grow with the folder: with 20 notes instead of 10,000 the app uses the same
+(328 MB after launch). Most of it is GTK's GL renderer, which in the container draws with Mesa's
+software rasteriser: with `GSK_RENDERER=cairo` (`./dev.sh sh -c 'GSK_RENDERER=cairo
+scripts/measure-folder.sh 10000 1'`) the app uses 183 MB with 10,000 notes and 195 MB with 20.
+
 ## Further ideas
 
 - Debounce preview refreshes by note size, so typing in a 5 MB note renders less often.
+- Backlinks still read every note on each note switch (≈ 0.3 s at 10,000 notes, off the main
+  thread); an index of each note's links, updated when a note changes, would make it instant.
 - Highlight code blocks lazily in the page (plain code first, highlighted as it scrolls into
   view).

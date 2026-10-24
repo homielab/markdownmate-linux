@@ -37,6 +37,7 @@ mod stats;
 mod table;
 mod tablebar;
 mod tags;
+mod timing;
 mod title;
 mod url;
 mod window;
@@ -98,6 +99,7 @@ return y+' '+l})()";
 const UNTITLED: &str = "Untitled.md";
 
 fn main() -> gtk::glib::ExitCode {
+    timing::init();
     // HANDLES_OPEN: `markdownmate note.md` / Files ▸ Open With pass files to `open`.
     let app = adw::Application::builder()
         .application_id(APP_ID)

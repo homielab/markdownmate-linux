@@ -12,7 +12,8 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::editor::moved;
 use crate::links::{self, Target};
-use crate::{lists, render, save, state};
+use crate::render::WikiIndex;
+use crate::{lists, save, state};
 
 /// Replace the bytes `range` of a note's text with `text`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,21 +38,24 @@ pub struct Plan {
     root: PathBuf,
     /// (old, new) path of each moved note, image or folder; a folder's files move with it.
     moves: Vec<(PathBuf, PathBuf)>,
-    /// Every note of the folder before the moves, and the same notes after.
-    before: Vec<PathBuf>,
-    after: Vec<PathBuf>,
+    /// Every note of the folder before the moves, and the same notes after (indexed: every
+    /// wiki link of every note is resolved against them).
+    before: WikiIndex,
+    after: WikiIndex,
 }
 
 impl Plan {
     /// `before`: the folder's notes as listed before the moves (all under `root`).
     pub fn new(moves: Vec<(PathBuf, PathBuf)>, before: Vec<PathBuf>, root: PathBuf) -> Self {
         let mut plan = Plan {
+            before: WikiIndex::new(Vec::new(), &root),
+            after: WikiIndex::new(Vec::new(), &root),
             root,
             moves,
-            before,
-            after: Vec::new(),
         };
-        plan.after = plan.before.iter().map(|p| plan.new_path(p)).collect();
+        let after = before.iter().map(|p| plan.new_path(p)).collect();
+        plan.before = WikiIndex::new(before, &plan.root);
+        plan.after = WikiIndex::new(after, &plan.root);
         plan
     }
 
@@ -122,13 +126,13 @@ impl Plan {
         let raw = body.split('|').next()?.split('#').next()?;
         let name = raw.trim();
         let at = span.start + 2 + (raw.len() - raw.trim_start().len());
-        let target = render::resolve_wiki(name, &self.before, &self.root, Some(note_old))?;
+        let target = self.before.resolve(name, Some(note_old))?;
         let wanted = self.new_path(target);
         if &wanted == target && !note_moved {
             return None;
         }
         // Still leads there (same folder, or a name matching the new place too).
-        if render::resolve_wiki(name, &self.after, &self.root, Some(note)) == Some(&wanted) {
+        if self.after.resolve(name, Some(note)) == Some(&wanted) {
             return None;
         }
         let replacement = self.wiki_name(&wanted, target, name, note);
@@ -162,11 +166,7 @@ impl Plan {
         let count = written.split('/').count().clamp(1, parts.len());
         (count..=parts.len())
             .map(|n| parts[parts.len() - n..].join("/"))
-            .find(|name| {
-                render::resolve_wiki(name, &self.after, &self.root, Some(note))
-                    .map(PathBuf::as_path)
-                    == Some(new)
-            })
+            .find(|name| self.after.resolve(name, Some(note)).map(PathBuf::as_path) == Some(new))
             .unwrap_or_else(|| parts.join("/"))
     }
 
@@ -229,7 +229,7 @@ pub fn find(plan: &Plan, open: Option<&(PathBuf, String)>) -> Vec<Found> {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for note in &plan.after {
+    for note in plan.after.notes() {
         if !fs::canonicalize(note).is_ok_and(|real| real.starts_with(&root)) {
             continue;
         }
