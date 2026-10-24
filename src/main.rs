@@ -8,6 +8,7 @@ mod format;
 mod goto;
 mod images;
 mod input;
+mod lines;
 mod links;
 mod lists;
 mod naming;

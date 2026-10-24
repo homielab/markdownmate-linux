@@ -13,7 +13,7 @@ use crate::dialogs::{
     bookmarks_dialog, find_in_folder, go_to_line, open_quickly, preferences_dialog, reload_note,
 };
 use crate::editor::Editor;
-use crate::input::{Completer, image_input, insert_table, smart_lists};
+use crate::input::{Completer, LineCommand, image_input, insert_table, line_command, smart_lists};
 use crate::preview::{copy_as_html, export_html, export_pdf, print_note};
 use crate::{
     APP_ID, MATH_STYLE, SCRIPT_WORLD, SYNC_DELAY, TABLE_STYLE, TAG_STYLE, UNTITLED, state_file,
@@ -52,6 +52,39 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         }
         if items[0].1 == "win.open-file" {
             section.append_submenu(Some("Open Recent"), &recent_menu);
+        }
+        if items[0].1 == "win.export-pdf" {
+            // Edit and Format before export. Their keys work in the editor only (`input.rs`),
+            // not as window accelerators, so the menu shows them through the `accel` attribute.
+            let commands = gio::Menu::new();
+            for (title, items) in [
+                (
+                    "Edit",
+                    &[
+                        ("Move Line Up", "win.move-line-up", "<Control><Alt>Up"),
+                        ("Move Line Down", "win.move-line-down", "<Control><Alt>Down"),
+                        ("Duplicate Line", "win.duplicate-line", "<Shift><Control>d"),
+                    ][..],
+                ),
+                (
+                    "Format",
+                    &[
+                        ("Toggle Task", "win.toggle-task", "<Control>Return"),
+                        ("Footnote", "win.footnote", ""),
+                    ],
+                ),
+            ] {
+                let submenu = gio::Menu::new();
+                for (label, action, accel) in items {
+                    let item = gio::MenuItem::new(Some(label), Some(action));
+                    if !accel.is_empty() {
+                        item.set_attribute_value("accel", Some(&accel.to_variant()));
+                    }
+                    submenu.append_item(&item);
+                }
+                commands.append_submenu(Some(title), &submenu);
+            }
+            menu.append_section(None, &commands);
         }
         menu.append_section(None, &section);
     }
@@ -398,6 +431,41 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     ));
     window.add_action(&table_action);
     app.set_accels_for_action("win.insert-table", &["<Shift><Control>t"]);
+
+    // Line commands from the menu (`lines.rs`); their keys are handled in the editor
+    // (`input.rs`). Do nothing without an open note; Preview switches to Edit like Insert Table.
+    for (name, command) in [
+        ("toggle-task", LineCommand::ToggleTask),
+        ("footnote", LineCommand::Footnote),
+        ("move-line-up", LineCommand::Move { up: true }),
+        ("move-line-down", LineCommand::Move { up: false }),
+        ("duplicate-line", LineCommand::Duplicate),
+    ] {
+        let action = gio::SimpleAction::new(name, None);
+        action.connect_activate(clone!(
+            #[strong]
+            editor,
+            move |_, _| {
+                if editor.path.borrow().is_none() {
+                    return;
+                }
+                if editor.mode.get() == state::Mode::Preview {
+                    editor.set_mode(state::Mode::Edit);
+                }
+                editor.view.grab_focus();
+                if !line_command(editor.view.upcast_ref(), command) {
+                    match command {
+                        LineCommand::Footnote => {
+                            editor.toast("Cannot insert a footnote inside a code block")
+                        }
+                        LineCommand::ToggleTask => editor.toast("No task on the selected lines"),
+                        _ => editor.view.error_bell(),
+                    }
+                }
+            }
+        ));
+        window.add_action(&action);
+    }
 
     // Ctrl+R is not bound by GTK or GtkSourceView; does nothing without an open note.
     let reload_action = gio::SimpleAction::new("reload", None);
@@ -960,7 +1028,7 @@ fn about_dialog(editor: &Rc<Editor>) {
 
 /// Keyboard shortcuts (`gtk::ShortcutsWindow`, Ctrl+?): what `build_window`, `search.rs` and
 /// `input.rs` bind. Built from UI XML: GTK 4.14 has no API to add groups to a section.
-/// Two named sections (title-bar switcher) of two columns each: all of it on one page is
+/// Three named sections (title-bar switcher) of two columns each: all of it on one page is
 /// taller than a 600 px screen, and GTK puts at most two columns on a page.
 fn shortcuts_window() -> gtk::ShortcutsWindow {
     type Group = (&'static str, &'static [(&'static str, &'static str)]);
@@ -989,12 +1057,32 @@ fn shortcuts_window() -> gtk::ShortcutsWindow {
                         ("<Control>h", "Find and replace"),
                         ("<Control>g", "Next match"),
                         ("<Shift><Control>g", "Previous match"),
+                        ("<Shift><Control>v", "Paste as plain text"),
+                    ],
+                ),
+            ],
+        ),
+        (
+            "writing",
+            "Writing",
+            &[
+                (
+                    "Format",
+                    &[
                         ("<Control>b", "Bold"),
                         ("<Control>i", "Italic"),
                         ("<Control>k", "Link"),
+                        ("<Control>Return", "Toggle task"),
                         ("<Shift><Control>t", "Insert table"),
                         ("Tab <Shift>Tab", "Next / previous table cell"),
-                        ("<Shift><Control>v", "Paste as plain text"),
+                    ],
+                ),
+                (
+                    "Lines",
+                    &[
+                        ("<Control><Alt>Up <Alt>Up", "Move line up"),
+                        ("<Control><Alt>Down <Alt>Down", "Move line down"),
+                        ("<Shift><Control>d", "Duplicate line"),
                     ],
                 ),
             ],

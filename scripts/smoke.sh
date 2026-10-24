@@ -745,6 +745,40 @@ run find mode=preview
 run goto mode=preview
 NOTE="$NOTES/Search.md" run search mode=preview
 run format mode=edit
+# Line commands: Toggle Task (Ctrl+Enter), Move Line (Alt+Down, Alt+Ctrl+Down, menu action),
+# Duplicate Line (Shift+Ctrl+D), Footnote (menu action); each one undo step.
+act_lines() {
+    timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
+    local orig
+    orig=$(printf -- '- [ ] a\n- [ ] b\nthird')
+    check_lines() {
+        sleep 2
+        [ "$(cat "$NOTES/Lines.md")" = "$(printf -- "$2")" ] || { echo "FAIL lines $1: got"; cat "$NOTES/Lines.md"; bad=1; }
+    }
+    xdotool mousemove 400 150 click 1 key ctrl+Home ctrl+Return
+    check_lines task '- [x] a\n- [ ] b\nthird'
+    xdotool key ctrl+z
+    check_lines task-undo "$orig"
+    xdotool key ctrl+Home shift+End shift+Down ctrl+Return
+    check_lines task-selection '- [x] a\n- [x] b\nthird'
+    xdotool key ctrl+Home alt+Down ctrl+alt+Down
+    check_lines move '- [x] b\nthird\n- [x] a'
+    xdotool key shift+ctrl+d
+    check_lines duplicate '- [x] b\nthird\n- [x] a\n- [x] a'
+    xdotool key ctrl+z
+    check_lines duplicate-undo '- [x] b\nthird\n- [x] a'
+    xdotool key ctrl+Home
+    action move-line-down
+    check_lines move-menu 'third\n- [x] b\n- [x] a'
+    xdotool key ctrl+Home End
+    action footnote
+    xdotool type 'note'
+    check_lines footnote 'third[^1]\n- [x] b\n- [x] a\n\n[^1]: note'
+    scrot -o "$OUT/lines.png"
+}
+printf -- '- [ ] a\n- [ ] b\nthird\n' > "$NOTES/Lines.md"
+NOTE="$NOTES/Lines.md" run lines mode=edit
+rm "$NOTES/Lines.md"
 # Proportional editor font: table lines still show in monospace (#104).
 NOTE="$NOTES/Table.md" run table "$(printf 'mode=edit\nfont=Ubuntu 14')"
 run paste mode=edit

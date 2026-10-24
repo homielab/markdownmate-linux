@@ -7,7 +7,7 @@ use gtk::glib::{self, clone};
 use sourceview5::prelude::*;
 
 use crate::editor::Editor;
-use crate::{complete, format, images, lists, paste, quick, table};
+use crate::{complete, format, images, lines, lists, paste, quick, table};
 
 /// `[[` note-name and `#tag` completion (`complete.rs`): a list floating over the editor (an overlay, not a
 /// popup window, so it never takes focus — typing and input methods stay in the editor); its
@@ -215,8 +215,9 @@ impl Completer {
 
 /// Smart lists (`lists.rs`): Enter continues / ends a list item, Tab / Shift+Tab indent list
 /// lines; in a table (`table.rs`) they move between cells / add a row instead; Ctrl+B / Ctrl+I / Ctrl+K format and `*` `_` `` ` `` `~` `[` `(` `"` wrap a selection
-/// (`format.rs`); the
-/// `[[` suggestion keys go first. Capture phase so it runs before the
+/// (`format.rs`); Ctrl+Enter, Alt+Ctrl+Up / Down (or Alt+Up / Down, taking over GtkSourceView's
+/// own move-lines keys so a move is one undo step) and Shift+Ctrl+D run the line commands
+/// (`lines.rs`); the `[[` suggestion keys go first. Capture phase so it runs before the
 /// view inserts the newline / tab itself. On the view, so only while the editor has focus.
 pub(crate) fn smart_lists(view: &sourceview5::View, completer: &Rc<Completer>) {
     // Enter while an input method is composing must commit the text, not touch the list.
@@ -254,6 +255,20 @@ pub(crate) fn smart_lists(view: &sourceview5::View, completer: &Rc<Completer>) {
                 }
                 true
             }
+            // Line commands (`lines.rs`), here rather than window accelerators so they act
+            // only in the editor: Ctrl+Enter stays Replace All in the Replace box.
+            Key::Return | Key::KP_Enter if mods == M::CONTROL_MASK && !preedit.get() => {
+                line_key(keys, LineCommand::ToggleTask)
+            }
+            Key::Up | Key::Down
+                if (mods == M::ALT_MASK || mods == M::ALT_MASK | M::CONTROL_MASK)
+                    && !preedit.get() =>
+            {
+                line_key(keys, LineCommand::Move { up: key == Key::Up })
+            }
+            _ if mods == M::SHIFT_MASK | M::CONTROL_MASK && key.to_lower() == Key::d => {
+                line_key(keys, LineCommand::Duplicate)
+            }
             _ if mods == M::CONTROL_MASK => match key.to_lower() {
                 Key::b => {
                     format_selection(&buffer, |t, s| format::emphasis(t, s, format::Style::Bold))
@@ -279,6 +294,86 @@ pub(crate) fn smart_lists(view: &sourceview5::View, completer: &Rc<Completer>) {
         }
     });
     view.add_controller(keys);
+}
+
+/// The editor's line commands (`lines.rs`).
+#[derive(Clone, Copy)]
+pub(crate) enum LineCommand {
+    ToggleTask,
+    Footnote,
+    Move { up: bool },
+    Duplicate,
+}
+
+/// A line command's shortcut in the editor: rings the bell when there is nothing to do.
+fn line_key(keys: &gtk::EventControllerKey, command: LineCommand) -> bool {
+    if let Some(view) = keys.widget().and_downcast::<gtk::TextView>()
+        && !line_command(&view, command)
+    {
+        view.error_bell();
+    }
+    true
+}
+
+/// Runs a line command on the view's buffer as one undo step and keeps the cursor in sight.
+/// False (nothing done) when there is nothing to do: no task on the lines, a footnote inside
+/// a code block, the first / last line, the empty line after a final newline.
+pub(crate) fn line_command(view: &gtk::TextView, command: LineCommand) -> bool {
+    let buffer = view.buffer();
+    let insert = buffer.iter_at_mark(&buffer.get_insert()).offset() as usize;
+    let bound = buffer.iter_at_mark(&buffer.selection_bound()).offset() as usize;
+    let sel = (insert.min(bound), insert.max(bound));
+    let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+    let at = |n: usize| buffer.iter_at_offset(n as i32);
+    // The selection keeps its direction (which end the cursor is at).
+    let select = |(s, e): (usize, usize)| {
+        if insert < bound {
+            buffer.select_range(&at(s), &at(e));
+        } else {
+            buffer.select_range(&at(e), &at(s));
+        }
+    };
+    let replace = |r: Option<lines::Replace>| {
+        let Some(r) = r else { return false };
+        buffer.begin_user_action();
+        buffer.delete(&mut at(r.start), &mut at(r.end));
+        buffer.insert(&mut at(r.start), &r.text);
+        select(r.select);
+        buffer.end_user_action();
+        true
+    };
+    let done = match command {
+        LineCommand::ToggleTask => {
+            let Some((marks, mark)) = lines::toggle_tasks(&text, sel) else {
+                return false;
+            };
+            buffer.begin_user_action();
+            for m in marks {
+                buffer.delete(&mut at(m), &mut at(m + 1));
+                buffer.insert(&mut at(m), &mark.to_string());
+            }
+            select(sel);
+            buffer.end_user_action();
+            true
+        }
+        LineCommand::Footnote => {
+            let Some(f) = lines::footnote(&text, sel) else {
+                return false;
+            };
+            buffer.begin_user_action();
+            buffer.insert(&mut buffer.end_iter(), &f.definition);
+            buffer.insert(&mut at(f.at), &f.reference);
+            buffer.place_cursor(&at(f.cursor));
+            buffer.end_user_action();
+            true
+        }
+        LineCommand::Move { up } => replace(lines::move_lines(&text, sel, up)),
+        LineCommand::Duplicate => replace(lines::duplicate_lines(&text, sel)),
+    };
+    if done {
+        view.scroll_mark_onscreen(&buffer.get_insert());
+    }
+    done
 }
 
 /// Paste (clipboard with an image and no plain text) and drop (image files) put images into
