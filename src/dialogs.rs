@@ -10,6 +10,9 @@ use crate::editor::Editor;
 use crate::file_name;
 use crate::{find, goto, naming, quick, state};
 
+/// Desktop id of `packaging/com.homielab.MarkdownMate.desktop`.
+const DESKTOP_ID: &str = "com.homielab.MarkdownMate.desktop";
+
 /// Bookmarks dialog: Bookmark This Folder / Remove Bookmark for the open folder, then the
 /// bookmarks in order (Enter or click opens one), then a "Recent" list of folders opened
 /// lately (not the open one). Esc closes (adw::Dialog default).
@@ -237,10 +240,73 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
     page.add(&look);
     page.add(&tag_group);
     page.add(&notes_group);
+    page.add(&default_app_group(editor));
     let dialog = adw::PreferencesDialog::new();
     dialog.set_search_enabled(true);
     dialog.add(&page);
     dialog.present(Some(&editor.window));
+}
+
+/// The MIME types the .desktop file lists for Markdown notes.
+const MARKDOWN_TYPES: [&str; 2] = ["text/markdown", "text/x-markdown"];
+
+/// Whether `default_id` (the desktop id of the app now opening `text/markdown`) is ours.
+fn is_default_app(default_id: Option<&str>) -> bool {
+    default_id == Some(DESKTOP_ID)
+}
+
+fn default_app_subtitle(is_default: bool) -> &'static str {
+    if is_default {
+        "MarkdownMate opens Markdown files"
+    } else {
+        "Another app opens Markdown files"
+    }
+}
+
+/// Make MarkdownMate the default app for Markdown files; the error is a toast message.
+fn set_default_app() -> Result<(), String> {
+    let app = gio::DesktopAppInfo::new(DESKTOP_ID)
+        .ok_or("MarkdownMate is not installed, so it can't be the default app")?;
+    for mime in MARKDOWN_TYPES {
+        app.set_as_default_for_type(mime)
+            .map_err(|e| format!("Could not set the default app: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Preferences ▸ Default App: whether MarkdownMate is the default for Markdown files
+/// (read when Preferences opens), with a button that makes it so. Nothing at launch.
+fn default_app_group(editor: &Rc<Editor>) -> adw::PreferencesGroup {
+    let current = gio::AppInfo::default_for_type(MARKDOWN_TYPES[0], false);
+    let is_default = is_default_app(current.as_ref().and_then(|a| a.id()).as_deref());
+    let row = adw::ActionRow::builder()
+        .title("Default App for Markdown Files")
+        .subtitle(default_app_subtitle(is_default))
+        .build();
+    let button = gtk::Button::builder()
+        .label("Make Default")
+        .valign(gtk::Align::Center)
+        .sensitive(!is_default)
+        .build();
+    button.connect_clicked(clone!(
+        #[strong]
+        editor,
+        #[weak]
+        row,
+        move |button| match set_default_app() {
+            Ok(()) => {
+                row.set_subtitle(default_app_subtitle(true));
+                button.set_sensitive(false);
+            }
+            Err(msg) => editor.toast(&msg),
+        }
+    ));
+    row.add_suffix(&button);
+    let group = adw::PreferencesGroup::builder()
+        .title("Default App")
+        .build();
+    group.add(&row);
+    group
 }
 
 pub(crate) fn bookmarks_dialog(editor: &Rc<Editor>) {
@@ -831,4 +897,27 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
 
     dialog.present(Some(&editor.window));
     entry.grab_focus();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_app_is_recognised_by_desktop_id() {
+        assert!(is_default_app(Some("com.homielab.MarkdownMate.desktop")));
+        assert!(!is_default_app(Some("org.gnome.TextEditor.desktop")));
+        assert!(!is_default_app(None));
+    }
+
+    #[test]
+    fn desktop_file_lists_the_markdown_types() {
+        let desktop = include_str!("../packaging/com.homielab.MarkdownMate.desktop");
+        for mime in MARKDOWN_TYPES {
+            assert!(
+                desktop.contains(mime),
+                "{mime} missing from the .desktop file"
+            );
+        }
+    }
 }
