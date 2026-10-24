@@ -10,8 +10,18 @@ pub enum Enter {
     Exit,
 }
 
+/// What kind of line prefix a marker is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Quote,
+    Bullet,
+    Numbered,
+    Task,
+}
+
 /// A list marker found at the start of a line.
 struct Marker {
+    kind: Kind,
     /// The marker the next line gets.
     next: String,
     /// Byte length of indent + marker (where the item text starts).
@@ -21,7 +31,7 @@ struct Marker {
 fn parse(line: &str) -> Option<Marker> {
     let rest = line.trim_start_matches([' ', '\t']);
     let indent = &line[..line.len() - rest.len()];
-    let (marker_len, next) = if let Some(after) = rest.strip_prefix(['-', '*', '+']) {
+    let (kind, marker_len, next) = if let Some(after) = rest.strip_prefix(['-', '*', '+']) {
         after.strip_prefix(' ')?;
         let bullet = &rest[..1];
         // To-dos always continue unchecked.
@@ -29,12 +39,16 @@ fn parse(line: &str) -> Option<Marker> {
             .iter()
             .any(|t| after[1..].starts_with(t))
         {
-            (6, format!("{bullet} [ ] "))
+            (Kind::Task, 6, format!("{bullet} [ ] "))
         } else {
-            (2, format!("{bullet} "))
+            (Kind::Bullet, 2, format!("{bullet} "))
         }
     } else if let Some(after) = rest.strip_prefix('>') {
-        (1 + usize::from(after.starts_with(' ')), "> ".to_string())
+        (
+            Kind::Quote,
+            1 + usize::from(after.starts_with(' ')),
+            "> ".to_string(),
+        )
     } else {
         let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
         // CommonMark caps ordered markers at 9 digits, which also keeps the parse in u64.
@@ -47,9 +61,10 @@ fn parse(line: &str) -> Option<Marker> {
             .filter(|c| *c == '.' || *c == ')')?;
         rest[digits + 1..].strip_prefix(' ')?;
         let n: u64 = rest[..digits].parse().ok()?;
-        (digits + 2, format!("{}{delim} ", n + 1))
+        (Kind::Numbered, digits + 2, format!("{}{delim} ", n + 1))
     };
     Some(Marker {
+        kind,
         next: format!("{indent}{next}"),
         len: indent.len() + marker_len,
     })
@@ -99,6 +114,18 @@ pub fn on_enter(before: &str, after: &str) -> Option<Enter> {
         return Some(Enter::Exit);
     }
     Some(Enter::Continue(m.next))
+}
+
+/// The prefix `line` starts with (a `>` quote, or a bullet / numbered / to-do item, after
+/// any indent) and the byte length of indent + marker; a to-do box at the end of the line
+/// (`- [ ]`) counts too. None for any other line.
+pub fn marker(line: &str) -> Option<(Kind, usize)> {
+    let m = parse(line)?;
+    let rest = line.get(m.len..)?;
+    if m.kind == Kind::Bullet && ["[ ]", "[x]", "[X]"].contains(&rest) {
+        return Some((Kind::Task, line.len()));
+    }
+    Some((m.kind, m.len))
 }
 
 /// Is `line` a list item (bullet, to-do, numbered, quote)?
@@ -265,6 +292,18 @@ mod tests {
         assert!(!in_fence("```\ncode\n```\n"));
         assert!(in_fence("~~~\n```\n"));
         assert!(!in_fence("  ~~~\n```\n~~~\n"));
+    }
+
+    #[test]
+    fn markers() {
+        assert_eq!(marker("- a"), Some((Kind::Bullet, 2)));
+        assert_eq!(marker("  * [x] a"), Some((Kind::Task, 8)));
+        assert_eq!(marker("- [ ]"), Some((Kind::Task, 5)));
+        assert_eq!(marker("10) a"), Some((Kind::Numbered, 4)));
+        assert_eq!(marker(">a"), Some((Kind::Quote, 1)));
+        assert_eq!(marker("> - a"), Some((Kind::Quote, 2)));
+        assert_eq!(marker("-"), None);
+        assert_eq!(marker("a"), None);
     }
 
     #[test]

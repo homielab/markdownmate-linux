@@ -339,8 +339,14 @@ fn table_shortcut(keys: &gtk::EventControllerKey, command: table::Command) -> bo
 pub(crate) enum LineCommand {
     ToggleTask,
     Footnote,
-    Move { up: bool },
+    Move {
+        up: bool,
+    },
     Duplicate,
+    /// Format bar: Heading, the list / quote prefixes, Code Block.
+    Heading,
+    Prefix(lists::Kind),
+    CodeBlock,
 }
 
 /// A line command's shortcut in the editor: rings the bell when there is nothing to do.
@@ -355,7 +361,8 @@ fn line_key(keys: &gtk::EventControllerKey, command: LineCommand) -> bool {
 
 /// Runs a line command on the view's buffer as one undo step and keeps the cursor in sight.
 /// False (nothing done) when there is nothing to do: no task on the lines, a footnote inside
-/// a code block, the first / last line, the empty line after a final newline.
+/// a code block, the first / last line, the empty line after a final newline, a format
+/// toggle on code only.
 pub(crate) fn line_command(view: &gtk::TextView, command: LineCommand) -> bool {
     let buffer = view.buffer();
     let insert = buffer.iter_at_mark(&buffer.get_insert()).offset() as usize;
@@ -407,6 +414,9 @@ pub(crate) fn line_command(view: &gtk::TextView, command: LineCommand) -> bool {
         }
         LineCommand::Move { up } => replace(lines::move_lines(&text, sel, up)),
         LineCommand::Duplicate => replace(lines::duplicate_lines(&text, sel)),
+        LineCommand::Heading => replace(lines::cycle_heading(&text, sel)),
+        LineCommand::Prefix(kind) => replace(lines::toggle_prefix(&text, sel, kind)),
+        LineCommand::CodeBlock => replace(lines::toggle_code_block(&text, sel)),
     };
     if done {
         view.scroll_mark_onscreen(&buffer.get_insert());

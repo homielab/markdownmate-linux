@@ -86,6 +86,12 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
                     }
                     submenu.append_item(&item);
                 }
+                if title == "Format" {
+                    // A check item (stateful action); Shift+Ctrl+M is a window accelerator.
+                    let bar = gio::Menu::new();
+                    bar.append(Some("Format Bar"), Some("win.format-bar"));
+                    submenu.append_section(None, &bar);
+                }
                 commands.append_submenu(Some(title), &submenu);
             }
             // Table: Insert Table, then the commands of the table bar (`tablebar.rs`), greyed
@@ -185,10 +191,17 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         .css_classes(["caption", "dim-label"])
         .build();
     let editor_pane = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    // The format bar (Shift+Ctrl+M) above the editor; in the editor pane, so Preview hides it.
+    let (format_bar, format_table) = crate::formatbar::bar();
+    let format_rule = gtk::Separator::new(gtk::Orientation::Horizontal);
+    format_rule.set_visible(false);
+    editor_pane.append(&format_bar);
+    editor_pane.append(&format_rule);
     // The `[[` suggestions float over the editor in this overlay.
     let overlay = gtk::Overlay::builder().child(&scroll).vexpand(true).build();
     editor_pane.append(&overlay);
-    // The table bar shows under the editor while the cursor is in a table.
+    // The table bar shows under the editor while the cursor is in a table, unless the format
+    // bar is on: its table section shows the same buttons then.
     let table_bar = crate::tablebar::bar();
     let table_rule = gtk::Separator::new(gtk::Orientation::Horizontal);
     table_rule.set_visible(false);
@@ -539,15 +552,22 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         window.add_action(&action);
         table_actions.push(action);
     }
-    // Shows the table bar and enables the table commands while the cursor is in a table.
+    // Shows the table controls (the format bar's table section, or else the table bar) and
+    // enables the table commands while the cursor is in a table.
     let table_context = Rc::new(clone!(
         #[strong]
         editor,
+        #[strong]
+        format_bar,
         move || {
             let on = in_table(editor.buffer.upcast_ref());
-            if table_bar.is_visible() != on {
-                table_bar.set_visible(on);
-                table_rule.set_visible(on);
+            let in_format_bar = format_bar.is_visible();
+            if format_table.is_visible() != on {
+                format_table.set_visible(on);
+            }
+            if table_bar.is_visible() != (on && !in_format_bar) {
+                table_bar.set_visible(on && !in_format_bar);
+                table_rule.set_visible(on && !in_format_bar);
             }
             for action in &table_actions {
                 action.set_enabled(on);
@@ -559,11 +579,39 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         table_context,
         move |_| table_context()
     ));
-    editor.buffer.connect_mark_set(move |buffer, _, mark| {
-        if *mark == buffer.get_insert() || *mark == buffer.selection_bound() {
-            table_context();
+    editor.buffer.connect_mark_set(clone!(
+        #[strong]
+        table_context,
+        move |buffer, _, mark| {
+            if *mark == buffer.get_insert() || *mark == buffer.selection_bound() {
+                table_context();
+            }
         }
-    });
+    ));
+
+    // Format bar on/off (main menu ▸ Format, Shift+Ctrl+M, not bound by GTK or GtkSourceView),
+    // kept in the state file. Its buttons' actions: `formatbar.rs`.
+    crate::formatbar::add_actions(&window, &editor);
+    let format_action = gio::SimpleAction::new_stateful("format-bar", None, &false.to_variant());
+    format_action.connect_change_state(clone!(
+        #[strong]
+        editor,
+        move |action, value| {
+            let Some(show) = value.and_then(|v| v.get::<bool>()) else {
+                return;
+            };
+            action.set_state(&show.to_variant());
+            format_bar.set_visible(show);
+            format_rule.set_visible(show);
+            table_context();
+            if editor.prefs.borrow().format_bar != show {
+                editor.prefs.borrow_mut().format_bar = show;
+                editor.remember();
+            }
+        }
+    ));
+    window.add_action(&format_action);
+    app.set_accels_for_action("win.format-bar", &["<Shift><Control>m"]);
 
     // Ctrl+R is not bound by GTK or GtkSourceView; does nothing without an open note.
     let reload_action = gio::SimpleAction::new("reload", None);
@@ -1103,6 +1151,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         .expanded
         .replace(std::mem::take(&mut last.expanded).into_iter().collect());
     editor.apply_prefs();
+    let show_format_bar = editor.prefs.borrow().format_bar;
+    format_action.change_state(&show_format_bar.to_variant());
     // After the saved Style is applied: no light/dark flash on start.
     window.present();
     if let Some(target) = target {
@@ -1189,6 +1239,7 @@ fn shortcuts_window() -> gtk::ShortcutsWindow {
                         ("<Control>i", "Italic"),
                         ("<Control>k", "Link"),
                         ("<Control>Return", "Toggle task"),
+                        ("<Shift><Control>m", "Format bar"),
                     ],
                 ),
                 (

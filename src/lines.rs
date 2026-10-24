@@ -1,5 +1,5 @@
-//! Line commands of the editor: Toggle Task, Footnote, Move Line Up / Down, Duplicate Line.
-//! Pure logic (no GTK): text + selection → the edit to make. Every position is a char
+//! Line commands of the editor: Toggle Task, Footnote, Move Line Up / Down, Duplicate Line,
+//! and the format bar's Heading, Quote, lists and Code Block toggles. Pure logic (no GTK): text + selection → the edit to make. Every position is a char
 //! offset, as in a GtkTextBuffer. Lines end with `\n` (or `\r\n`, kept with its line).
 
 use crate::lists;
@@ -321,6 +321,233 @@ pub fn duplicate_lines(text: &str, sel: (usize, usize)) -> Option<Replace> {
     })
 }
 
+/// A line rewritten by a format toggle: its new text, and the chars of prefix it lost
+/// (`old`, from the line start) and has now (`new`), to keep the cursor on the same text.
+struct Rewrite {
+    text: String,
+    old: usize,
+    new: usize,
+}
+
+impl Rewrite {
+    fn keep(line: &str) -> Rewrite {
+        Rewrite {
+            text: line.into(),
+            old: 0,
+            new: 0,
+        }
+    }
+}
+
+/// Rewrites the lines `first..=last` with `f` (line number, its text). Without a selection
+/// the cursor stays on its text (or after the new prefix when it was inside the old one);
+/// with a selection, every rewritten line ends up selected.
+fn rewrite(
+    chars: &[char],
+    lines: &[Line],
+    (first, last): (usize, usize),
+    sel: (usize, usize),
+    mut f: impl FnMut(usize, &str) -> Rewrite,
+) -> Replace {
+    let (s, e) = (sel.0.min(sel.1), sel.0.max(sel.1));
+    let start = lines[first].start;
+    let mut text = String::new();
+    let mut cursor = None;
+    for (n, l) in lines.iter().enumerate().take(last + 1).skip(first) {
+        let r = f(n, &slice(chars, l.start, l.body));
+        if s == e && cursor.is_none() && s <= l.body {
+            let c = s.saturating_sub(l.start);
+            let col = if c >= r.old {
+                c - r.old + r.new
+            } else {
+                c.min(r.new)
+            };
+            cursor = Some(start + text.chars().count() + col);
+        }
+        text += &r.text;
+        if n < last {
+            text += &slice(chars, l.body, l.end);
+        }
+    }
+    let len = text.chars().count();
+    Replace {
+        start,
+        end: lines[last].body,
+        text,
+        select: cursor.map_or((start, start + len), |c| (c, c)),
+    }
+}
+
+/// The lines a format toggle changes: the non-blank ones outside code blocks among those the
+/// selection touches. None when there are none, unless the cursor is on one blank line
+/// outside code (`Some(empty)`: the toggle starts a new line of that kind there).
+fn targets(chars: &[char], lines: &[Line], (first, last): (usize, usize)) -> Option<Vec<usize>> {
+    let code = code_lines(chars, lines);
+    let content: Vec<usize> = (first..=last)
+        .filter(|&n| {
+            !code[n]
+                && !slice(chars, lines[n].start, lines[n].body)
+                    .trim()
+                    .is_empty()
+        })
+        .collect();
+    (!content.is_empty() || (first == last && !code[first])).then_some(content)
+}
+
+/// Bulleted / Numbered / Task List and Quote: adds the prefix to every non-blank line the
+/// selection touches (numbers counting up from 1), or removes it if all of them have it
+/// already. List kinds replace each other (bullets become numbers); a quote goes around a
+/// list. On a blank line, starts one. Code blocks are left alone; None when only code (or
+/// only blank lines) is selected.
+pub fn toggle_prefix(text: &str, sel: (usize, usize), kind: lists::Kind) -> Option<Replace> {
+    let chars: Vec<char> = text.chars().collect();
+    let lines = split(&chars);
+    let blk = block(&lines, sel);
+    let content = targets(&chars, &lines, blk)?;
+    let quote = kind == lists::Kind::Quote;
+    let applied = !content.is_empty()
+        && content.iter().all(|&n| {
+            let l = lines[n];
+            lists::marker(&slice(&chars, l.start, l.body)).map(|m| m.0) == Some(kind)
+        });
+    let mut number = 0;
+    Some(rewrite(&chars, &lines, blk, sel, |n, line| {
+        if !content.is_empty() && !content.contains(&n) {
+            return Rewrite::keep(line);
+        }
+        let indent = line.len() - line.trim_start_matches([' ', '\t']).len();
+        // Quotes and lists come off independently of each other.
+        let old = match lists::marker(line) {
+            Some((k, len)) if (k == lists::Kind::Quote) == quote => len,
+            _ => indent,
+        };
+        let body = &line[old..];
+        let marker = if applied {
+            String::new()
+        } else {
+            number += 1;
+            match kind {
+                lists::Kind::Quote => "> ".into(),
+                lists::Kind::Bullet => "- ".into(),
+                lists::Kind::Numbered => format!("{number}. "),
+                lists::Kind::Task => "- [ ] ".into(),
+            }
+        };
+        Rewrite {
+            text: format!("{}{marker}{body}", &line[..indent]),
+            old: line[..old].chars().count(),
+            new: line[..indent].chars().count() + marker.len(),
+        }
+    }))
+}
+
+/// The level of an ATX heading line (`#` to `######`, then a space or the line end).
+fn heading_level(line: &str) -> Option<usize> {
+    let hashes = line.bytes().take_while(|b| *b == b'#').count();
+    ((1..=6).contains(&hashes) && matches!(line.as_bytes().get(hashes), None | Some(b' ')))
+        .then_some(hashes)
+}
+
+/// Heading: cycles the non-blank lines the selection touches through `#` … `######` and back
+/// to plain text, one level further than the first of them. On a blank line, starts a
+/// `# ` heading. Code blocks are left alone; None when only code is selected.
+pub fn cycle_heading(text: &str, sel: (usize, usize)) -> Option<Replace> {
+    let chars: Vec<char> = text.chars().collect();
+    let lines = split(&chars);
+    let blk = block(&lines, sel);
+    let content = targets(&chars, &lines, blk)?;
+    let level = content.first().and_then(|&n| {
+        let l = lines[n];
+        heading_level(&slice(&chars, l.start, l.body))
+    });
+    let next = match level {
+        None => 1,
+        Some(6) => 0,
+        Some(l) => l + 1,
+    };
+    let marker = if next == 0 {
+        String::new()
+    } else {
+        format!("{} ", "#".repeat(next))
+    };
+    Some(rewrite(&chars, &lines, blk, sel, |n, line| {
+        if !content.is_empty() && !content.contains(&n) {
+            return Rewrite::keep(line);
+        }
+        let old = heading_level(line).map_or(0, |l| (l + 1).min(line.len()));
+        Rewrite {
+            text: format!("{marker}{}", &line[old..]),
+            old,
+            new: marker.len(),
+        }
+    }))
+}
+
+/// Code Block: fences the lines the selection touches with ```` ``` ```` lines, or, when they
+/// are inside one fenced block (its fences included), removes that block's fences. The
+/// selection stays on the same text. None when the selection is partly in a code block.
+pub fn toggle_code_block(text: &str, sel: (usize, usize)) -> Option<Replace> {
+    let chars: Vec<char> = text.chars().collect();
+    let lines = split(&chars);
+    let (first, last) = block(&lines, sel);
+    let (s, e) = (sel.0.min(sel.1), sel.0.max(sel.1));
+    // Every fenced block: its opening line and its closing one (None: open to the end).
+    let mut blocks: Vec<(usize, Option<usize>)> = vec![];
+    let mut open = None;
+    for (n, l) in lines.iter().enumerate() {
+        let was_open = open.is_some();
+        if lists::fence_step(&mut open, &slice(&chars, l.start, l.body)) {
+            match (was_open, open.is_some()) {
+                (false, true) => blocks.push((n, None)),
+                (true, false) => {
+                    if let Some(b) = blocks.last_mut() {
+                        b.1 = Some(n);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let end_of = |b: &(usize, Option<usize>)| b.1.unwrap_or(lines.len() - 1);
+    if let Some(&(o, c)) = blocks.iter().find(|b| b.0 <= first && last <= end_of(b)) {
+        let start = lines[o].start;
+        let (end, inner) = match c {
+            Some(c) if c > o + 1 => (
+                lines[c].body,
+                slice(&chars, lines[o + 1].start, lines[c - 1].body),
+            ),
+            Some(c) => (lines[c].body, String::new()),
+            None => (lines[o].end, String::new()),
+        };
+        // Positions after the opening fence move up by its line; none goes past the text
+        // left between the fences.
+        let max = c.map_or(usize::MAX, |_| start + inner.chars().count());
+        let shift = lines[o].end - lines[o].start;
+        let at = |p: usize| p.saturating_sub(shift).max(start).min(max);
+        return Some(Replace {
+            start,
+            end,
+            text: inner,
+            select: (at(s), at(e)),
+        });
+    }
+    if blocks.iter().any(|b| b.0 <= last && first <= end_of(b)) {
+        return None;
+    }
+    let ending = match slice(&chars, lines[0].body, lines[0].end) {
+        e if e.is_empty() => "\n".to_string(),
+        e => e,
+    };
+    let (start, end) = (lines[first].start, lines[last].body);
+    let shift = 3 + ending.chars().count();
+    Some(Replace {
+        start,
+        end,
+        text: format!("```{ending}{}{ending}```", slice(&chars, start, end)),
+        select: (s + shift, e.min(end) + shift),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,5 +723,116 @@ mod tests {
             apply(text, &duplicate_lines(text, (4, 4)).unwrap()),
             "```\nx\nx\n```"
         );
+    }
+
+    /// The new text and selection.
+    type Formatted = Option<(String, (usize, usize))>;
+
+    fn format_line(
+        text: &str,
+        sel: (usize, usize),
+        f: fn(&str, (usize, usize)) -> Option<Replace>,
+    ) -> Formatted {
+        let r = f(text, sel)?;
+        Some((apply(text, &r), r.select))
+    }
+
+    fn prefix(kind: lists::Kind) -> impl Fn(&str, (usize, usize)) -> Formatted {
+        move |text, sel| {
+            let r = toggle_prefix(text, sel, kind)?;
+            Some((apply(text, &r), r.select))
+        }
+    }
+
+    #[test]
+    fn prefix_toggles_on_cursor_line() {
+        let bullet = prefix(lists::Kind::Bullet);
+        // The cursor stays on its text.
+        assert_eq!(bullet("ab\ncd", (4, 4)), Some(("ab\n- cd".into(), (6, 6))));
+        assert_eq!(bullet("ab\n- cd", (6, 6)), Some(("ab\ncd".into(), (4, 4))));
+        // Cursor inside the removed marker: at the line start.
+        assert_eq!(bullet("- cd", (1, 1)), Some(("cd".into(), (0, 0))));
+        // Indent kept, the marker goes after it.
+        assert_eq!(bullet("  ý", (3, 3)), Some(("  - ý".into(), (5, 5))));
+        // A blank line starts an item, the cursor after the marker.
+        assert_eq!(bullet("", (0, 0)), Some(("- ".into(), (2, 2))));
+        let task = prefix(lists::Kind::Task);
+        assert_eq!(task("a", (0, 0)), Some(("- [ ] a".into(), (6, 6))));
+        assert_eq!(task("- [x] a", (7, 7)).unwrap().0, "a");
+        assert_eq!(task("- [ ]", (5, 5)).unwrap().0, "");
+    }
+
+    #[test]
+    fn prefix_toggles_on_selected_lines() {
+        let numbered = prefix(lists::Kind::Numbered);
+        let text = "a\n\nb\nc\n";
+        // Blank lines skipped (not numbered); the rewritten lines are selected.
+        assert_eq!(
+            numbered(text, (0, 6)),
+            Some(("1. a\n\n2. b\n3. c\n".into(), (0, 15)))
+        );
+        assert_eq!(numbered("1. a\n2. b", (0, 9)).unwrap().0, "a\nb");
+        // Some lines without it: all get it; list kinds replace each other.
+        assert_eq!(
+            numbered("- a\nb\n* [ ] c", (0, 13)).unwrap().0,
+            "1. a\n2. b\n3. c"
+        );
+        let quote = prefix(lists::Kind::Quote);
+        assert_eq!(quote("- a\nb", (0, 5)).unwrap().0, "> - a\n> b");
+        assert_eq!(quote("> - a\n>b", (0, 8)).unwrap().0, "- a\nb");
+        assert_eq!(quote("> a\nb", (0, 5)).unwrap().0, "> a\n> b");
+        assert_eq!(
+            prefix(lists::Kind::Bullet)("> a", (0, 0)).unwrap().0,
+            "- > a"
+        );
+        assert_eq!(quote("a\r\nb", (0, 4)).unwrap().0, "> a\r\n> b");
+    }
+
+    #[test]
+    fn prefix_leaves_code_alone() {
+        let bullet = prefix(lists::Kind::Bullet);
+        let text = "a\n```\nx\n```\nb";
+        assert_eq!(bullet(text, (0, 13)).unwrap().0, "- a\n```\nx\n```\n- b");
+        assert_eq!(bullet(text, (6, 6)), None);
+        // Several blank lines: nothing to do.
+        assert_eq!(bullet("\n\n", (0, 2)), None);
+    }
+
+    #[test]
+    fn heading_cycles_levels() {
+        let h = |t: &str, s| format_line(t, s, cycle_heading);
+        assert_eq!(h("Title", (2, 2)), Some(("# Title".into(), (4, 4))));
+        assert_eq!(h("# Title", (4, 4)), Some(("## Title".into(), (5, 5))));
+        assert_eq!(h("###### Title", (0, 12)), Some(("Title".into(), (0, 5))));
+        assert_eq!(h("#", (1, 1)), Some(("## ".into(), (3, 3))));
+        assert_eq!(h("", (0, 0)), Some(("# ".into(), (2, 2))));
+        // `#tag` is not a heading; levels follow the first line.
+        assert_eq!(h("#tag", (0, 0)).unwrap().0, "# #tag");
+        assert_eq!(
+            h("## a\nb\n\n# c", (0, 11)).unwrap().0,
+            "### a\n### b\n\n### c"
+        );
+        assert_eq!(h("```\n# x\n```", (5, 5)), None);
+    }
+
+    #[test]
+    fn code_block_wraps_and_unwraps() {
+        let c = |t: &str, s| format_line(t, s, toggle_code_block);
+        assert_eq!(
+            c("a\nb\nc", (2, 3)),
+            Some(("a\n```\nb\n```\nc".into(), (6, 7)))
+        );
+        assert_eq!(c("a\nb", (0, 3)), Some(("```\na\nb\n```".into(), (4, 7))));
+        // A blank line: an empty block with the cursor inside.
+        assert_eq!(c("", (0, 0)), Some(("```\n\n```".into(), (4, 4))));
+        assert_eq!(c("a\r\nb", (0, 0)).unwrap().0, "```\r\na\r\n```\r\nb");
+        // Inside a block, or on its fences: the fences go.
+        let text = "a\n```rust\nx\ny\n```\nb";
+        assert_eq!(c(text, (11, 11)), Some(("a\nx\ny\nb".into(), (3, 3))));
+        assert_eq!(c(text, (2, 16)), Some(("a\nx\ny\nb".into(), (2, 5))));
+        assert_eq!(c("```\n```", (0, 0)), Some((String::new(), (0, 0))));
+        assert_eq!(c("```\nopen", (5, 5)), Some(("open".into(), (1, 1))));
+        // Partly in a block: nothing to do.
+        assert_eq!(c(text, (0, 11)), None);
     }
 }

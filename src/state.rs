@@ -130,6 +130,8 @@ pub struct Prefs {
     pub ignore_colours: bool,
     /// Keep the cursor's line in the middle of the editor.
     pub typewriter: bool,
+    /// The format bar above the editor (Shift+Ctrl+M).
+    pub format_bar: bool,
 }
 
 pub const ZOOM_MIN: u32 = 50;
@@ -158,6 +160,7 @@ impl Default for Prefs {
             tags: true,
             ignore_colours: true,
             typewriter: false,
+            format_bar: false,
         }
     }
 }
@@ -236,6 +239,9 @@ impl State {
                 Some(("typewriter", v)) => {
                     state.prefs.typewriter = v.parse().unwrap_or(state.prefs.typewriter)
                 }
+                Some(("format_bar", v)) => {
+                    state.prefs.format_bar = v.parse().unwrap_or(state.prefs.format_bar)
+                }
                 Some(("indent", v @ ("2" | "4"))) => state.prefs.indent = v.parse().unwrap_or(4),
                 Some(("zoom", v)) => {
                     if let Ok(z) = v.parse::<u32>() {
@@ -277,7 +283,7 @@ impl State {
             out += &format!("font={font}\n");
         }
         out += &format!(
-            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\n",
+            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\n",
             p.line_numbers,
             p.wrap,
             p.indent,
@@ -287,7 +293,8 @@ impl State {
             p.sync_scroll,
             p.tags,
             p.ignore_colours,
-            p.typewriter
+            p.typewriter,
+            p.format_bar
         );
         out
     }
@@ -506,7 +513,7 @@ mod tests {
         };
         let text = state.serialize();
         assert!(text.is_ascii());
-        assert_eq!(text.lines().count(), 13);
+        assert_eq!(text.lines().count(), 14);
         assert_eq!(State::parse(&text), state);
     }
 
@@ -660,6 +667,7 @@ mod tests {
             tags: false,
             ignore_colours: false,
             typewriter: true,
+            format_bar: true,
         };
         let state = State {
             prefs: prefs.clone(),
@@ -671,10 +679,10 @@ mod tests {
         assert_eq!(old.prefs, Prefs::default());
         assert!(old.prefs.wrap && old.prefs.indent == 4 && old.prefs.font.is_none());
         assert!(old.prefs.sync_scroll && old.prefs.tags && old.prefs.ignore_colours);
-        assert!(!old.prefs.typewriter);
+        assert!(!old.prefs.typewriter && !old.prefs.format_bar);
         // Broken values keep the default.
         let bad = State::parse(
-            "font= \nline_numbers=yes\nwrap=1\nindent=3\nindent=x\ntheme=neon\nstyle=dim\nsync_scroll=no\ntags=0\nignore_colours=off\ntypewriter=on\n",
+            "font= \nline_numbers=yes\nwrap=1\nindent=3\nindent=x\ntheme=neon\nstyle=dim\nsync_scroll=no\ntags=0\nignore_colours=off\ntypewriter=on\nformat_bar=yes\n",
         );
         assert_eq!(bad.prefs, Prefs::default());
         for t in Theme::ALL {

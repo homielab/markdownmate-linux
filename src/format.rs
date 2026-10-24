@@ -66,6 +66,45 @@ pub fn emphasis(text: &str, sel: (usize, usize), style: Style) -> Edit {
     }
 }
 
+/// Strikethrough (`~~`) and Inline Code (`` ` ``) on the format bar: wraps the selection, or
+/// the word at the cursor, in `mark`; removes it when the text is already wrapped (the marks
+/// selected with it or just outside it). No selection and no word: `mark mark` with the
+/// cursor between them.
+pub fn toggle(text: &str, sel: (usize, usize), mark: &str) -> Edit {
+    let chars: Vec<char> = text.chars().collect();
+    let mark_chars: Vec<char> = mark.chars().collect();
+    let m = mark_chars.len();
+    let e = sel.0.max(sel.1).min(chars.len());
+    let mut s = sel.0.min(sel.1).min(e);
+    let mut e = e;
+    if s == e {
+        let word = |c: &char| c.is_alphanumeric() || *c == '_';
+        while s > 0 && word(&chars[s - 1]) {
+            s -= 1;
+        }
+        while e < chars.len() && word(&chars[e]) {
+            e += 1;
+        }
+    }
+    let marked = |at: usize| chars.get(at..at + m) == Some(&mark_chars[..]);
+    let (start, end) = if e - s >= 2 * m && marked(s) && marked(e - m) {
+        (s, e)
+    } else if s >= m && marked(s - m) && marked(e) {
+        (s - m, e + m)
+    } else {
+        return Edit {
+            before: (s, s, mark.into()),
+            after: (e, e, mark.into()),
+            select: (s + m, e + m),
+        };
+    };
+    Edit {
+        before: (start, start + m, String::new()),
+        after: (end - m, end, String::new()),
+        select: (start, end - 2 * m),
+    }
+}
+
 /// Vùng chọn → `[text](url)` với `url` được chọn; không có vùng chọn → `[](url)`, con trỏ trong `[]`.
 pub fn link(text: &str, sel: (usize, usize)) -> Edit {
     let e = sel.0.max(sel.1).min(text.chars().count());
@@ -231,6 +270,35 @@ mod tests {
             italic("**đậm**", (0, 7)),
             ("***đậm***".into(), "đậm".into())
         );
+    }
+
+    #[test]
+    fn toggles_marks() {
+        let strike = |t: &str, s| apply(t, s, |t, s| toggle(t, s, "~~"));
+        let code = |t: &str, s| apply(t, s, |t, s| toggle(t, s, "`"));
+        assert_eq!(
+            strike("a chữ b", (2, 5)),
+            ("a ~~chữ~~ b".into(), "chữ".into())
+        );
+        // Selected with its marks, inside them, or the word at the cursor: removed.
+        assert_eq!(
+            strike("a ~~chữ~~ b", (2, 9)),
+            ("a chữ b".into(), "chữ".into())
+        );
+        assert_eq!(
+            strike("a ~~chữ~~ b", (4, 7)),
+            ("a chữ b".into(), "chữ".into())
+        );
+        assert_eq!(code("a `x` b", (3, 3)), ("a x b".into(), "x".into()));
+        assert_eq!(
+            code("xin chào", (6, 6)),
+            ("xin `chào`".into(), "chào".into())
+        );
+        // Nothing to wrap: empty marks, the cursor between them, and back.
+        assert_eq!(code("a  b", (2, 2)), ("a `` b".into(), String::new()));
+        assert_eq!(toggle("a  b", (2, 2), "`").select, (3, 3));
+        assert_eq!(code("a `` b", (3, 3)).0, "a  b");
+        assert_eq!(strike("đ", (1, 0)), ("~~đ~~".into(), "đ".into()));
     }
 
     #[test]

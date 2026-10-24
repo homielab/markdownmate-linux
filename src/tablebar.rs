@@ -1,6 +1,6 @@
 //! The table bar: buttons for the table commands (`table.rs`), shown under the editor only
-//! while the cursor is in a table. `controls` is the bar's content on its own, so a larger
-//! toolbar can show it as its table section. The buttons activate the `win.table-*` actions,
+//! while the cursor is in a table and the format bar (`formatbar.rs`) is off. `controls` is
+//! the bar's content on its own: the format bar shows it as its table section. The buttons activate the `win.table-*` actions,
 //! which `window.rs` also puts in the main menu's Table submenu.
 
 use gtk::prelude::*;
@@ -115,25 +115,30 @@ pub(crate) fn controls() -> gtk::Box {
                 );
             }
         }
-        let tooltip = match gtk::accelerator_parse(e.accel) {
-            Some((key, mods)) => {
-                format!("{} ({})", e.label, gtk::accelerator_get_label(key, mods))
-            }
-            None => e.label.to_string(),
-        };
-        let button = gtk::Button::builder()
-            .action_name(format!("win.{}", e.action))
-            .tooltip_text(tooltip)
-            .css_classes(["flat"])
-            .build();
-        match e.face {
-            Face::Text(text) => button.set_label(text),
-            Face::Icon(icon) => button.set_icon_name(icon),
-        }
-        button.update_property(&[gtk::accessible::Property::Label(e.label)]);
-        controls.append(&button);
+        controls.append(&button(e.action, e.label, &e.face, e.accel));
     }
     controls
+}
+
+/// A flat bar button for `win.<action>`: its name and shortcut in the tooltip, its name for
+/// screen readers. Clicking it leaves the focus in the editor.
+pub(crate) fn button(action: &str, label: &str, face: &Face, accel: &str) -> gtk::Button {
+    let tooltip = match gtk::accelerator_parse(accel) {
+        Some((key, mods)) => format!("{label} ({})", gtk::accelerator_get_label(key, mods)),
+        None => label.to_string(),
+    };
+    let button = gtk::Button::builder()
+        .action_name(format!("win.{action}"))
+        .tooltip_text(tooltip)
+        .focus_on_click(false)
+        .css_classes(["flat"])
+        .build();
+    match face {
+        Face::Text(text) => button.set_label(text),
+        Face::Icon(icon) => button.set_icon_name(icon),
+    }
+    button.update_property(&[gtk::accessible::Property::Label(label)]);
+    button
 }
 
 /// The table bar: a "Table" heading and `controls`, scrolling sideways when the editor is

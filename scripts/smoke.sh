@@ -827,6 +827,58 @@ act_tablecmd() {
 printf '| a | b |\n|---|---|\n| 1 | 2 |\n' > "$NOTES/TableCmd.md"
 NOTE="$NOTES/TableCmd.md" run tablecmd mode=edit
 rm "$NOTES/TableCmd.md"
+# Format bar: Shift+Ctrl+M shows it (saved in the state file); its buttons' actions edit the
+# note like their keys, one Ctrl+Z each, and leave the focus in the editor (typing goes on);
+# its table section shows in a table; Preview hides it.
+act_formatbar() {
+    timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
+    same() { [ "$(cat "$NOTES/Format.md")" = "$(printf -- "$1")" ]; }
+    check_format() {
+        wait_for 5 same "$2" || { echo "FAIL formatbar $1: got"; cat "$NOTES/Format.md"; bad=1; }
+    }
+    xdotool key shift+ctrl+m
+    wait_for 5 grep -qx 'format_bar=true' "$XDG_CONFIG_HOME/markdownmate/state" \
+        || { echo "FAIL formatbar: not saved in the state file"; bad=1; }
+    xdotool mousemove 400 200 click 1 key ctrl+Home
+    action format-heading
+    action format-heading
+    check_format heading '## word\nline\n'
+    xdotool key ctrl+z
+    check_format undo '# word\nline\n'
+    xdotool key ctrl+z Down
+    action format-bulleted-list
+    xdotool type 'X'
+    check_format bullet 'word\n- Xline\n'
+    xdotool key ctrl+Home
+    action format-bold
+    action format-strikethrough
+    check_format inline '**~~word~~**\n- Xline\n'
+    xdotool key ctrl+a
+    action format-code-block
+    check_format code-block '```\n**~~word~~**\n- Xline\n```\n'
+    scrot -o "$OUT/formatbar.png"
+    xdotool key ctrl+End
+    action insert-table
+    sleep 1
+    scrot -o "$OUT/formatbar-table.png"
+    xdotool key ctrl+2
+    sleep 1
+    scrot -o "$OUT/formatbar-preview.png"
+}
+# Restarted with the state the last run left: the format bar is on again.
+act_formatbar_restart() {
+    local pid addr
+    pid=$(pgrep -f -- "^$BIN" | head -1)
+    addr=$(tr '\0' '\n' < "/proc/$pid/environ" | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p')
+    DBUS_SESSION_BUS_ADDRESS=$addr gdbus call --session --dest com.homielab.MarkdownMate \
+        --object-path /com/homielab/MarkdownMate/window/1 \
+        --method org.gtk.Actions.Describe format-bar | grep -qF '[<true>]' \
+        || { echo "FAIL formatbar: off after a restart"; bad=1; }
+}
+printf 'word\nline\n' > "$NOTES/Format.md"
+NOTE="$NOTES/Format.md" run formatbar mode=edit
+KEEP_STATE=1 run formatbar_restart mode=edit
+rm "$NOTES/Format.md"
 # Proportional editor font: table lines still show in monospace (#104).
 NOTE="$NOTES/Table.md" run table "$(printf 'mode=edit\nfont=Ubuntu 14')"
 run paste mode=edit
