@@ -17,6 +17,8 @@ mod naming;
 mod notes;
 mod outline;
 mod paste;
+#[cfg(test)]
+mod perf;
 mod preview;
 mod previewfind;
 mod quick;

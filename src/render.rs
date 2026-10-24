@@ -1,7 +1,9 @@
 //! Markdown → HTML for the preview (pure Rust, no GTK).
 
+use std::collections::HashMap;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex, PoisonError};
 
 use crate::state::Theme;
 use crate::{state, tags};
@@ -42,6 +44,7 @@ pub(crate) fn body_html(
     let mut code_lines = Vec::new();
     let mut front_matter = None;
     let mut formulas = Vec::new();
+    let mut code_blocks = Vec::new();
     for node in root.descendants() {
         use comrak::nodes::NodeValue;
         let in_link = || {
@@ -92,6 +95,10 @@ pub(crate) fn body_html(
         if let NodeValue::CodeBlock(block) = &node.data().value {
             let diagram = block.fenced && is_diagram(&block.info);
             code_lines.push((node.data().sourcepos.start.line, diagram));
+            if highlight {
+                let lang = block.info.split(|c: char| c.is_ascii_whitespace()).next();
+                code_blocks.push((lang_token(lang).to_string(), block.literal.clone()));
+            }
         }
         if let NodeValue::FrontMatter(text) = &node.data().value {
             front_matter = Some(text.to_string());
@@ -120,13 +127,17 @@ pub(crate) fn body_html(
         let text = format!("{TASK_OPEN}{line}{TASK_CLOSE}");
         node.prepend(arena.alloc(comrak::nodes::NodeValue::Text(text.into()).into()));
     }
+    let highlighter = Highlighter(highlight_all(code_blocks));
     let mut plugins = comrak::options::Plugins::default();
     if highlight {
-        plugins.render.codefence_syntax_highlighter = Some(&Highlighter);
+        plugins.render.codefence_syntax_highlighter = Some(&highlighter);
     }
     let mut html = String::new();
     comrak::format_html_with_plugins(root, &options, &mut html, &plugins)
         .expect("writing to a String");
+    if highlight {
+        *HIGHLIGHTED.lock().unwrap_or_else(PoisonError::into_inner) = highlighter.0;
+    }
     // comrak ends each heading with an empty `<a href="#id" … class="anchor"></a>`: dropped,
     // the id on the heading is enough. The note's text is escaped, so it has no such `"`.
     let anchor_end = "\" class=\"anchor\"></a>";
@@ -389,14 +400,126 @@ pub fn math_spans(md: &str) -> Vec<((usize, usize), (usize, usize))> {
         .collect()
 }
 
+/// Highlighted HTML of code blocks by language token, then code.
+type Highlighted = HashMap<String, HashMap<String, String>>;
+
+/// The code blocks highlighted by the last render: a re-render after a keystroke highlights
+/// only the blocks that changed (highlighting is most of a large note's render time).
+static HIGHLIGHTED: LazyLock<Mutex<Highlighted>> = LazyLock::new(Default::default);
+
 /// Code blocks whose language syntect knows get `<span class="hl-…">` per scope (coloured by
 /// `CSS`, light and dark); unknown or no language → escaped as before. Class-based so the
 /// theme follows the page's light/dark class without re-rendering.
-struct Highlighter;
+///
+/// Writes code blocks from `highlight_all`'s result; a block missing there is highlighted
+/// on the spot, so the HTML never depends on what was cached.
+struct Highlighter(Highlighted);
 
 /// syntect's bundled syntaxes, loaded on the first highlighted code block only.
-static SYNTAXES: std::sync::LazyLock<syntect::parsing::SyntaxSet> =
-    std::sync::LazyLock::new(syntect::parsing::SyntaxSet::load_defaults_newlines);
+static SYNTAXES: LazyLock<syntect::parsing::SyntaxSet> =
+    LazyLock::new(syntect::parsing::SyntaxSet::load_defaults_newlines);
+
+/// The language token syntect looks up for a fence's language (` ```rust,ignore ` → `rust`).
+fn lang_token(lang: Option<&str>) -> &str {
+    lang.unwrap_or("").split(',').next().unwrap_or("").trim()
+}
+
+/// `code` as highlighted HTML (`hl-*` classes), or escaped when `token` names no known
+/// syntax or highlighting fails.
+fn highlight_code(token: &str, code: &str) -> String {
+    use syntect::html::{ClassStyle, ClassedHTMLGenerator};
+    let syntax = (!token.is_empty())
+        .then(|| SYNTAXES.find_syntax_by_token(token))
+        .flatten();
+    let escaped = || {
+        let mut out = String::with_capacity(code.len());
+        comrak::html::escape(&mut out, code).expect("writing to a String");
+        out
+    };
+    let Some(syntax) = syntax else {
+        return escaped();
+    };
+    let style = ClassStyle::SpacedPrefixed { prefix: "hl-" };
+    let mut generator = ClassedHTMLGenerator::new_with_class_style(syntax, &SYNTAXES, style);
+    for line in syntect::util::LinesWithEndings::from(code) {
+        if generator
+            .parse_html_for_line_which_includes_newline(line)
+            .is_err()
+        {
+            return escaped();
+        }
+    }
+    generator.finalize()
+}
+
+/// The highlighted HTML of `blocks` (language token, code) with a known syntax: taken from
+/// the last render where the same code was highlighted, the rest highlighted in parallel,
+/// one thread per core.
+fn highlight_all(blocks: Vec<(String, String)>) -> Highlighted {
+    let mut blocks: Vec<_> = blocks
+        .into_iter()
+        .filter(|(token, _)| !token.is_empty() && SYNTAXES.find_syntax_by_token(token).is_some())
+        .collect();
+    let mut done = Highlighted::new();
+    if blocks.is_empty() {
+        return done;
+    }
+    let mut last = std::mem::take(&mut *HIGHLIGHTED.lock().unwrap_or_else(PoisonError::into_inner));
+    blocks.sort_unstable();
+    blocks.dedup();
+    blocks.retain(|(token, code)| {
+        let Some(html) = last.get_mut(token).and_then(|codes| codes.remove(code)) else {
+            return true;
+        };
+        let codes = done.entry(token.clone()).or_default();
+        codes.insert(code.clone(), html);
+        false
+    });
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(blocks.len());
+    let highlighted: Vec<String> = if threads <= 1 {
+        blocks.iter().map(|(t, c)| highlight_code(t, c)).collect()
+    } else {
+        // Thread `t` takes blocks t, t + threads, …; the results go back in block order.
+        let blocks = &blocks;
+        let parts: Vec<Vec<String>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..threads)
+                .map(|t| {
+                    scope.spawn(move || {
+                        blocks
+                            .iter()
+                            .skip(t)
+                            .step_by(threads)
+                            .map(|(token, code)| highlight_code(token, code))
+                            .collect()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("highlighting thread"))
+                .collect()
+        });
+        let mut parts: Vec<_> = parts.into_iter().map(Vec::into_iter).collect();
+        (0..blocks.len())
+            .map(|i| parts[i % threads].next().expect("one result per block"))
+            .collect()
+    };
+    for ((token, code), html) in blocks.into_iter().zip(highlighted) {
+        done.entry(token).or_default().insert(code, html);
+    }
+    done
+}
+
+/// Forgets the cached highlighting, so the next render is a cold one (measurements).
+#[cfg(test)]
+pub(crate) fn forget_highlighting() {
+    HIGHLIGHTED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clear();
+}
 
 impl comrak::adapters::SyntaxHighlighterAdapter for Highlighter {
     fn write_highlighted(
@@ -405,25 +528,11 @@ impl comrak::adapters::SyntaxHighlighterAdapter for Highlighter {
         lang: Option<&str>,
         code: &str,
     ) -> std::fmt::Result {
-        use syntect::html::{ClassStyle, ClassedHTMLGenerator};
-        let token = lang.unwrap_or("").split(',').next().unwrap_or("").trim();
-        let syntax = (!token.is_empty())
-            .then(|| SYNTAXES.find_syntax_by_token(token))
-            .flatten();
-        let Some(syntax) = syntax else {
-            return comrak::html::escape(output, code);
-        };
-        let style = ClassStyle::SpacedPrefixed { prefix: "hl-" };
-        let mut generator = ClassedHTMLGenerator::new_with_class_style(syntax, &SYNTAXES, style);
-        for line in syntect::util::LinesWithEndings::from(code) {
-            if generator
-                .parse_html_for_line_which_includes_newline(line)
-                .is_err()
-            {
-                return comrak::html::escape(output, code);
-            }
+        let token = lang_token(lang);
+        match self.0.get(token).and_then(|codes| codes.get(code)) {
+            Some(html) => output.write_str(html),
+            None => output.write_str(&highlight_code(token, code)),
         }
-        output.write_str(&generator.finalize())
     }
 
     fn write_pre_tag(
@@ -1493,6 +1602,35 @@ mod tests {
         // `---` not on line 1: no front matter.
         let p = page("x\n---\ny: 1\n---\n", false, Theme::Default, &|_| None);
         assert!(!p.contains("front-matter\">"), "{p}");
+    }
+
+    #[test]
+    fn highlighting_is_the_same_cached_or_not() {
+        let md = "```rust\nfn a() {}\n```\n\n```python\nx = 1\n```\n\n\
+```rust\nfn a() {}\n```\n\n```nosuchlang\n<b>\n```\n\n    indented\n";
+        forget_highlighting();
+        let cold = to_html(md, &|_| None);
+        assert!(cold.contains("hl-") && cold.contains("&lt;b&gt;"));
+        assert_eq!(to_html(md, &|_| None), cold);
+        let edited = md.replace("x = 1", "x = 2");
+        let warm = to_html(&edited, &|_| None);
+        forget_highlighting();
+        assert_eq!(to_html(&edited, &|_| None), warm);
+        assert_ne!(warm, cold);
+    }
+
+    #[test]
+    fn parallel_highlighting_keeps_each_block() {
+        let blocks: Vec<_> = (0..50)
+            .map(|i| {
+                let token = ["rust", "python", "js"][i % 3].to_string();
+                (token, format!("let x{i} = \"{i}\";\n"))
+            })
+            .collect();
+        let done = highlight_all(blocks.clone());
+        for (token, code) in blocks {
+            assert_eq!(done[&token][&code], highlight_code(&token, &code));
+        }
     }
 
     /// Render time of a ~1MB mixed note (#103). `cargo test --release render_large -- --ignored --nocapture`.
