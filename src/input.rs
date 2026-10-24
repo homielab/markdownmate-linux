@@ -7,7 +7,7 @@ use gtk::glib::{self, clone};
 use sourceview5::prelude::*;
 
 use crate::editor::Editor;
-use crate::{complete, format, images, lines, lists, paste, quick, table};
+use crate::{complete, format, images, lines, lists, paste, quick, relink, table};
 
 /// `[[` note-name and `#tag` completion (`complete.rs`): a list floating over the editor (an overlay, not a
 /// popup window, so it never takes focus — typing and input methods stay in the editor); its
@@ -425,7 +425,8 @@ pub(crate) fn line_command(view: &gtk::TextView, command: LineCommand) -> bool {
 }
 
 /// Paste (clipboard with an image and no plain text) and drop (image files) put images into
-/// the open note's `assets/` and insert a link (`images.rs`). Text pasted over a one-line
+/// the open note's `assets/` and insert a link (`images.rs`); other files and folders dropped
+/// from Files or the sidebar are linked where they are (`insert_dropped`). Text pasted over a one-line
 /// selection outside code: a URL makes `[text](url)` (`format::paste_link`). Rich text
 /// (`text/html` without an image) outside code becomes Markdown (`paste.rs`). Anything else:
 /// GTK's own handling.
@@ -477,32 +478,102 @@ pub(crate) fn image_input(view: &sourceview5::View, editor: &Rc<Editor>) {
             let Ok(files) = value.get::<gtk::gdk::FileList>() else {
                 return false;
             };
-            let paths: Vec<PathBuf> = files
-                .files()
-                .iter()
-                .filter_map(|f| f.path())
-                .filter(|p| images::is_image(p))
-                .collect();
+            let paths: Vec<PathBuf> = files.files().iter().filter_map(|f| f.path()).collect();
             if paths.is_empty() || editor.path.borrow().is_none() {
                 return false;
             }
-            if let Some(view) = target.widget().and_downcast::<gtk::TextView>() {
-                let (bx, by) =
-                    view.window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
-                if let Some(iter) = view.iter_at_location(bx, by) {
-                    editor.buffer.place_cursor(&iter);
-                }
-            }
-            for (i, path) in paths.iter().enumerate() {
-                if i > 0 {
-                    editor.buffer.insert_at_cursor("\n");
-                }
-                editor.insert_image(|note| images::store_file(note, path));
-            }
+            place_drop(target.widget().as_ref(), &editor, x, y);
+            insert_dropped(&editor, &paths);
             true
         }
     ));
     view.add_controller(drop);
+
+    // An entry dragged from the sidebar (its private type, a move there): linked here.
+    let entry = gtk::DropTargetAsync::new(
+        Some(gtk::gdk::ContentFormats::new(&[crate::sidebar::DRAG_MIME])),
+        gtk::gdk::DragAction::MOVE,
+    );
+    entry.set_propagation_phase(gtk::PropagationPhase::Capture);
+    entry.connect_drop(clone!(
+        #[weak]
+        editor,
+        #[upgrade_or]
+        false,
+        move |target, drop, x, y| {
+            if editor.path.borrow().is_none() {
+                return false;
+            }
+            place_drop(target.widget().as_ref(), &editor, x, y);
+            let drop = drop.clone();
+            glib::spawn_future_local(async move {
+                let path = crate::sidebar::read_path(&drop).await;
+                // Nothing moves: the sidebar ignores how its drag ended.
+                drop.finish(if path.is_some() {
+                    gtk::gdk::DragAction::MOVE
+                } else {
+                    gtk::gdk::DragAction::empty()
+                });
+                if let Some(path) = path {
+                    insert_dropped(&editor, &[path]);
+                }
+            });
+            true
+        }
+    ));
+    view.add_controller(entry);
+}
+
+/// Puts the cursor where a drop at (x, y) of the editor `widget` lands: past the end of the
+/// line when right of its text, at the end of the note when below it.
+fn place_drop(widget: Option<&gtk::Widget>, editor: &Editor, x: f64, y: f64) {
+    if let Some(view) = widget.and_then(|w| w.downcast_ref::<gtk::TextView>()) {
+        let (bx, by) =
+            view.window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+        let iter = view.iter_at_location(bx, by).unwrap_or_else(|| {
+            let (mut iter, _) = view.line_at_y(by);
+            if !iter.ends_line() {
+                iter.forward_to_line_end();
+            }
+            iter
+        });
+        editor.buffer.place_cursor(&iter);
+    }
+}
+
+/// Dropped files at the cursor, one per line, as one undo step: images copied into the
+/// note's `assets/` (`images.rs`), other files and folders as relative links
+/// (`relink::dropped_links`).
+fn insert_dropped(editor: &Editor, paths: &[PathBuf]) {
+    let Some(note) = editor.path.borrow().clone() else {
+        return;
+    };
+    let root = editor.root.borrow().clone();
+    let mut lines = vec![];
+    for path in paths {
+        if images::is_image(path) && path.is_file() {
+            match images::store_file(&note, path) {
+                Ok(link) => lines.push(link),
+                Err(e) => editor.toast(&format!("Cannot add image: {e}")),
+            }
+        } else {
+            // Written as the sidebar lists it when it is under the open folder's real path.
+            let path = root
+                .as_deref()
+                .map_or_else(|| path.clone(), |r| relink::rebase(path, r));
+            let is_dir = path.is_dir();
+            lines.push(relink::dropped_links(&[(path, is_dir)], note.parent()));
+        }
+    }
+    if lines.is_empty() {
+        return;
+    }
+    let buffer = &editor.buffer;
+    buffer.begin_user_action();
+    buffer.delete_selection(true, true);
+    buffer.insert_at_cursor(&lines.join("\n"));
+    buffer.end_user_action();
+    editor.view.grab_focus();
 }
 
 /// Text paste outside code, over a one-line selection or with `html` on the clipboard: the

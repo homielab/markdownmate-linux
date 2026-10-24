@@ -295,9 +295,9 @@ fn context_menu(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
     widget.add_controller(gesture);
 }
 
-/// Private mime type of a sidebar drag: the entry's path. Not text or a file list, so the
-/// editor and other apps (Files) ignore it; only the sidebar accepts it.
-const DRAG_MIME: &str = "application/x-markdownmate-entry";
+/// Private mime type of a sidebar drag: the entry's path. Not text or a file list, so other
+/// apps (Files) ignore it; the sidebar moves the entry, the editor links to it.
+pub(crate) const DRAG_MIME: &str = "application/x-markdownmate-entry";
 
 thread_local! {
     /// The entry being dragged from this sidebar, so drop targets can be highlighted while
@@ -510,7 +510,7 @@ fn is_internal(drop: &gtk::gdk::Drop) -> bool {
 }
 
 /// The path carried by a sidebar drag (DRAG_MIME).
-async fn read_path(drop: &gtk::gdk::Drop) -> Option<PathBuf> {
+pub(crate) async fn read_path(drop: &gtk::gdk::Drop) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
     let (stream, _) = drop
         .read_future(&[DRAG_MIME], glib::Priority::DEFAULT)

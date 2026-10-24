@@ -1087,7 +1087,7 @@ NOTE="$NOTES/Code.md" run move mode=edit
 # a .txt on a root note row (Code.md, row 2) -> Out.md copied as Out 2.md (Out.md exists, kept),
 # the .txt skipped (toast, drop-skip.png). Then drop Single.md on the Projects row -> copied
 # into Projects and opened (typing `S` lands in it); the outside files stay.
-drop_files() { # drop_files <to y> <shot> <files...>: drag from the helper window onto the sidebar
+drop_files() { # drop_files <to y> <shot> <files...>: drag from the helper window onto the sidebar (x: DROP_X)
     local y=$1 shot=$2; shift 2
     "${CARGO_TARGET_DIR:-target}/debug/examples/drag_files" "$@" &
     local helper=$!
@@ -1095,7 +1095,7 @@ drop_files() { # drop_files <to y> <shot> <files...>: drag from the helper windo
     xdotool windowmove "$win" 900 500; sleep 1
     xdotool mousemove 1000 600 mousedown 1
     for x in $(seq 1000 -40 60); do xdotool mousemove "$x" "$((y + (x - 60) / 2))"; sleep 0.05; done
-    sleep 0.5; xdotool mousemove 62 "$y"; sleep 0.5
+    sleep 0.5; xdotool mousemove "${DROP_X:-62}" "$y"; sleep 0.5
     scrot -o "$OUT/$shot-hover.png"
     xdotool mouseup 1; sleep 2
     scrot -o "$OUT/$shot.png"
@@ -1118,6 +1118,34 @@ act_dropin() {
     rm -f "$NOTES/Out.md" "$NOTES/Out 2.md" "$NOTES/Projects/Single.md"
 }
 run dropin mode=edit
+# Drop files into the editor: a note and a PDF from Files (the helper) become relative links,
+# one per line, at the drop point (below the text: the end), percent-encoded; one Ctrl+Z
+# removes both. Then a note dragged from the sidebar is linked the same way and stays where it
+# is: `0 Link.md`, made for this case, so it is row 2 (after the Projects folder) whatever
+# earlier cases moved.
+act_droplink() {
+    mkdir -p "$TMP/outside"
+    echo pdf > "$TMP/outside/Doc 1.pdf"
+    same() { [ "$(cat "$NOTES/Drop.md")" = "$(printf -- "$1")" ]; }
+    DROP_X=500 drop_files 400 droplink "$NOTES/Projects/Plan.md" "$TMP/outside/Doc 1.pdf"
+    wait_for 5 same 'start\n[Plan](Projects/Plan.md)\n[Doc 1](../outside/Doc%%201.pdf)' \
+        || { echo "FAIL droplink: files not linked, got"; cat "$NOTES/Drop.md"; bad=1; }
+    timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
+    xdotool key ctrl+z
+    wait_for 5 same 'start\n' || { echo "FAIL droplink: not one undo step, got"; cat "$NOTES/Drop.md"; bad=1; }
+    xdotool mousemove 60 113 mousedown 1  # row 2: 0 Link.md
+    for x in $(seq 60 20 500); do xdotool mousemove "$x" 300; sleep 0.05; done
+    sleep 0.5; xdotool mousemove 502 300; sleep 0.5
+    xdotool mouseup 1
+    wait_for 5 same 'start\n[0 Link](0%%20Link.md)' \
+        || { echo "FAIL droplink: sidebar entry not linked, got"; cat "$NOTES/Drop.md"; bad=1; }
+    [ "$(cat "$NOTES/0 Link.md" 2>/dev/null)" = linked ] || { echo "FAIL droplink: 0 Link.md moved"; bad=1; }
+    scrot -o "$OUT/droplink-sidebar.png"
+}
+printf 'start\n' > "$NOTES/Drop.md"
+echo linked > "$NOTES/0 Link.md"
+NOTE="$NOTES/Drop.md" run droplink mode=edit
+rm -f "$NOTES/Drop.md" "$NOTES/0 Link.md"
 # Open Quickly ô trống (#113): mở Welcome rồi Todo, Ctrl+P, Enter -> về Welcome (gõ `Q` vào đầu).
 act_quick_recent() {
     timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true

@@ -318,6 +318,36 @@ fn encode(path: &str) -> String {
     out
 }
 
+/// Links for files and folders dropped into a note, one per line: `[name](path)`, the name
+/// without the file's extension (a folder keeps its whole name, `[` `]` dropped), the path
+/// relative to the note's `folder` and percent-encoded (`encode`), so the preview, Ctrl+click
+/// and link updates follow it. No `folder` (no saved note): a `file://` URL. `files` are
+/// (path, is a folder).
+pub fn dropped_links(files: &[(PathBuf, bool)], folder: Option<&Path>) -> String {
+    files
+        .iter()
+        .map(|(file, is_dir)| {
+            let name = if *is_dir {
+                file.file_name()
+            } else {
+                file.file_stem()
+            };
+            let name: String = name
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+                .chars()
+                .filter(|c| !matches!(c, '[' | ']'))
+                .collect();
+            let target = match folder {
+                Some(folder) => encode(&relative_path(file, folder)),
+                None => format!("file://{}", encode(&clean(file).to_string_lossy())),
+            };
+            format!("[{name}]({target})")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,5 +586,42 @@ mod tests {
         let p = Path::new("/n/a.md");
         assert_eq!(rebase(p, Path::new("/n")), p);
         assert_eq!(rebase(p, Path::new("/does/not/exist")), p);
+    }
+
+    #[test]
+    fn links_for_dropped_files() {
+        let one = |f: &str, dir: bool, folder: Option<&str>| {
+            dropped_links(&[(PathBuf::from(f), dir)], folder.map(Path::new))
+        };
+        let n = Some("/n/Notes");
+        assert_eq!(one("/n/Notes/Plan.md", false, n), "[Plan](Plan.md)");
+        assert_eq!(
+            one("/n/Notes/Sub/Report 2.pdf", false, n),
+            "[Report 2](Sub/Report%202.pdf)"
+        );
+        assert_eq!(one("/n/Other/a.txt", false, n), "[a](../Other/a.txt)");
+        assert_eq!(one("/n/Notes/Sub/More", true, n), "[More](Sub/More)");
+        assert_eq!(one("/n/Notes/notes.v2", true, n), "[notes.v2](notes.v2)");
+        assert_eq!(
+            one("/n/Notes/Ý tưởng (cũ).md", false, n),
+            "[Ý tưởng (cũ)](%C3%9D%20t%C6%B0%E1%BB%9Fng%20%28c%C5%A9%29.md)"
+        );
+        assert_eq!(
+            one("/n/Notes/[draft] x#1.md", false, n),
+            "[draft x#1](%5Bdraft%5D%20x%231.md)"
+        );
+        // No saved note: an absolute file:// URL.
+        assert_eq!(
+            one("/tmp/a b.pdf", false, None),
+            "[a b](file:///tmp/a%20b.pdf)"
+        );
+        let several = [
+            (PathBuf::from("/n/Notes/a.md"), false),
+            (PathBuf::from("/n/b"), true),
+        ];
+        assert_eq!(
+            dropped_links(&several, n.map(Path::new)),
+            "[a](a.md)\n[b](../b)"
+        );
     }
 }
