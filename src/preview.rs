@@ -10,7 +10,7 @@ use webkit6::prelude::*;
 
 use crate::editor::Editor;
 use crate::{PREVIEW_DELAY, PREVIEW_LINE_JS, SCRIPT_WORLD, SYNC_DELAY, SYNC_JS, file_name};
-use crate::{render, save, state};
+use crate::{diagrams, render, save, state};
 
 impl Editor {
     /// Side by side: re-render the preview shortly after typing stops.
@@ -84,14 +84,18 @@ impl Editor {
     }
 
     /// Replaces the shown page's head and body with `html` in place (scroll position kept).
+    /// Diagrams already drawn are reused; only a changed one is drawn again (`diagrams`).
     fn swap_page(self: &Rc<Self>, html: &str) {
         // The class carries light/dark and the head the theme, so style changes apply too.
         let script = format!(
-            "(function(h){{var y=scrollY,d=new DOMParser().parseFromString(h,'text/html');\
+            "(function(h){{var y=scrollY,d=new DOMParser().parseFromString(h,'text/html');{}\
 document.documentElement.className=d.documentElement.className;\
-document.head.replaceWith(d.head);document.body.replaceWith(d.body);scrollTo(0,y);return true}})({})",
+document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}scrollTo(0,y);return true}})({})",
+            diagrams::TAKE,
+            diagrams::APPLY,
             render::js_string(html)
         );
+        let has_diagrams = render::has_diagrams(html);
         let editor = Rc::clone(self);
         self.preview.evaluate_javascript(
             &script,
@@ -99,11 +103,27 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);scrollTo(0,y
             None,
             gio::Cancellable::NONE,
             move |result| match result {
-                Ok(_) => editor.sync_preview(),
+                Ok(_) => {
+                    editor.sync_preview();
+                    if has_diagrams {
+                        editor.draw_diagrams();
+                    }
+                }
                 // No usable page (e.g. the web process died): load it instead.
                 Err(_) => editor.load_preview(),
             },
         );
+    }
+
+    /// Draws the preview's Mermaid diagrams (nothing is loaded for a page without one), then
+    /// follows the editor again: the diagrams changed the page's heights.
+    pub(crate) fn draw_diagrams(self: &Rc<Self>) {
+        let editor = Rc::clone(self);
+        diagrams::draw(&self.preview, move |drawn| {
+            if drawn {
+                editor.sync_preview();
+            }
+        });
     }
 
     /// Side by side with Sync scrolling on: scrolls the preview to the source line at the top
@@ -272,22 +292,50 @@ pub(crate) fn export_html(editor: &Rc<Editor>) {
             let text = editor.buffer.text(&start, &end, true).to_string();
             let notes = editor.note_list.borrow().to_vec(); // the Rc cannot cross threads
             let root = editor.root.borrow().clone().unwrap_or_default();
+            let uri = gio::File::for_path(&note).uri().to_string();
             // Rendered and written off the main thread: ~1s/MB of code would freeze the window.
             let job = move || {
                 let wiki = |t: &str| render::resolve_wiki(t, &notes, &root, Some(&note)).cloned();
                 let dir = note.parent().unwrap_or(Path::new("/"));
-                let html = render::export_page(&text, &stem(&note), dir, &wiki);
-                save::write_atomic(&dest, &html).map(|()| dest)
+                render::export_page(&text, &stem(&note), dir, &wiki)
             };
             glib::spawn_future_local(async move {
-                match gio::spawn_blocking(job).await {
-                    Ok(Ok(dest)) => editor.toast(&format!("Exported {}", file_name(&dest))),
-                    Ok(Err(e)) => editor.toast(&format!("Could not export: {e}")),
-                    Err(_) => editor.toast("Could not render the note"),
+                let Ok(html) = gio::spawn_blocking(job).await else {
+                    return editor.toast("Could not render the note");
+                };
+                // Diagrams are drawn in an off-screen WebView and saved as static SVG; without
+                // a usable WebKit sandbox they stay code blocks.
+                if !render::has_diagrams(&html) || !sandbox_usable() {
+                    return write_export(&editor, dest, html);
                 }
+                let weak = Rc::downgrade(&editor);
+                let pending = std::cell::RefCell::new(Some((dest, html.clone())));
+                offscreen(&editor, &html, &uri, move |view| {
+                    let Some((dest, html)) = pending.take() else {
+                        return;
+                    };
+                    let weak = weak.clone();
+                    diagrams::finished_page(view, move |drawn| {
+                        if let Some(editor) = weak.upgrade() {
+                            write_export(&editor, dest, drawn.unwrap_or(html));
+                        }
+                    });
+                });
             });
         },
     );
+}
+
+/// Writes an exported HTML page off the main thread, then says how it went.
+fn write_export(editor: &Rc<Editor>, dest: std::path::PathBuf, html: String) {
+    let editor = Rc::clone(editor);
+    glib::spawn_future_local(async move {
+        match gio::spawn_blocking(move || save::write_atomic(&dest, &html).map(|()| dest)).await {
+            Ok(Ok(dest)) => editor.toast(&format!("Exported {}", file_name(&dest))),
+            Ok(Err(e)) => editor.toast(&format!("Could not export: {e}")),
+            Err(_) => editor.toast("Could not export the note"),
+        }
+    });
 }
 
 /// Copy as HTML: the selection (or the whole note, unsaved edits included) as
@@ -421,18 +469,36 @@ fn print_page(editor: &Rc<Editor>, done: impl Fn(&webkit6::WebView) + 'static) {
             editor.toast("Could not render the note");
             return;
         };
-        let view = webkit6::WebView::new();
-        if let Some(settings) = WebViewExt::settings(&view) {
-            settings.set_enable_javascript(false);
-        }
-        view.connect_load_changed(move |view, event| {
-            if event == webkit6::LoadEvent::Finished {
-                done(view);
-            }
-        });
-        view.load_html(&html, Some(&uri));
-        editor.print_view.replace(Some(view));
+        offscreen(&editor, &html, &uri, done);
     });
+}
+
+/// Loads `html` in an off-screen WebView kept in `editor.print_view` and runs `done` once it
+/// is loaded and its diagrams are drawn. Without a diagram no script runs at all; with one,
+/// only the app's script world runs (as in the preview: page scripts off).
+fn offscreen(editor: &Editor, html: &str, uri: &str, done: impl Fn(&webkit6::WebView) + 'static) {
+    let has_diagrams = render::has_diagrams(html);
+    let view = webkit6::WebView::new();
+    if let Some(settings) = WebViewExt::settings(&view) {
+        settings.set_enable_javascript(has_diagrams);
+        settings.set_enable_javascript_markup(false);
+    }
+    if has_diagrams {
+        diagrams::keep_world(&view);
+    }
+    let done = Rc::new(done);
+    view.connect_load_changed(move |view, event| {
+        if event != webkit6::LoadEvent::Finished {
+            return;
+        }
+        if !has_diagrams {
+            return done(view);
+        }
+        let (view, done) = (view.clone(), Rc::clone(&done));
+        diagrams::draw(&view.clone(), move |_| done(&view));
+    });
+    view.load_html(html, Some(uri));
+    editor.print_view.replace(Some(view));
 }
 
 const NO_SANDBOX: &str =

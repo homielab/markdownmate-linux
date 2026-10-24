@@ -6,8 +6,9 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Mermaid diagrams: a ```` ```mermaid ```` block shows as a diagram in Preview and Side by side (light and dark), in Print, Export as PDF and Export as HTML; a broken diagram shows its code with an error line. Copy as HTML keeps diagrams as code.
 - Fixed: the PPA source package builds again; it ships this changelog from the repository root.
-- The README and store notes now match what the app has: the right clone URL, `.deb` / PPA packaging only, and math formulas (no Mermaid diagrams yet).
+- The README and store notes now match what the app has: the right clone URL, `.deb` / PPA packaging only, and math formulas.
 
 ## 0.3.0
 

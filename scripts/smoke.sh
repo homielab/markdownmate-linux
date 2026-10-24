@@ -65,6 +65,7 @@ printf 'Việt\nviệt nam\nother VIỆT\n' > "$NOTES/Search.md"
 printf 'one\ntwo\n' > "$NOTES/Reload.md"
 printf '| Tên | b |\n|:-:|--|\n| Nguyễn Văn | 1 |' > "$NOTES/Table.md"
 printf '# Math\n\nInline $x^2 + \\sqrt{y}$ and a price: $5 and $10.\n\n$$\\sum_{i=1}^{n} \\frac{a_i}{b}$$\n\nBroken: $\\frac{a$\n\n```math\n\\int_0^1 x\\,dx = \\frac{1}{2}\n```\n' > "$NOTES/Math.md"
+printf '# Diagram\n\n```mermaid\nflowchart LR\n  A[Write] --> B{Preview?}\n  B -->|yes| C[Diagram]\n  B -->|no| D[Code]\n```\n\nBetween.\n\n```mermaid\nflowchart LR\n  A --> \n```\n\nAfter.\n' > "$NOTES/Mermaid.md"
 printf '![a big red picture for the hover tooltip](big.svg)\n![a link to an image that does not exist](nope.png)\n![a web image that is never downloaded](https://example.com/a.png)\n' > "$NOTES/Image.md"
 printf '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480"><rect width="640" height="480" fill="red"/></svg>' > "$NOTES/big.svg"
 # 1x1 red PNG.
@@ -772,6 +773,51 @@ NOTE="$NOTES/Math.md" run math mode=preview
 # Formulas coloured in the editor (screenshot): not the price, not code.
 NOTE="$NOTES/Math.md" run math_edit mode=edit
 NOTE="$NOTES/Wiki.md" run export_pdf mode=preview
+# Mermaid (screenshots): the flowchart drawn, the broken one as code with an error line under it.
+mermaid_log() {
+    ! grep -q 'could not .*diagram' "$OUT/$1.log" || { echo "FAIL $1: diagram script failed"; bad=1; }
+}
+act_mermaid() { mermaid_log mermaid; }
+NOTE="$NOTES/Mermaid.md" run mermaid mode=preview
+# Dark, side by side; typing in the first fence redraws that diagram ("Preview? Draw" in
+# mermaid_dark-typed.png), the broken one keeps its error line.
+act_mermaid_dark() {
+    timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
+    xdotool mousemove 300 150 click 1 key ctrl+Home Down Down Down Down End Left
+    xdotool type --delay 50 ' Draw'
+    sleep 3
+    scrot -o "$OUT/mermaid_dark-typed.png"
+    mermaid_log mermaid_dark
+}
+NOTE="$NOTES/Mermaid.md" run mermaid_dark "$(printf 'mode=split\nstyle=dark')"
+grep -qF 'B{Preview? Draw}' "$NOTES/Mermaid.md" || { echo "FAIL mermaid_dark: typed text not saved"; fail=1; }
+# Export as HTML: the flowchart as static SVG, the broken one as code, no script.
+act_mermaid_export() {
+    timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
+    xdotool key shift+ctrl+e
+    sleep 2
+    xdotool key Return
+    sleep 6
+    local f="$NOTES/Mermaid.html"
+    grep -qF '<svg' "$f" 2>/dev/null || { echo "FAIL mermaid_export: no diagram in Mermaid.html"; bad=1; }
+    [ "$(grep -o 'class="language-mermaid"' "$f" 2>/dev/null | wc -l)" = 1 ] || { echo "FAIL mermaid_export: drawn diagram still code"; bad=1; }
+    ! grep -qF '<script' "$f" 2>/dev/null || { echo "FAIL mermaid_export: script in Mermaid.html"; bad=1; }
+    mermaid_log mermaid_export
+}
+NOTE="$NOTES/Mermaid.md" run mermaid_export mode=preview
+# Export as PDF draws the diagrams first (as Print); KEEP_PDF=1 keeps screenshots/Mermaid.pdf.
+act_mermaid_pdf() {
+    timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
+    action export-pdf
+    sleep 2
+    xdotool key Return
+    sleep 6
+    head -c 5 "$NOTES/Mermaid.pdf" 2>/dev/null | grep -q '%PDF' || { echo "FAIL mermaid_pdf: Mermaid.pdf not written"; bad=1; }
+    [ -z "${KEEP_PDF:-}" ] || cp "$NOTES/Mermaid.pdf" "$OUT/" 2>/dev/null || true
+    rm -f "$NOTES/Mermaid.pdf"
+    mermaid_log mermaid_pdf
+}
+NOTE="$NOTES/Mermaid.md" run mermaid_pdf mode=edit
 mkdir -p "$TMP/other" && echo '# Other' > "$TMP/other/Other.md"
 run open_file mode=edit
 grep -qx "folder=$TMP/other" "$XDG_CONFIG_HOME/markdownmate/state" && grep -qx "note=$TMP/other/Other.md" "$XDG_CONFIG_HOME/markdownmate/state" \

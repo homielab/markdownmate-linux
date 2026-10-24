@@ -77,6 +77,7 @@ Shortcuts use `Ctrl` where the macOS app uses `⌘`.
 **Preview**
 
 - **Rich rendering**: GitHub-flavored Markdown with code highlighting and footnotes — fully offline. YAML front matter (`---` on the first line, as in Obsidian/Jekyll/Hugo) shows as a small dimmed block in the preview and is left out of Export, Copy as HTML and Print.
+- **Mermaid diagrams**: a ```` ```mermaid ```` code block shows as a diagram (flowcharts, sequence, class, state, Gantt, pie, …) in Preview and Side by side, in the light or dark colours of the current style. A diagram with a mistake stays a code block with a short error line under it. While you type, only the diagram you edit is drawn again. Mermaid is bundled (no network) and loaded only for notes that have a diagram, so other notes open as fast as before. Print and Export as PDF / HTML show the diagrams too (exported as plain SVG); Copy as HTML keeps them as code.
 - **Links between notes**: click (in the preview) or Ctrl+click (in the editor; the pointer becomes a hand over links) a relative link to another note (`[Plan](Projects/Plan.md)`, `../Other%20Note.md`, `#anchor` ignored) to open it; only existing Markdown files inside the open folder are opened (no `..` or symlink escapes). Web links (`http`, `https`, `mailto`, also bare URLs and `<…>` in the editor) open in the default app; other schemes are ignored. Ctrl+click on an image link in the editor opens the image in the default app if it is inside the open folder. Links in code are not clickable.
 - **Keeps up with large files**: while you type, only the edited part is rendered again.
 
@@ -94,7 +95,7 @@ Shortcuts use `Ctrl` where the macOS app uses `⌘`.
 
 - **Main menu** (the menu button at the left of the header bar, or F10): New File / New Folder…, Open File… (a `.md` note opens with its folder) / Open Folder… (Ctrl+O), Open Recent, Export as PDF… / Export as HTML… / Print…, Keyboard Shortcuts (Ctrl+?), About MarkdownMate.
 - **Export as PDF…** (main menu): the note as Print renders it, saved straight to a PDF (suggested as `<note>.pdf` next to the note) without the print dialog.
-- **Export as HTML…** (Shift+Ctrl+E or the main menu): one standalone `.html` file (CSS embedded, light theme, code highlighting, no script), suggested as `<note>.html` next to the note. Relative images and links stay relative, so keep the file next to the note (or copy its images along); wiki links become relative links to the target note, unresolved ones plain text.
+- **Export as HTML…** (Shift+Ctrl+E or the main menu): one standalone `.html` file (CSS embedded, light theme, code highlighting, Mermaid diagrams as SVG, no script), suggested as `<note>.html` next to the note. Relative images and links stay relative, so keep the file next to the note (or copy its images along); wiki links become relative links to the target note, unresolved ones plain text.
 - **Copy as HTML** (Alt+Shift+Ctrl+C): copies the selection (or the whole note) so it pastes formatted into rich-text apps (mail, Docs) and as Markdown into plain-text apps. No page styling or script; code blocks are plain monospace (no colours); links as in Export as HTML (wiki links relative, unresolved ones plain text).
 - **Print…** (Shift+Ctrl+P or the main menu): the note as the preview renders it (unsaved edits included, always light, no background), from Edit, Preview or Side by side, to a printer or GTK's Print to File (PDF). Code blocks, tables and images are kept off page breaks where they fit.
 - **Auto-save** directly to disk, and **Reload** (Ctrl+R) from disk — with unsaved edits it asks first (Reload drops them and clears undo).
@@ -151,7 +152,7 @@ Your files and settings stay where they belong: **on your machine**. The only fi
 | Language | Rust (stable) |
 | UI | [GTK 4](https://gtk-rs.org) + [libadwaita](https://gnome.pages.gitlab.gnome.org/libadwaita/) |
 | Editor | [GtkSourceView 5](https://wiki.gnome.org/Projects/GtkSourceView) |
-| Preview | [WebKitGTK 6](https://webkitgtk.org), page scripts off; code highlighted in Rust by [syntect](https://github.com/trishume/syntect) (light/dark CSS classes); `$…$` math rendered to MathML by [math-core](https://crates.io/crates/math-core); no Mermaid diagrams yet |
+| Preview | [WebKitGTK 6](https://webkitgtk.org), page scripts off (the page's Content-Security-Policy blocks scripts and every network load); code highlighted in Rust by [syntect](https://github.com/trishume/syntect) (light/dark CSS classes); `$…$` math rendered to MathML by [math-core](https://crates.io/crates/math-core); ```` ```mermaid ```` diagrams drawn by [Mermaid](https://mermaid.js.org) 11 (MIT, bundled in `resources/mermaid/`), which only notes with a diagram load, into the app's own isolated script world (not the page's) with Mermaid's `strict` security level |
 | Markdown | [comrak](https://github.com/kivikakk/comrak) (CommonMark + GFM) |
 | Packaging | `.deb`, published in the Launchpad PPA `ppa:homielab/markdownmate` |
 

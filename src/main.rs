@@ -1,5 +1,6 @@
 mod backlinks;
 mod complete;
+mod diagrams;
 mod dialogs;
 mod editor;
 mod find;

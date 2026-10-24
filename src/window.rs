@@ -145,9 +145,11 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     let preview = webkit6::WebView::new();
     if let Some(settings) = WebViewExt::settings(&preview) {
         // No scripts from the page (the CSP blocks them too). JavaScript itself stays on only
-        // so the app can read/restore the scroll position (evaluate_javascript needs it).
+        // for the app's own scripts in its script world: reading/restoring the scroll position
+        // (evaluate_javascript needs it) and drawing Mermaid diagrams (`diagrams`).
         settings.set_enable_javascript_markup(false);
     }
+    crate::diagrams::keep_world(&preview);
     preview.set_visible(false);
     let panes = gtk::Paned::builder()
         .start_child(&editor_pane)
@@ -749,6 +751,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             ),
             None => editor.sync_preview(),
         }
+        // Mermaid is installed only if the page has a diagram (`diagrams`).
+        editor.draw_diagrams();
     });
 
     // The web process died (crash, out of memory): the app keeps running; the next edit or
@@ -944,6 +948,13 @@ fn about_dialog(editor: &Rc<Editor>) {
         .license("All rights reserved.")
         .build();
     dialog.add_link("Donate", "https://ko-fi.com/homielab");
+    // Bundled in the binary for the preview's diagrams (`diagrams.rs`).
+    dialog.add_legal_section(
+        "Mermaid",
+        Some("© 2014–2022 Knut Sveidqvist and the Mermaid contributors"),
+        gtk::License::MitX11,
+        None,
+    );
     dialog.present(Some(&editor.window));
 }
 

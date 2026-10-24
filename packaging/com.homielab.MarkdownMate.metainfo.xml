@@ -21,6 +21,7 @@
     <ul>
       <li>Folder sidebar that follows changes on disk, with new note, folder, rename and move to Trash</li>
       <li>Edit, Preview and Side by side modes with synced scrolling and highlighted code</li>
+      <li>Math formulas and Mermaid diagrams in the preview, fully offline</li>
       <li>Open Quickly by name and Find in Folder across all notes</li>
       <li>Wiki links, tags, outline and autocompletion for links and tags</li>
       <li>Smart lists, to-do checkboxes and bold, italic and link shortcuts</li>

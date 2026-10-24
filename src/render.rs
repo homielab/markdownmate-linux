@@ -89,8 +89,9 @@ pub(crate) fn body_html(
         if let NodeValue::TaskItem(item) = &node.data().value {
             task_items.push((node, item.symbol_sourcepos.start.line));
         }
-        if let NodeValue::CodeBlock(_) = &node.data().value {
-            code_lines.push(node.data().sourcepos.start.line);
+        if let NodeValue::CodeBlock(block) = &node.data().value {
+            let diagram = block.fenced && is_diagram(&block.info);
+            code_lines.push((node.data().sourcepos.start.line, diagram));
         }
         if let NodeValue::FrontMatter(text) = &node.data().value {
             front_matter = Some(text.to_string());
@@ -175,20 +176,48 @@ pub(crate) fn body_html(
     out.push_str(&html[done..]);
     let mut html = out;
     // Code blocks render in document order and the note's text is escaped, so the n-th
-    // `<pre` is the n-th code block and the next `</pre>` closes it.
-    if tasks && !code_lines.is_empty() {
+    // `<pre` is the n-th code block and the next `</pre>` closes it. A ```mermaid block goes
+    // into a `<div class="mermaid">` (always: without a script it stays a code block), which
+    // takes over its `data-sourcepos`: the diagram drawn there replaces the code (`diagrams`).
+    if (tasks || code_lines.iter().any(|&(_, diagram)| diagram)) && !code_lines.is_empty() {
         let mut out = String::with_capacity(html.len() + code_lines.len() * 80);
         let mut done = 0;
-        for line in code_lines {
+        for (line, diagram) in code_lines {
             let Some(pre) = html[done..].find("<pre").map(|i| done + i) else {
                 break;
             };
             let close = pre + html[pre..].find("</pre>").expect("closed") + 6;
             out.push_str(&html[done..pre]);
-            out.push_str(&format!(
-                "<div class=\"code\"><a class=\"copy\" href=\"{COPY}{line}\">Copy</a>"
-            ));
-            out.push_str(&html[pre..close]);
+            if diagram {
+                let block = &html[pre..close];
+                let tag_end = block.find('>').expect("closed tag");
+                let attr = " data-sourcepos=\"";
+                let pos = block[..tag_end].find(attr).map(|start| {
+                    let end =
+                        start + attr.len() + block[start + attr.len()..].find('"').expect("quoted");
+                    (start, end + 1)
+                });
+                match pos {
+                    Some((start, end)) => {
+                        out.push_str(&format!("<div class=\"mermaid\"{}>", &block[start..end]));
+                        out.push_str(&block[..start]);
+                        out.push_str(&block[end..]);
+                    }
+                    None => {
+                        out.push_str("<div class=\"mermaid\">");
+                        out.push_str(block);
+                    }
+                }
+            } else if tasks {
+                out.push_str(&format!(
+                    "<div class=\"code\"><a class=\"copy\" href=\"{COPY}{line}\">Copy</a>"
+                ));
+                out.push_str(&html[pre..close]);
+            } else {
+                out.push_str(&html[pre..close]);
+                done = close;
+                continue;
+            }
             out.push_str("</div>");
             done = close;
         }
@@ -203,6 +232,19 @@ pub(crate) fn body_html(
         html.insert_str(0, &format!("{pre}</pre>\n"));
     }
     html
+}
+
+/// Whether a code fence's info string (` ```mermaid `) asks for a Mermaid diagram.
+fn is_diagram(info: &str) -> bool {
+    info.split_whitespace()
+        .next()
+        .is_some_and(|lang| lang.eq_ignore_ascii_case("mermaid"))
+}
+
+/// Whether a page made by `page` / `export_page` has a Mermaid block, so it needs the
+/// diagram script (`diagrams`). The note's text is escaped, so it cannot fake this markup.
+pub fn has_diagrams(html: &str) -> bool {
+    html.contains("<div class=\"mermaid\"")
 }
 
 /// LaTeX as MathML (WebKit renders it natively, no script), or, if math-core cannot
@@ -486,8 +528,9 @@ fn strip_note_ext(name: &str) -> &str {
     name
 }
 
-/// Full preview page. The CSP blocks scripts and every network load: only local files
-/// (images next to the note) and inline styles.
+/// Full preview page. The CSP blocks the page's scripts and every network load: only local
+/// files (images next to the note) and inline styles. Mermaid diagrams are drawn by the app's
+/// own script world (`diagrams`), which the page cannot reach.
 pub fn page(md: &str, dark: bool, theme: Theme, wiki: &dyn Fn(&str) -> Option<PathBuf>) -> String {
     let csp = "default-src 'none'; img-src file: data:; style-src 'unsafe-inline'";
     html_page(dark, theme, csp, "", &body_html(md, wiki, true, true, true))
@@ -782,7 +825,12 @@ a.copy { visibility: hidden; position: absolute; top: 6px; right: 6px; font: 12p
 div.code:hover a.copy { visibility: visible; }
 hr { border: none; border-top: 1px solid rgba(127,127,127,.4); }
 pre.front-matter { font-size: 0.8em; color: var(--hl-comment); background: none; border: 1px solid rgba(127,127,127,.25); padding: 6px 10px; opacity: .8; }
-@media print { html { background: none; } body { max-width: none; padding: 0; } pre, table, img, blockquote { break-inside: avoid; } a.copy, pre.front-matter { display: none; } }
+div.mermaid { margin: 1em 0; } div.mermaid > pre { margin: 0; }
+div.mermaid.drawn > pre { display: none; }
+div.mermaid .diagram { overflow-x: auto; text-align: center; }
+div.mermaid .diagram svg { max-width: 100%; height: auto; }
+p.mermaid-error { margin: .3em 0 0; font-size: .85em; color: var(--missing); white-space: pre-wrap; }
+@media print { html { background: none; } body { max-width: none; padding: 0; } pre, table, img, blockquote, div.mermaid { break-inside: avoid; } a.copy, pre.front-matter { display: none; } }
 ";
 
 /// What the preview does with a navigation to `uri`.
@@ -1122,6 +1170,49 @@ mod tests {
             js_string("Tiếng Việt 😀\u{2028}"),
             "\"Tiếng Việt 😀\\u2028\""
         );
+    }
+
+    #[test]
+    fn mermaid_blocks() {
+        let md = "# D\n\n```mermaid\nflowchart LR\n  A --> B<C>\n```\n\n```rust\nfn x() {}\n```\n\n- item\n\n  ~~~ Mermaid\n  pie\n  ~~~\n";
+        let p = page(md, false, Theme::Default, &|_| None);
+        assert!(has_diagrams(&p));
+        assert!(
+            p.contains("<div class=\"mermaid\" data-sourcepos=\"3:1-6:3\"><pre><code class=\"language-mermaid\">flowchart LR\n  A --&gt; B&lt;C&gt;\n</code></pre></div>"),
+            "{p}"
+        );
+        assert!(
+            p.contains("<div class=\"mermaid\" data-sourcepos=\"14:3-16:5\"><pre>"),
+            "{p}"
+        );
+        assert_eq!(p.matches("<div class=\"mermaid\"").count(), 2);
+        // Other code keeps its Copy button; a diagram gets none.
+        assert_eq!(p.matches("mm-copy:").count(), 1);
+        assert!(p.contains("href=\"mm-copy:8\">Copy</a><pre data-sourcepos=\"8:1-10:3\""));
+        // Export and Copy as HTML: the same block (a code block without the script).
+        let export = export_page(md, "D", Path::new("/r"), &|_| None);
+        assert!(
+            export
+                .contains("<div class=\"mermaid\"><pre><code class=\"language-mermaid\">flowchart")
+        );
+        assert!(has_diagrams(&export) && !export.contains("mm-copy:"));
+        let copy = html_fragment(md, Path::new("/r"), &|_| None);
+        assert!(
+            copy.contains("<div class=\"mermaid\"><pre><code class=\"language-mermaid\">flowchart")
+        );
+        // Not a diagram: other languages, an indented block, the word in text, raw HTML.
+        for md in [
+            "```rust\nmermaid\n```\n",
+            "    mermaid\n",
+            "mermaid and `mermaid`\n",
+            "<div class=\"mermaid\">x</div>\n",
+            "```mermaidx\nx\n```\n",
+        ] {
+            assert!(
+                !has_diagrams(&page(md, false, Theme::Default, &|_| None)),
+                "{md}"
+            );
+        }
     }
 
     #[test]
