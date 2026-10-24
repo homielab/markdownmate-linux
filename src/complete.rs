@@ -1,8 +1,10 @@
-//! `[[` note-name and `#tag` completion in the editor: finds the wiki link / tag being typed,
-//! ranks suggestions and builds the text to insert. Pure logic; the popover is in `main.rs`.
+//! Completion in the editor — `[[` note names, `[[Note#` headings, `#tag`s and code fence
+//! languages: finds what is being typed, ranks suggestions and builds the text to insert.
+//! Pure logic; the list is `input::Completer`.
 
 use std::path::{Path, PathBuf};
 
+use crate::render::HeadingTarget;
 use crate::{lists, tags};
 
 /// Most suggestions shown.
@@ -78,6 +80,117 @@ pub fn tag_suggestions(query: &str, index: &[(String, Vec<PathBuf>)]) -> Vec<Str
         .into_iter()
         .take(LIMIT)
         .map(|f| f.2.to_string())
+        .collect()
+}
+
+/// Languages offered after ```` ``` ```` / `~~~`: tokens the preview highlights (syntect),
+/// short names where people use them, plus `math` and `mermaid`; sorted.
+pub const FENCE_LANGUAGES: &[&str] = &[
+    "applescript",
+    "bash",
+    "bat",
+    "c",
+    "clojure",
+    "cpp",
+    "cs",
+    "css",
+    "d",
+    "diff",
+    "dot",
+    "erlang",
+    "go",
+    "groovy",
+    "haskell",
+    "html",
+    "java",
+    "js",
+    "json",
+    "latex",
+    "lisp",
+    "lua",
+    "makefile",
+    "markdown",
+    "math",
+    "matlab",
+    "mermaid",
+    "objective-c",
+    "ocaml",
+    "pascal",
+    "perl",
+    "php",
+    "py",
+    "r",
+    "ruby",
+    "rust",
+    "scala",
+    "sh",
+    "sql",
+    "tcl",
+    "xml",
+    "yml",
+];
+
+/// The language typed after an opening code fence (```` ``` ```` or `~~~`, up to 3 spaces
+/// in) on the cursor's line: `line` is the line up to the cursor, `above` the text before it.
+/// Starts with a letter. None for a fence that closes a block, or with nothing typed yet (so
+/// ```` ``` ```` + Enter stays a new line).
+pub fn fence_query<'a>(above: &str, line: &'a str) -> Option<&'a str> {
+    let t = line.trim_start_matches(' ');
+    let fence = t.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let run = t.len() - t.trim_start_matches(fence).len();
+    let q = &t[run..];
+    let word = q.starts_with(char::is_alphabetic)
+        && q.chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '+' | '#' | '-' | '_' | '.'));
+    (line.len() - t.len() < 4 && run >= 3 && word && !lists::in_fence(above)).then_some(q)
+}
+
+/// `names` matching `query`: those starting with it, then those holding its letters in order;
+/// ignoring case; in the given order within each group.
+fn matching<'a, T>(query: &str, items: &'a [T], name: impl Fn(&T) -> &str) -> Vec<&'a T> {
+    let q = query.to_lowercase();
+    let in_order = |s: &str| {
+        let mut t = s.chars();
+        q.chars().all(|c| t.any(|x| x == c))
+    };
+    let (mut prefix, mut rest) = (Vec::new(), Vec::new());
+    for item in items {
+        let lower = name(item).to_lowercase();
+        if lower.starts_with(&q) {
+            prefix.push(item);
+        } else if in_order(&lower) {
+            rest.push(item);
+        }
+    }
+    prefix.extend(rest);
+    prefix
+}
+
+/// Fence languages matching `query`, the one already typed left out; at most `LIMIT`.
+pub fn fence_suggestions(query: &str) -> Vec<&'static str> {
+    matching(query, FENCE_LANGUAGES, |l| l)
+        .into_iter()
+        .filter(|l| **l != query)
+        .take(LIMIT)
+        .copied()
+        .collect()
+}
+
+/// `[[Note#query` split into the note name and the heading query (`query`'s result); the
+/// note is empty for `[[#query` (this note).
+pub fn heading_query(link: &str) -> Option<(&str, &str)> {
+    link.split_once('#')
+}
+
+/// Headings (`render::heading_targets`) whose title matches `query`, in document order
+/// within the starting-with / letters-in-order groups; at most `LIMIT`.
+pub fn heading_suggestions<'a>(
+    query: &str,
+    headings: &'a [HeadingTarget],
+) -> Vec<&'a HeadingTarget> {
+    matching(query, headings, |h| &h.title)
+        .into_iter()
+        .take(LIMIT)
         .collect()
 }
 
@@ -158,6 +271,68 @@ mod tests {
         assert_eq!(link_name(&notes[2], &notes, root), "Idea");
         assert_eq!(link_name(&notes[0], &notes, root), "a/Plan");
         assert_eq!(link_name(&notes[1], &notes, root), "b/plan");
+    }
+
+    #[test]
+    fn fence_trigger() {
+        assert_eq!(fence_query("", "```p"), Some("p"));
+        assert_eq!(fence_query("text\n", "~~~~ru"), Some("ru"));
+        assert_eq!(fence_query("", "   ```js"), Some("js"));
+        assert_eq!(fence_query("", "```objective-c"), Some("objective-c"));
+        // Nothing typed yet, not a letter, too few marks, indented code, inline code.
+        assert_eq!(fence_query("", "```"), None);
+        assert_eq!(fence_query("", "```1"), None);
+        assert_eq!(fence_query("", "``py"), None);
+        assert_eq!(fence_query("", "    ```py"), None);
+        assert_eq!(fence_query("", "x ```py"), None);
+        assert_eq!(fence_query("", "```py x"), None);
+        // A fence closing a block (or inside one) is not an opening.
+        assert_eq!(fence_query("```py\ncode\n", "```p"), None);
+        assert_eq!(fence_query("~~~\n", "```p"), None);
+        assert_eq!(fence_query("```\ncode\n```\n", "```p"), Some("p"));
+    }
+
+    #[test]
+    fn fence_languages() {
+        let sorted = FENCE_LANGUAGES.windows(2).all(|w| w[0] < w[1]);
+        assert!(sorted, "sorted, no repeats");
+        // Every entry is highlighted by the preview, except the two rendered otherwise.
+        for lang in FENCE_LANGUAGES {
+            let known = crate::render::highlights(lang);
+            assert!(known || ["math", "mermaid"].contains(lang), "{lang}");
+        }
+        for short in ["js", "sh", "yml", "py"] {
+            assert!(FENCE_LANGUAGES.contains(&short), "{short}");
+        }
+        assert_eq!(
+            fence_suggestions("p"),
+            ["pascal", "perl", "php", "py", "applescript", "cpp", "lisp"]
+        );
+        assert_eq!(fence_suggestions("PY"), ["py"]);
+        assert_eq!(fence_suggestions("py"), Vec::<&str>::new());
+        assert_eq!(&fence_suggestions("me")[..1], ["mermaid"]);
+        assert_eq!(fence_suggestions("rst"), ["rust"]);
+        assert!(fence_suggestions("zz").is_empty());
+    }
+
+    #[test]
+    fn heading_links() {
+        assert_eq!(heading_query("Plan#Go"), Some(("Plan", "Go")));
+        assert_eq!(heading_query("#"), Some(("", "")));
+        assert_eq!(heading_query("Plan"), None);
+        let md = "# Setup\n\n## Install\n\n## Setup\n\n## Use it\n";
+        let all = crate::render::heading_targets(md);
+        let got = |q| {
+            heading_suggestions(q, &all)
+                .into_iter()
+                .map(|h| h.fragment.as_str())
+                .collect::<Vec<_>>()
+        };
+        // A repeated title is offered twice: the second inserts its id.
+        assert_eq!(got(""), ["Setup", "Install", "setup-1", "Use it"]);
+        assert_eq!(got("se"), ["Setup", "setup-1", "Use it"]);
+        assert_eq!(got("in"), ["Install"]);
+        assert!(got("zz").is_empty());
     }
 
     #[test]

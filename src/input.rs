@@ -7,9 +7,23 @@ use gtk::glib::{self, clone};
 use sourceview5::prelude::*;
 
 use crate::editor::Editor;
-use crate::{complete, format, images, lines, lists, paste, quick, relink, table};
+use crate::{complete, format, images, lines, lists, paste, quick, relink, render, table};
 
-/// `[[` note-name and `#tag` completion (`complete.rs`): a list floating over the editor (an overlay, not a
+/// What the completion list offers.
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    /// Note names after `[[` (closed with `]]`).
+    Note,
+    /// Headings after `[[Note#` / `[[#` (closed with `]]`).
+    Heading,
+    /// `#tag`s (inserted as is).
+    Tag,
+    /// Code fence languages (inserted as is).
+    Fence,
+}
+
+/// `[[` note-name, `[[Note#` heading, `#tag` and code fence language completion
+/// (`complete.rs`): a list floating over the editor (an overlay, not a
 /// popup window, so it never takes focus — typing and input methods stay in the editor); its
 /// keys are handled in `smart_lists`. Hand-made rather than GtkSourceView's completion: that
 /// needs two GObject subclasses and replaces only the word at the cursor, while names here
@@ -20,11 +34,10 @@ pub(crate) struct Completer {
     overlay: gtk::Overlay,
     pub(crate) panel: gtk::Frame,
     list: gtk::ListBox,
-    /// Link names (or tags) of the rows shown, and the char offset where the query starts.
-    names: RefCell<Vec<String>>,
+    /// The rows shown (label, text to insert), and the char offset where the query starts.
+    names: RefCell<Vec<(String, String)>>,
     start: Cell<i32>,
-    /// The rows are tags (insert as is), not link names (close with `]]`).
-    tag: Cell<bool>,
+    kind: Cell<Kind>,
     /// Query start closed with Esc: stays closed until the cursor leaves that link.
     dismissed: Cell<Option<i32>>,
 }
@@ -48,7 +61,7 @@ impl Completer {
             list,
             names: RefCell::default(),
             start: Cell::new(0),
-            tag: Cell::new(false),
+            kind: Cell::new(Kind::Note),
             dismissed: Cell::new(None),
         });
         c.list.connect_row_activated(clone!(
@@ -67,8 +80,9 @@ impl Completer {
         c
     }
 
-    /// Shows the notes matching the `[[query` (or the tags matching the `#query`) at the
-    /// cursor, or hides the list.
+    /// Shows the notes matching the `[[query` (the headings matching `[[Note#query`, the tags
+    /// matching `#query`, the languages matching ```` ```query ````) at the cursor, or hides
+    /// the list.
     pub(crate) fn update(self: &Rc<Self>, editor: &Editor) {
         let buffer = &self.buffer;
         let cursor = buffer.iter_at_mark(&buffer.get_insert());
@@ -77,30 +91,62 @@ impl Completer {
         let line = buffer.text(&line_start, &cursor, false);
         let root = editor.root.borrow().clone();
         let found = (|| {
-            if !editor.view.has_focus() || buffer.has_selection() || !line.contains(['[', '#']) {
+            if !editor.view.has_focus()
+                || buffer.has_selection()
+                || !line.contains(['[', '#', '`', '~'])
+            {
                 return None;
             }
             let above = buffer.text(&buffer.start_iter(), &line_start, false);
-            if let Some(query) = complete::query(&above, &line) {
-                return Some((query.to_string(), false));
+            if let Some(query) = complete::fence_query(&above, &line) {
+                return Some((query.to_string(), Kind::Fence, String::new()));
             }
-            complete::tag_query(&above, &line).map(|q| (q.to_string(), true))
+            if let Some(query) = complete::query(&above, &line) {
+                return Some(match complete::heading_query(query) {
+                    Some((note, q)) => (q.to_string(), Kind::Heading, note.to_string()),
+                    None => (query.to_string(), Kind::Note, String::new()),
+                });
+            }
+            complete::tag_query(&above, &line).map(|q| (q.to_string(), Kind::Tag, String::new()))
         })();
-        let Some((query, tag)) = found.filter(|(_, tag)| *tag || root.is_some()) else {
+        // Other notes need the open folder; this note's headings and tags do not.
+        let Some((query, kind, note)) = found
+            .filter(|(_, kind, note)| root.is_some() || (*kind != Kind::Note && note.is_empty()))
+        else {
             self.dismissed.set(None);
             self.panel.set_visible(false);
             return;
         };
         let start = cursor.offset() - query.chars().count() as i32;
-        let names: Vec<String> = if tag {
-            complete::tag_suggestions(&query, &editor.tag_index.borrow())
-        } else {
-            let (notes, root) = (editor.note_list.borrow().clone(), root.unwrap_or_default());
-            quick::search(&query, &notes, &root)
+        let same = |s: &str| (s.to_string(), s.to_string());
+        let names: Vec<(String, String)> = match kind {
+            Kind::Tag => complete::tag_suggestions(&query, &editor.tag_index.borrow())
+                .iter()
+                .map(|t| same(t))
+                .collect(),
+            Kind::Fence => complete::fence_suggestions(&query)
                 .into_iter()
-                .take(complete::LIMIT)
-                .map(|p| complete::link_name(p, &notes, &root))
-                .collect()
+                .map(same)
+                .collect(),
+            Kind::Note => {
+                let (notes, root) = (editor.note_list.borrow().clone(), root.unwrap_or_default());
+                quick::search(&query, &notes, &root)
+                    .into_iter()
+                    .take(complete::LIMIT)
+                    .map(|p| same(&complete::link_name(p, &notes, &root)))
+                    .collect()
+            }
+            Kind::Heading => {
+                let text = self.heading_source(editor, &note, root.as_deref());
+                let headings = render::heading_targets(&text.unwrap_or_default());
+                complete::heading_suggestions(&query, &headings)
+                    .into_iter()
+                    .map(|h| {
+                        let indent = "  ".repeat(usize::from(h.level.saturating_sub(1)));
+                        (format!("{indent}{}", h.title), h.fragment.clone())
+                    })
+                    .collect()
+            }
         };
         if self.dismissed.get() == Some(start) || names.is_empty() {
             self.panel.set_visible(false);
@@ -109,8 +155,8 @@ impl Completer {
         while let Some(row) = self.list.row_at_index(0) {
             self.list.remove(&row);
         }
-        for name in &names {
-            let label = gtk::Label::builder().label(name).xalign(0.0).build();
+        for (label, _) in &names {
+            let label = gtk::Label::builder().label(label).xalign(0.0).build();
             let row = gtk::ListBoxRow::builder()
                 .child(&label)
                 .focusable(false)
@@ -120,9 +166,35 @@ impl Completer {
         self.list.select_row(self.list.row_at_index(0).as_ref());
         self.names.replace(names);
         self.start.set(start);
-        self.tag.set(tag);
+        self.kind.set(kind);
         self.panel.set_visible(true);
         self.place_later();
+    }
+
+    /// The Markdown whose headings `[[note#` offers: the editor's text for `[[#` or a link to
+    /// the open note, else the linked note's file (None if it does not resolve or read).
+    fn heading_source(
+        &self,
+        editor: &Editor,
+        note: &str,
+        root: Option<&std::path::Path>,
+    ) -> Option<String> {
+        let current = editor.path.borrow().clone();
+        let path = if note.trim().is_empty() {
+            None
+        } else {
+            let notes = editor.note_list.borrow().clone();
+            let path = render::resolve_wiki(note, &notes, root?, current.as_deref())?.clone();
+            Some(path).filter(|p| current.as_ref() != Some(p))
+        };
+        match path {
+            Some(path) => std::fs::read_to_string(path).ok(),
+            None => Some(
+                self.buffer
+                    .text(&self.buffer.start_iter(), &self.buffer.end_iter(), true)
+                    .into(),
+            ),
+        }
     }
 
     /// `place` once the view has scrolled to the cursor (it does that after the text change).
@@ -184,7 +256,7 @@ impl Completer {
 
     /// Replaces the query with suggestion `i`; a link is closed (`complete::insertion`).
     pub(crate) fn accept(&self, i: i32) {
-        let Some(name) = self.names.borrow().get(i as usize).cloned() else {
+        let Some((_, name)) = self.names.borrow().get(i as usize).cloned() else {
             return;
         };
         let buffer = &self.buffer;
@@ -194,16 +266,21 @@ impl Completer {
             end.forward_to_line_end();
         }
         let after = buffer.text(&cursor, &end, false);
-        let text = if self.tag.get() {
-            name.clone()
-        } else {
+        let link = matches!(self.kind.get(), Kind::Note | Kind::Heading);
+        let text = if link {
             complete::insertion(&name, &after)
+        } else {
+            name.clone()
         };
         self.panel.set_visible(false);
+        if self.kind.get() == Kind::Fence {
+            // `cs` would still offer `css`: keep the list closed so Enter starts the block.
+            self.dismissed.set(Some(self.start.get()));
+        }
         buffer.begin_user_action();
         buffer.delete(&mut buffer.iter_at_offset(self.start.get()), &mut cursor);
         buffer.insert_at_cursor(&text);
-        if text == name && !self.tag.get() {
+        if text == name && link {
             // `]]` was already there: step over it.
             let mut past = buffer.iter_at_mark(&buffer.get_insert());
             past.forward_chars(2);

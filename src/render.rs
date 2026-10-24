@@ -326,34 +326,73 @@ pub fn heading_at(md: &str, fragment: &str) -> Option<(usize, String)> {
         .cloned()
 }
 
-/// The `#fragment` of a wiki link to the heading spanning 1-based `line` of `md` (Outline ▸
-/// Copy Link): its plain text, which `heading_at` matches, or its id when an earlier heading
-/// has the same text or the text holds `]`/`|` (which would end the link). None if no heading
-/// spans `line`.
-pub fn heading_fragment(md: &str, line: usize) -> Option<String> {
+/// A heading as a link target (Outline ▸ Copy Link, `[[Note#` completion).
+#[derive(Debug, PartialEq)]
+pub struct HeadingTarget {
+    /// 1 (`#`) to 6.
+    pub level: u8,
+    /// Plain text, whitespace collapsed.
+    pub title: String,
+    /// What follows `#` in a wiki link to it: its text, which `heading_at` matches, or its id
+    /// when an earlier heading has the same text or the text holds `]`/`|` (which would end
+    /// the link).
+    pub fragment: String,
+    /// 1-based lines it spans (two for a Setext heading).
+    pub lines: std::ops::RangeInclusive<usize>,
+}
+
+/// The headings of `md` in order, outside code blocks and front matter.
+pub fn heading_targets(md: &str) -> Vec<HeadingTarget> {
     let arena = comrak::Arena::new();
     let root = comrak::parse_document(&arena, md, &options());
-    let node = root.descendants().find(|n| {
-        let pos = n.data().sourcepos;
-        matches!(n.data().value, comrak::nodes::NodeValue::Heading(_))
-            && (pos.start.line..=pos.end.line).contains(&line)
-    })?;
-    let start = node.data().sourcepos.start.line;
-    let text = node.collect_text();
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    match heading_at(md, &text) {
-        Some((l, _)) if l == start && !text.contains([']', '|']) => Some(text),
-        _ => root
-            .descendants()
-            .filter(|n| matches!(n.data().value, comrak::nodes::NodeValue::Heading(_)))
-            .scan(comrak::Anchorizer::new(), |ids, n| {
-                Some((
-                    n.data().sourcepos.start.line,
-                    ids.anchorize(&n.collect_text()),
-                ))
-            })
-            .find_map(|(l, id)| (l == start).then_some(id)),
-    }
+    let mut ids = comrak::Anchorizer::new();
+    let found: Vec<_> = root
+        .descendants()
+        .filter_map(|n| {
+            let level = match &n.data().value {
+                comrak::nodes::NodeValue::Heading(h) => h.level,
+                _ => return None,
+            };
+            let text = n.collect_text();
+            let pos = n.data().sourcepos;
+            let title = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            Some((
+                level,
+                title,
+                ids.anchorize(&text),
+                pos.start.line..=pos.end.line,
+            ))
+        })
+        .collect();
+    // `heading_at`'s rule over the same list: by id, then by the text's id.
+    let resolve = |want: &str| {
+        let text = comrak::Anchorizer::new().anchorize(want);
+        [want, text.as_str()]
+            .iter()
+            .find_map(|w| found.iter().position(|f| f.2 == *w))
+    };
+    found
+        .iter()
+        .enumerate()
+        .map(|(i, (level, title, id, lines))| {
+            let by_text = resolve(title) == Some(i) && !title.contains([']', '|']);
+            HeadingTarget {
+                level: *level,
+                title: title.clone(),
+                fragment: if by_text { title.clone() } else { id.clone() },
+                lines: lines.clone(),
+            }
+        })
+        .collect()
+}
+
+/// The `#fragment` of a wiki link to the heading spanning 1-based `line` of `md` (Outline ▸
+/// Copy Link, `HeadingTarget::fragment`). None if no heading spans `line`.
+pub fn heading_fragment(md: &str, line: usize) -> Option<String> {
+    heading_targets(md)
+        .into_iter()
+        .find(|h| h.lines.contains(&line))
+        .map(|h| h.fragment)
 }
 
 /// The content of the code block (fenced or indented, at any depth) starting on 1-based
@@ -422,6 +461,12 @@ static SYNTAXES: LazyLock<syntect::parsing::SyntaxSet> =
 /// The language token syntect looks up for a fence's language (` ```rust,ignore ` → `rust`).
 fn lang_token(lang: Option<&str>) -> &str {
     lang.unwrap_or("").split(',').next().unwrap_or("").trim()
+}
+
+/// Whether code blocks tagged `token` are highlighted.
+#[cfg(test)]
+pub fn highlights(token: &str) -> bool {
+    SYNTAXES.find_syntax_by_token(token).is_some()
 }
 
 /// `code` as highlighted HTML (`hl-*` classes), or escaped when `token` names no known
@@ -1096,6 +1141,30 @@ mod tests {
         }
         assert_eq!(heading_fragment(md, 2), None);
         assert_eq!(heading_fragment(md, 9), None);
+    }
+
+    #[test]
+    fn heading_targets_text_or_id() {
+        // Repeated titles: the first by text, the next by id; `]` / `|` force the id; a title
+        // equal to an earlier heading's id takes the id too.
+        let md = "# Plan\n\n## Plan\n\n### a ] b\n\n# plan-1\n\n```\n# not\n```\n";
+        let got: Vec<_> = heading_targets(md)
+            .into_iter()
+            .map(|h| (h.level, h.title, h.fragment))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (1, "Plan".to_string(), "Plan".to_string()),
+                (2, "Plan".to_string(), "plan-1".to_string()),
+                (3, "a ] b".to_string(), "a--b".to_string()),
+                (1, "plan-1".to_string(), "plan-1-1".to_string()),
+            ]
+        );
+        for h in heading_targets(md) {
+            let line = *h.lines.start();
+            assert_eq!(heading_at(md, &h.fragment).map(|(l, _)| l), Some(line));
+        }
     }
 
     #[test]

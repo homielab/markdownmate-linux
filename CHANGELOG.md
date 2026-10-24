@@ -6,6 +6,9 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Code block languages: typing ```` ``` ```` (or `~~~`) and a letter at the start of a line pops up the languages the preview colours (`js`, `py`, `sh`, `yml`, …, plus `math` and `mermaid`).
+- Heading completion: typing `#` after `[[Note` pops up that note's headings, and `[[#` this note's.
+
 ## 0.4.0
 
 - Faster preview of large notes with code: code blocks are highlighted on all CPU cores, and while you type only the code blocks you changed are highlighted again (in a 1 MB test note, the first preview is about 4× faster and an update after a keystroke about 9× faster).
