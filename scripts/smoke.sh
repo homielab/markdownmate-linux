@@ -88,6 +88,10 @@ wait_for() {
     local end=$((SECONDS + $1)); shift
     until "$@"; do [ "$SECONDS" -lt "$end" ] || return 1; sleep 0.2; done
 }
+# file_is <file> <text>: the file holds exactly <text> (trailing newlines dropped, as by $(cat)).
+file_is() { [ "$(cat "$1" 2>/dev/null)" = "$2" ]; }
+# file_line2_is <file> <text>: line 2 of the file is <text>.
+file_line2_is() { [ "$(sed -n 2p "$1" 2>/dev/null)" = "$2" ]; }
 # run <name> <state mode line> [xdotool keys...]: start the app, screenshot, check it.
 # A function act_<name>, if defined, runs after the first screenshot.
 run() {
@@ -389,19 +393,16 @@ act_search() {
     sleep 1
     scrot -o "$OUT/search.png"
     xdotool key Escape type 'X'
-    sleep 2
-    [ "$(sed -n 2p "$NOTES/Search.md")" = 'X nam' ] || { echo "FAIL search: Enter/Esc did not select the 2nd match"; bad=1; }
+    wait_for 10 file_line2_is "$NOTES/Search.md" 'X nam' || { echo "FAIL search: Enter/Esc did not select the 2nd match"; bad=1; }
     xdotool key ctrl+h
     sleep 1
     xdotool type 'Nam'
     xdotool key ctrl+Return
     sleep 1
     scrot -o "$OUT/search-replace.png"
-    sleep 1
-    [ "$(cat "$NOTES/Search.md")" = "$(printf 'Nam\nX nam\nother Nam')" ] || { echo "FAIL search: Replace All"; bad=1; }
+    wait_for 10 file_is "$NOTES/Search.md" "$(printf 'Nam\nX nam\nother Nam')" || { echo "FAIL search: Replace All"; bad=1; }
     xdotool key Escape ctrl+z
-    sleep 2
-    [ "$(cat "$NOTES/Search.md")" = "$(printf 'Việt\nX nam\nother VIỆT')" ] || { echo "FAIL search: Replace All is not one undo step"; bad=1; }
+    wait_for 10 file_is "$NOTES/Search.md" "$(printf 'Việt\nX nam\nother VIỆT')" || { echo "FAIL search: Replace All is not one undo step"; bad=1; }
 }
 
 # Paste an image (clipboard holds only image/png): saved as assets/image.png, linked in the note.
