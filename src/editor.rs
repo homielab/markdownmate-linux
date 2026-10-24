@@ -17,8 +17,8 @@ use crate::{
     UNTITLED, file_name, state_file,
 };
 use crate::{
-    backlinks, complete, images, links, lists, mentions, naming, notes, outline, quick, render,
-    save, sidebar, state, stats, tags, title, url,
+    backlinks, complete, images, links, lists, mentions, naming, notes, outline, quick, relink,
+    render, save, sidebar, state, stats, tags, title, url,
 };
 
 /// The window's widgets and the open note. Shared (Rc) by sidebar buttons, the auto-save
@@ -127,6 +127,12 @@ pub(crate) struct Editor {
 impl Editor {
     pub(crate) fn toast(&self, msg: &str) {
         self.toasts.add_toast(adw::Toast::new(msg));
+    }
+
+    /// The editor's whole text.
+    fn text(&self) -> String {
+        let (start, end) = self.buffer.bounds();
+        self.buffer.text(&start, &end, true).to_string()
     }
 
     /// Writes the open folder, note and view mode for the next launch. Errors are
@@ -1381,14 +1387,19 @@ impl Editor {
             return;
         };
         match naming::move_target(from, dir, &root) {
-            Ok(Some(to)) => self.relocate(from, "move", |from| naming::move_to(from, &to)),
+            // `to` is under the folder's real path; keep the paths the sidebar lists.
+            Ok(Some(to)) => {
+                let to = relink::rebase(&to, &root);
+                self.relocate(from, "move", |from| naming::move_to(from, &to))
+            }
             Ok(None) => {}
             Err(msg) => self.toast(&format!("Cannot move {}: {msg}", file_name(from))),
         }
     }
 
     /// Runs `op` (a rename/move of `from` returning the new path) with the open note saved
-    /// first; the open note and the expanded folders follow the new path.
+    /// first; the open note and the expanded folders follow the new path. Then offers to
+    /// update the links to it (`offer_link_updates`).
     fn relocate(
         self: &Rc<Self>,
         from: &Path,
@@ -1400,6 +1411,7 @@ impl Editor {
         };
         match op(from) {
             Ok(to) => {
+                let before = self.note_list.borrow().to_vec();
                 self.update_note_list(Some(from), Some(&to));
                 for p in self.positions.borrow_mut().iter_mut() {
                     if let Some(new) = moved(&p.note, from, &to) {
@@ -1417,6 +1429,9 @@ impl Editor {
                 drop(expanded);
                 self.remember();
                 self.schedule_rescan();
+                if to != from {
+                    self.offer_link_updates(vec![(from.to_path_buf(), to)], before);
+                }
             }
             Err(e) => {
                 if let Some(p) = &open {
@@ -1425,6 +1440,117 @@ impl Editor {
                 self.toast(&format!("Cannot {verb} {}: {e}", file_name(from)));
             }
         }
+    }
+
+    /// After the sidebar renamed or moved entries (`moves`: old and new path; `before`: the
+    /// folder's notes before), finds the notes in the open folder whose links need changing
+    /// (on a background thread) and asks once: "Update N links in M notes?", Don't Update
+    /// being the default. Update edits the open note in the editor (one undo step, saved like
+    /// any edit) and writes the others, unless they changed meanwhile.
+    pub(crate) fn offer_link_updates(
+        self: &Rc<Self>,
+        moves: Vec<(PathBuf, PathBuf)>,
+        before: Vec<PathBuf>,
+    ) {
+        let Some(root) = self.scan_dir.borrow().clone() else {
+            return;
+        };
+        let name = match moves.as_slice() {
+            [(_, to)] => Some(
+                to.file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            _ => None,
+        };
+        let plan = relink::Plan::new(moves, before, root);
+        let open = self.path.borrow().clone().map(|p| (p, self.text()));
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let Ok((plan, found)) = gio::spawn_blocking(move || {
+                let found = relink::find(&plan, open.as_ref());
+                (plan, found)
+            })
+            .await
+            else {
+                return;
+            };
+            let Some(editor) = weak.upgrade() else { return };
+            if found.is_empty() {
+                return;
+            }
+            let links: usize = found.iter().map(|f| f.links).sum();
+            let plural =
+                |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+            let body = match &name {
+                Some(name) => format!("These notes link to “{name}” by its old name or location."),
+                None => "These notes link to the moved items by their old names or locations."
+                    .to_string(),
+            };
+            let dialog = adw::AlertDialog::builder()
+                .heading(format!(
+                    "Update {} in {}?",
+                    plural(links, "link"),
+                    plural(found.len(), "note")
+                ))
+                .body(body)
+                .default_response("cancel")
+                .close_response("cancel")
+                .build();
+            dialog.add_responses(&[("cancel", "Don’t Update"), ("update", "Update")]);
+            let weak = Rc::downgrade(&editor);
+            dialog.connect_response(Some("update"), move |_, _| {
+                if let Some(editor) = weak.upgrade() {
+                    editor.update_links(&plan, &found);
+                }
+            });
+            dialog.present(Some(&editor.window));
+        });
+    }
+
+    /// Makes `plan`'s edits: in the editor for the open note (one undo step), on disk for the
+    /// other notes of `found` (in the background); a toast tells how many were updated.
+    fn update_links(self: &Rc<Self>, plan: &relink::Plan, found: &[relink::Found]) {
+        let open = self.path.borrow().clone();
+        let mut done = 0;
+        let mut closed = Vec::new();
+        for f in found {
+            if open.as_ref() == Some(&f.path) {
+                let text = self.text();
+                let edits = plan.edits(&text, &f.path);
+                self.buffer.begin_user_action();
+                for edit in edits.iter().rev() {
+                    let at = |byte: usize| text[..byte].chars().count() as i32;
+                    let mut start = self.buffer.iter_at_offset(at(edit.range.start));
+                    let mut end = self.buffer.iter_at_offset(at(edit.range.end));
+                    self.buffer.delete(&mut start, &mut end);
+                    self.buffer.insert(&mut start, &edit.text);
+                }
+                self.buffer.end_user_action();
+                done += 1;
+            } else {
+                closed.push(f.clone());
+            }
+        }
+        let (plan, total) = (plan.clone(), found.len());
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let written = gio::spawn_blocking(move || relink::write(&plan, &closed))
+                .await
+                .unwrap_or(0);
+            let Some(editor) = weak.upgrade() else { return };
+            let done = done + written;
+            editor.toast(&if done == total {
+                format!(
+                    "Updated links in {done} note{}",
+                    if done == 1 { "" } else { "s" }
+                )
+            } else {
+                format!("Updated links in {done} of {total} notes; the others changed meanwhile")
+            });
+            editor.refresh_backlinks();
+        });
     }
 
     /// Moves a note or folder to the Trash (never deletes). The open note, if inside, is saved

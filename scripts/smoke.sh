@@ -1122,6 +1122,41 @@ act_ctxmenu() {
     scrot -o "$OUT/ctxmenu.png"
 }
 run ctxmenu mode=edit
+# Link updates after a sidebar rename: Aa/Old.md -> New (Update: the open note Ref.md is changed
+# in the editor, one undo step; Zlink.md on disk; the link in code stays), New -> Newer (Don't
+# Update, the default: nothing changes), then the folder Aa -> Bb (Update).
+rename_row() { # rename_row <row y> <menu item y> <new name> <keys for the link dialog>
+    xdotool mousemove 60 "$1"; sleep 0.5; xdotool click 3; sleep 1
+    xdotool mousemove 79 "$2" click 1; sleep 1
+    xdotool mousemove 450 301 click 1; sleep 0.3
+    xdotool key ctrl+a; xdotool type "$3"; xdotool key Return
+    sleep 2
+    scrot -o "$OUT/relink-$3.png"
+    xdotool key $4
+    sleep 2
+}
+act_relink() {
+    timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
+    local ref="$NOTES/Aa/Ref.md"
+    rename_row 113 173 New "Tab Return"
+    wait_for 5 grep -qxF 'See [[New]] and [o](New.md)' "$ref" || { echo "FAIL relink: open note not updated"; bad=1; }
+    grep -qxF '[o](Aa/New.md) `[[Old]]`' "$NOTES/Zlink.md" || { echo "FAIL relink: Zlink.md not updated"; bad=1; }
+    xdotool mousemove 400 300 click 1 key ctrl+z
+    wait_for 5 grep -qxF 'See [[Old]] and [o](Old.md)' "$ref" || { echo "FAIL relink: not one undo step"; bad=1; }
+    xdotool key ctrl+shift+z
+    wait_for 5 grep -qxF 'See [[New]] and [o](New.md)' "$ref" || { echo "FAIL relink: redo"; bad=1; }
+    rename_row 113 173 Newer Return
+    [ -e "$NOTES/Aa/Newer.md" ] && grep -qxF 'See [[New]] and [o](New.md)' "$ref" \
+        && grep -qxF '[o](Aa/New.md) `[[Old]]`' "$NOTES/Zlink.md" || { echo "FAIL relink: Don't Update changed a note"; bad=1; }
+    rename_row 75 169 Bb "Tab Return"
+    wait_for 5 grep -qxF '[o](Bb/New.md) `[[Old]]`' "$NOTES/Zlink.md" || { echo "FAIL relink: folder rename not updated"; bad=1; }
+}
+mkdir -p "$NOTES/Aa"
+printf '# Old\n' > "$NOTES/Aa/Old.md"
+printf 'See [[Old]] and [o](Old.md)\n' > "$NOTES/Aa/Ref.md"
+printf '[o](Aa/Old.md) `[[Old]]`\n' > "$NOTES/Zlink.md"
+NOTE="$NOTES/Aa/Ref.md" run relink "$(printf 'mode=edit\nexpanded=%s' "$NOTES/Aa")"
+rm -rf "$NOTES/Aa" "$NOTES/Bb" "$NOTES/Zlink.md"
 # Web process killed (#82): the app stays up and toasts "Preview stopped" with Reload; typing
 # re-renders the preview in a new web process.
 act_webcrash() {
