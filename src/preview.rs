@@ -10,7 +10,7 @@ use webkit6::prelude::*;
 
 use crate::editor::Editor;
 use crate::{PREVIEW_DELAY, PREVIEW_LINE_JS, SCRIPT_WORLD, SYNC_DELAY, SYNC_JS, file_name};
-use crate::{diagrams, math, render, save, state};
+use crate::{diagrams, incremental, math, render, save, state};
 
 impl Editor {
     /// Side by side: re-render the preview shortly after typing stops.
@@ -30,8 +30,10 @@ impl Editor {
     }
 
     /// Renders the buffer into the preview, if the preview is showing. Re-rendering the same
-    /// note swaps the page's head and body in place (no reload: no jump to the top, the scroll
-    /// position stays); another note loads a new page. The page's own scripts stay off
+    /// note updates the page in place (no reload: no jump to the top, the scroll position
+    /// stays): only the top-level blocks that changed are rendered and replaced
+    /// (`incremental`), or the head and body are swapped when the note must render whole;
+    /// another note loads a new page. The page's own scripts stay off
     /// (`enable-javascript-markup`); only this app's scripts run, in a separate script world.
     pub(crate) fn refresh_preview(self: &Rc<Self>) {
         self.preview_generation
@@ -65,22 +67,68 @@ impl Editor {
         if !start {
             return;
         }
-        let generation = self.preview_generation.get();
-        let job = self.page_job(None);
+        // Shown even if the text changed meanwhile (a step behind is still closer to it); the
+        // refresh asked for meanwhile follows. Only a page loaded meanwhile drops it.
+        let loads = self.preview_loads.get();
+        let job = self.preview_job(self.preview_state.take());
         let editor = Rc::clone(self);
         glib::spawn_future_local(async move {
-            let html = gio::spawn_blocking(job).await;
+            let result = gio::spawn_blocking(job).await;
             let mut slot = editor.preview_render.get();
             let again = slot.finish();
             editor.preview_render.set(slot);
-            match html {
-                Ok(html) if editor.preview_generation.get() == generation => {
-                    editor.swap_page(&html)
+            if let Ok((state, update)) = result
+                && editor.preview_loads.get() == loads
+                && !editor.preview.is_loading()
+            {
+                editor.preview_state.replace(state);
+                match update {
+                    incremental::Update::Page(html) => editor.swap_page(&html),
+                    incremental::Update::Patch(patch) => editor.patch_page(&patch),
                 }
-                _ if again => editor.refresh_preview(), // with the latest text
-                _ => {}
+            }
+            if again {
+                editor.refresh_preview(); // with the latest text
             }
         });
+    }
+
+    /// Applies `patch` (`incremental::Patch`) to the shown page: its changed top-level nodes
+    /// replaced, the source lines of the nodes after them moved, the scroll position kept.
+    /// Formulas and diagrams of the replaced nodes are reused as in `swap_page`. A page that
+    /// is not the one the patch was made for gets the whole page instead.
+    fn patch_page(self: &Rc<Self>, patch: &incremental::Patch) {
+        if patch.edits.is_empty() && patch.delta == 0 {
+            return;
+        }
+        let script = patch_script(patch);
+        let has_math = patch.has_math();
+        let has_diagrams = patch.has_diagrams();
+        let editor = Rc::clone(self);
+        self.preview.evaluate_javascript(
+            &script,
+            Some(SCRIPT_WORLD),
+            None,
+            gio::Cancellable::NONE,
+            move |result| match result {
+                Ok(done) if done.to_boolean() => {
+                    editor.refresh_preview_find();
+                    editor.sync_preview();
+                    if has_math {
+                        editor.draw_math();
+                    }
+                    if has_diagrams {
+                        editor.draw_diagrams();
+                    }
+                }
+                // Not the page the patch was for: render it whole.
+                Ok(_) => {
+                    editor.preview_state.take();
+                    editor.refresh_preview();
+                }
+                Err(_) => editor.load_preview(),
+            },
+        );
     }
 
     /// Replaces the shown page's head and body with `html` in place (scroll position kept).
@@ -251,18 +299,53 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
     pub(crate) fn load_preview(self: &Rc<Self>) {
         self.preview_generation
             .set(self.preview_generation.get().wrapping_add(1));
+        self.preview_loads
+            .set(self.preview_loads.get().wrapping_add(1));
         let generation = self.preview_generation.get();
-        let job = self.page_job(None);
+        let job = self.preview_job(None);
         let uri = self.page_uri();
         let editor = Rc::clone(self);
         glib::spawn_future_local(async move {
-            let Ok(html) = gio::spawn_blocking(job).await else {
+            let Ok((state, update)) = gio::spawn_blocking(job).await else {
                 return;
             };
+            let incremental::Update::Page(html) = update else {
+                unreachable!("a first render is a page");
+            };
             if editor.preview_generation.get() == generation {
+                editor.preview_state.replace(state);
                 editor.preview.load_html(&html, Some(&uri));
             }
         });
+    }
+
+    /// The preview's render of the buffer building on `previous` (`incremental::render`), as
+    /// a job that may run on another thread, like `page_job`.
+    fn preview_job(
+        &self,
+        previous: Option<incremental::Preview>,
+    ) -> impl FnOnce() -> (Option<incremental::Preview>, incremental::Update) + Send + 'static {
+        let (start, end) = self.buffer.bounds();
+        let text = self.buffer.text(&start, &end, true).to_string();
+        let notes = self.note_list.borrow().to_vec();
+        let root = self.root.borrow().clone().unwrap_or_default();
+        let current = self.path.borrow().clone();
+        let links = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            (&notes, &root, &current).hash(&mut hasher);
+            hasher.finish()
+        };
+        let style = incremental::Style {
+            dark: adw::StyleManager::default().is_dark(),
+            theme: self.prefs.borrow().theme,
+            links,
+        };
+        move || {
+            let wiki =
+                |t: &str| render::resolve_wiki(t, &notes, &root, current.as_deref()).cloned();
+            incremental::render(previous, &text, style, &wiki)
+        }
     }
 
     /// The preview page of the buffer, as a job that may run on another thread: everything
@@ -288,6 +371,41 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
             render::page(&text, dark, theme, &wiki)
         }
     }
+}
+
+/// The script `Editor::patch_page` runs: true when the page was patched, false (untouched)
+/// when its body does not have the nodes the patch was made for.
+fn patch_script(patch: &incremental::Patch) -> String {
+    let edits: Vec<String> = patch
+        .edits
+        .iter()
+        .map(|e| format!("[{},{},{}]", e.at, e.remove, render::js_string(&e.html)))
+        .collect();
+    format!(
+        "(function(n,s,d,edits){{var b=document.body;if(!b||b.childNodes.length!==n)return false;\
+var y=scrollY,kids=Array.from(b.childNodes),removed=[],added=[];\
+if(d){{var line=function(v){{return String(Number(v)+d)}};\
+for(var i=s;i<kids.length;i++){{var k=kids[i];if(k.nodeType!==1)continue;\
+var els=Array.from(k.querySelectorAll('[data-sourcepos]'));if(k.hasAttribute('data-sourcepos'))els.push(k);\
+for(var e of els)e.dataset.sourcepos=e.dataset.sourcepos.replace(/^(\\d+)(:\\d+-)(\\d+)/,\
+function(m,a,c,z){{return line(a)+c+line(z)}});\
+for(var a of k.querySelectorAll('a.task,a.copy'))a.setAttribute('href',\
+a.getAttribute('href').replace(/\\d+$/,line))}}}}\
+for(var e of edits)for(var i=e[0];i<e[0]+e[1];i++)removed.push(kids[i]);\
+var mmOld=window.mmDiagrams?window.mmDiagrams.take(removed):null;\
+var mmMathOld=window.mmMath?window.mmMath.take(removed):null;\
+for(var e of edits){{var t=document.createElement('template');t.innerHTML=e[2];\
+added.push(...t.content.childNodes);b.insertBefore(t.content,kids[e[0]]||null);\
+for(var i=e[0];i<e[0]+e[1];i++)kids[i].remove()}}\
+if(window.mmMath)window.mmMath.render(mmMathOld);\
+if(window.mmDiagrams)window.mmDiagrams.apply(mmOld,added);\
+scrollTo(0,y);return b.childNodes.length==={}}})({},{},{},[{}])",
+        patch.after,
+        patch.nodes,
+        patch.shift,
+        patch.delta,
+        edits.join(",")
+    )
 }
 
 /// Export as HTML…: save dialog suggesting `<note>.html` next to the note, then writes

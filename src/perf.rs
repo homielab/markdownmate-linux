@@ -1,9 +1,11 @@
 //! Timing of large notes (1 MB and 5 MB): opening one in the editor (buffer + Markdown
-//! highlighting), the preview's full render, and the re-render after a keystroke.
+//! highlighting), the preview's full render, the re-render after a keystroke, and the same two
+//! as the preview does them per top-level block (`incremental`).
 //! Ignored by default; how to run it: `docs/PERFORMANCE.md`.
 
 use std::time::{Duration, Instant};
 
+use crate::incremental::{self, Style, Update};
 use crate::render;
 use crate::state::Theme;
 
@@ -114,16 +116,42 @@ fn large_notes() {
         let (rerender, _) = best(runs, shown, || {
             render::page(&edited, false, Theme::Default, &wiki)
         });
+        // The preview: the first page rendered per block, then a keystroke patching it.
+        let style = Style {
+            dark: false,
+            theme: Theme::Default,
+            links: 0,
+        };
+        let (blocks, _) = best(runs, cold, || incremental::render(None, &md, style, &wiki));
+        let state = std::cell::Cell::new(None);
+        let (patch, (after, update)) = best(
+            runs,
+            || state.set(incremental::render(None, &md, style, &wiki).0),
+            || incremental::render(state.take(), &edited, style, &wiki),
+        );
+        let Update::Patch(patch_out) = update else {
+            panic!("a keystroke in a code block is a patch");
+        };
+        let patched = after.expect("blocks").page();
+        assert!(
+            patched == render::page(&edited, false, Theme::Default, &wiki),
+            "the patched page is the whole render"
+        );
+        let sent: usize = patch_out.edits.iter().map(|e| e.html.len()).sum();
         let load = buffer_load(&md).map_or_else(|| "no display".into(), ms);
         eprintln!(
             "{mb} MB ({} KB, {} lines): open in editor {load}; full render {} \
-(without code highlighting {}); re-render after a keystroke {}; page {} KB",
+(without code highlighting {}); re-render after a keystroke {}; page {} KB; \
+per block: first render {}, update after the keystroke {} (patch {} KB)",
             md.len() / 1024,
             md.lines().count(),
             ms(full),
             ms(plain),
             ms(rerender),
             html.len() / 1024,
+            ms(blocks),
+            ms(patch),
+            sent.div_ceil(1024),
         );
         if let Some(dir) = std::env::var_os("MM_PERF_OUT") {
             let dir = std::path::PathBuf::from(dir);

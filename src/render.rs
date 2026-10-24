@@ -34,13 +34,91 @@ pub(crate) fn body_html(
     tasks: bool,
     sourcepos: bool,
 ) -> String {
+    let body = Body {
+        rich,
+        tasks,
+        sourcepos,
+        first_line: 1,
+        cached: rich,
+        next: false,
+    };
+    render_body(md, wiki, &body).expect("whole note").html
+}
+
+/// How `render_body` renders.
+pub(crate) struct Body {
+    /// See `body_html`.
+    pub rich: bool,
+    pub tasks: bool,
+    pub sourcepos: bool,
+    /// The 1-based line of the note `md` starts at: source lines (`data-sourcepos`, task and
+    /// Copy links) count from there, and front matter is only read at line 1. A part of a note
+    /// cut between top-level blocks renders as that part of the whole note's HTML
+    /// (`incremental`), but for heading ids, which count repeats from the note's start (see
+    /// `Rendered::headings`).
+    pub first_line: usize,
+    /// Code highlighting reuses the last cached render's blocks and replaces them with its own
+    /// (`HIGHLIGHTED`); otherwise each block is highlighted on the spot, nothing kept.
+    pub cached: bool,
+    /// The last line of `md` is the first line of the note's next top-level block: parsed, as
+    /// it closes the blocks before it (where they end), but not rendered. `render_body` gives
+    /// None if it does not start a top-level block there.
+    pub next: bool,
+}
+
+/// `render_body`'s result.
+pub(crate) struct Rendered {
+    pub html: String,
+    /// The text comrak makes each heading's id from, in order (`Anchorizer::anchorize`, which
+    /// adds `-1`, `-2`, … to an id seen before).
+    pub headings: Vec<String>,
+}
+
+/// `body_html` of `md` as `body` says.
+pub(crate) fn render_body(
+    md: &str,
+    wiki: &dyn Fn(&str) -> Option<PathBuf>,
+    body: &Body,
+) -> Option<Rendered> {
+    let Body {
+        rich,
+        tasks,
+        sourcepos,
+        first_line,
+        cached,
+        next,
+    } = *body;
     let mut options = options();
     options.render.sourcepos = sourcepos;
+    if first_line > 1 {
+        options.extension.front_matter_delimiter = None;
+    }
     let arena = comrak::Arena::new();
     // Tags are marked with these private-use chars in the AST and turned into spans after
     // escaping; the note's own copies are dropped so it cannot open/close a span.
-    let md = md.replace([TAG_OPEN, TAG_CLOSE, TASK_OPEN, TASK_CLOSE, MATH], "");
+    let md = md.replace(is_marker, "");
     let root = comrak::parse_document(&arena, &md, &options);
+    if next {
+        let lines = md.lines().count();
+        let last = root.last_child()?;
+        if last.data().sourcepos.start.line != lines {
+            return None;
+        }
+        last.detach();
+    }
+    if first_line > 1 {
+        let shift = |p: &mut comrak::nodes::Sourcepos| {
+            p.start.line += first_line - 1;
+            p.end.line += first_line - 1;
+        };
+        for node in root.descendants() {
+            let mut data = node.data_mut();
+            shift(&mut data.sourcepos);
+            if let comrak::nodes::NodeValue::TaskItem(item) = &mut data.value {
+                shift(&mut item.symbol_sourcepos);
+            }
+        }
+    }
     let mut task_items = Vec::new();
     let mut code_lines = Vec::new();
     let mut front_matter = None;
@@ -80,7 +158,13 @@ pub(crate) fn body_html(
             _ => None,
         };
         if let Some((formula, block)) = formula {
-            let text = format!("{MATH}{}{MATH}", formulas.len());
+            let source = match &node.data().value {
+                NodeValue::Math(math) => math.literal.clone(),
+                NodeValue::CodeBlock(block) => block.literal.trim_end().to_string(),
+                _ => String::new(),
+            };
+            let index = math_index(formulas.len());
+            let text = format!("{MATH}{index}{MATH_TEXT}{source}{MATH_END}");
             formulas.push(formula);
             let text = NodeValue::Text(text.into());
             if block {
@@ -97,7 +181,7 @@ pub(crate) fn body_html(
         if let NodeValue::CodeBlock(block) = &node.data().value {
             let diagram = block.fenced && is_diagram(&block.info);
             code_lines.push((node.data().sourcepos.start.line, diagram));
-            if rich {
+            if rich && cached {
                 let lang = block.info.split(|c: char| c.is_ascii_whitespace()).next();
                 code_blocks.push((lang_token(lang).to_string(), block.literal.clone()));
             }
@@ -129,7 +213,16 @@ pub(crate) fn body_html(
         let text = format!("{TASK_OPEN}{line}{TASK_CLOSE}");
         node.prepend(arena.alloc(comrak::nodes::NodeValue::Text(text.into()).into()));
     }
-    let highlighter = Highlighter(highlight_all(code_blocks));
+    let headings = root
+        .descendants()
+        .filter(|n| matches!(n.data().value, comrak::nodes::NodeValue::Heading(_)))
+        .map(|n| n.collect_text())
+        .collect();
+    let highlighter = Highlighter(if cached {
+        highlight_all(code_blocks)
+    } else {
+        Highlighted::new()
+    });
     let mut plugins = comrak::options::Plugins::default();
     if rich {
         plugins.render.codefence_syntax_highlighter = Some(&highlighter);
@@ -137,7 +230,7 @@ pub(crate) fn body_html(
     let mut html = String::new();
     comrak::format_html_with_plugins(root, &options, &mut html, &plugins)
         .expect("writing to a String");
-    if rich {
+    if rich && cached {
         *HIGHLIGHTED.lock().unwrap_or_else(PoisonError::into_inner) = highlighter.0;
     }
     // comrak ends each heading with an empty `<a href="#id" … class="anchor"></a>`: dropped,
@@ -156,14 +249,22 @@ pub(crate) fn body_html(
         .replace(TAG_CLOSE, "</span>");
     // Each pass below copies the HTML once (no per-item replace/insert: a large note has
     // thousands of formulas, tasks and code blocks). The note's own copies of the marker
-    // chars were dropped, so `MATH{i}MATH` splits into text, index, text, index, …
+    // chars were dropped, so each `MATH` starts a formula's marker and `MATH_END` ends it.
     let mut out = String::with_capacity(html.len());
-    for (i, part) in html.split(MATH).enumerate() {
-        match (i % 2 == 1).then(|| part.parse::<usize>().ok()).flatten() {
-            Some(n) => out.push_str(&formulas[n]),
-            None => out.push_str(part),
-        }
+    let mut rest = html.as_str();
+    while let Some(start) = rest.find(MATH) {
+        out.push_str(&rest[..start]);
+        let marker = &rest[start + MATH.len_utf8()..];
+        let end = marker.find(MATH_END).expect("markers come in pairs");
+        let index: String = marker[..end]
+            .chars()
+            .take_while(|c| MATH_DIGITS.contains(c))
+            .map(|c| char::from_u32(c as u32 - *MATH_DIGITS.start() as u32 + '0' as u32).unwrap())
+            .collect();
+        out.push_str(&formulas[index.parse::<usize>().expect("formula index")]);
+        rest = &marker[end + MATH_END.len_utf8()..];
     }
+    out.push_str(rest);
     let html = out;
     // `<input …/> MARK` → `<a …><input …/></a> `; the note's text is escaped, so the last
     // `<input` before a marker is its checkbox.
@@ -244,7 +345,7 @@ pub(crate) fn body_html(
         comrak::html::escape(&mut pre, text.trim_end()).expect("writing to a String");
         html.insert_str(0, &format!("{pre}</pre>\n"));
     }
-    html
+    Some(Rendered { html, headings })
 }
 
 /// Whether a code fence's info string (` ```mermaid `) asks for a Mermaid diagram.
@@ -329,8 +430,6 @@ pub(crate) fn options() -> comrak::Options<'static> {
 pub fn heading_at(md: &str, fragment: &str) -> Option<(usize, String)> {
     let arena = comrak::Arena::new();
     let root = comrak::parse_document(&arena, md, &options());
-    // shortcut: the rendered id of a heading holding a formula or tag may differ (markers);
-    // upgrade if such links show up.
     let mut ids = comrak::Anchorizer::new();
     let headings: Vec<_> = root
         .descendants()
@@ -637,8 +736,29 @@ const TAG_CLOSE: char = '\u{E001}';
 const TASK_OPEN: char = '\u{E002}';
 const TASK_CLOSE: char = '\u{E003}';
 
-/// Wraps the index of a formula in `body_html`'s `formulas`.
+/// A formula in the AST: `MATH`, its index in `body_html`'s `formulas` in `MATH_DIGITS`,
+/// `MATH_TEXT`, its source, `MATH_END`. The private-use chars drop out of a heading's id, so
+/// a heading holding a formula gets the id of its text with the source (as `heading_at`
+/// sees it), not one depending on how many formulas come before it.
 const MATH: char = '\u{E004}';
+const MATH_TEXT: char = '\u{E005}';
+const MATH_END: char = '\u{E006}';
+/// `'0'`…`'9'` of a formula's index.
+const MATH_DIGITS: std::ops::RangeInclusive<char> = '\u{E010}'..='\u{E019}';
+
+/// Whether `c` is one of the private-use chars `body_html` marks the AST with; the note's own
+/// copies are dropped before parsing.
+pub(crate) fn is_marker(c: char) -> bool {
+    matches!(c, TAG_OPEN..=MATH_END) || MATH_DIGITS.contains(&c)
+}
+
+/// `n` in `MATH_DIGITS`.
+fn math_index(n: usize) -> String {
+    n.to_string()
+        .chars()
+        .map(|d| char::from_u32(*MATH_DIGITS.start() as u32 + (d as u32 - '0' as u32)).unwrap())
+        .collect()
+}
 
 /// URI prefix of a task checkbox; the item's 1-based source line follows.
 const TASK: &str = "mm-task:";
@@ -710,8 +830,13 @@ fn strip_note_ext(name: &str) -> &str {
 /// diagrams and KaTeX formulas are drawn by the app's own script world (`diagrams`, `math`),
 /// which the page cannot reach.
 pub fn page(md: &str, dark: bool, theme: Theme, wiki: &dyn Fn(&str) -> Option<PathBuf>) -> String {
+    preview_page(dark, theme, &body_html(md, wiki, true, true, true))
+}
+
+/// `page` around a body `body_html` (or `incremental`) made.
+pub(crate) fn preview_page(dark: bool, theme: Theme, body: &str) -> String {
     let csp = "default-src 'none'; img-src file: data:; style-src 'unsafe-inline'; font-src data:";
-    html_page(dark, theme, csp, "", &body_html(md, wiki, true, true, true))
+    html_page(dark, theme, csp, "", body)
 }
 
 /// Standalone HTML file of a note (Export as HTML): the preview's CSS in light mode, code

@@ -6,9 +6,13 @@
   its Markdown (the editor does the visible part first and the rest in idle time);
 - **full render**: the preview page (`render::page`) of a note seen for the first time;
 - **without code highlighting**: the same body with syntect turned off, to show its share;
-- **re-render after a keystroke**: the page again after one character typed into a code
-  block in the middle of the note (the preview renders the whole note again and swaps the
-  page in place).
+- **re-render after a keystroke**: the whole page again after one character typed into a
+  code block in the middle of the note (what the preview did before it patched pages, and
+  still does for notes it cannot cut, below);
+- **per block: first render / update after the keystroke**: what the preview does now
+  (`incremental`): the note rendered per top-level block, then the same keystroke updating
+  only the blocks it touched, plus the size of the HTML sent to the page. The test checks
+  that the patched page is byte-identical to the whole render.
 
 The notes are generated (`perf::sample_note`): 1 MB and 5 MB of sections with headings, inline
 styling, web / note / wiki links, tags, task and nested lists, a table, a quote, math and
@@ -65,10 +69,36 @@ page: every code block with a known language is highlighted on all cores at once
 blocks of the last render are kept (by language and code), so a re-render highlights only
 the code blocks that changed. The rendered HTML is byte-identical.
 
+### Patching only the changed blocks
+
+Same machine, quiet, release build, one run (2026-10-25). "Before" is the whole page rendered
+again and swapped in (the previous preview, still measured as *re-render after a
+keystroke*); "after" is the update the preview now makes.
+
+| Note | Step | Before | After |
+|------|------|-------:|------:|
+| 1 MB | first preview of the note | 0.84 s | 0.89 s |
+| | update after a keystroke | 0.12 s | 0.003 s (5 KB of HTML sent instead of 14.6 MB) |
+| 5 MB | first preview of the note | 3.7 s | 1.6 s |
+| | update after a keystroke | 0.41 s | 0.013 s (5 KB of HTML sent instead of 72 MB) |
+
+The note is cut between top-level blocks where a blank line separates them and nothing runs
+on (open list, fence, indented code, HTML block); each part renders on its own to exactly its
+part of the whole page (on all cores for the first preview). After an edit only the parts it
+touched are rendered again (with one part of context; more if a fence or list now runs on),
+and the page replaces just their DOM nodes and moves the source lines of the nodes after them
+(scroll sync, checkboxes, Copy buttons). Formulas and diagrams outside the edit are not
+touched. Repeated heading titles are renumbered over the whole note. Notes with footnotes or
+reference link definitions, and edits that may move the end of front matter, render whole
+as before. The times above are the Rust side; applying a 5 KB patch in the page is a few DOM
+operations, while swapping in a 72 MB body was not even part of the old number.
+
+`src/incremental.rs` has tests that replay random edits and check every patched page against
+the whole render (`SEED=<n> cargo test random_edits` for other edits); `perf::large_notes`
+checks it too.
+
 ## Further ideas
 
-- Re-render only the top-level blocks around the edit and patch the page's DOM instead of
-  replacing the whole body (the 5 MB page is 73 MB of HTML, most of it highlighting spans).
 - Debounce preview refreshes by note size, so typing in a 5 MB note renders less often.
 - Highlight code blocks lazily in the page (plain code first, highlighted as it scrolls into
   view).

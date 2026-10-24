@@ -64,6 +64,11 @@ pub(crate) struct Editor {
     pub(crate) preview_generation: Cell<u64>,
     /// The in-place preview render in flight, if any (see `RenderSlot`).
     pub(crate) preview_render: Cell<crate::preview::RenderSlot>,
+    /// The note as the shown page renders it, per top-level block, for the next refresh to
+    /// patch only what changed (`incremental`); None when the page is rendered whole.
+    pub(crate) preview_state: RefCell<Option<crate::incremental::Preview>>,
+    /// Bumped by every page load: a patch rendered for the page before is dropped.
+    pub(crate) preview_loads: Cell<u64>,
     /// Pending scroll sync of the preview to the editor (side by side).
     pub(crate) sync_timer: RefCell<Option<glib::SourceId>>,
     /// Pending check of the preview's position after the user scrolled it (preview → editor),

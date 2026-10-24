@@ -14,7 +14,12 @@
   const typeset = new WeakSet(); // span.math showing KaTeX's result for its own source
   let sheet = null;
 
-  const formulas = () => Array.from(document.querySelectorAll('span.math[data-tex]'));
+  // The elements matching `selector` among `roots` and inside them.
+  const within = (roots, selector) =>
+    roots.flatMap((n) => (n.nodeType === 1 ? [...(n.matches(selector) ? [n] : []), ...n.querySelectorAll(selector)] : []));
+  // The page's formulas, or those in `roots` (nodes of the body a preview patch removed).
+  const formulas = (roots) =>
+    roots ? within(roots, 'span.math[data-tex]') : Array.from(document.querySelectorAll('span.math[data-tex]'));
   const keyOf = (span) => (span.classList.contains('display') ? 'D' : 'I') + span.dataset.tex;
 
   // KaTeX's style sheet (fonts embedded) as a sheet of the document, not an element of its
@@ -51,9 +56,9 @@
   }
 
   // The typeset formulas of the body about to be replaced, by key, in page order.
-  function take() {
+  function take(roots) {
     const old = new Map();
-    for (const span of formulas()) {
+    for (const span of formulas(roots)) {
       if (!typeset.has(span)) continue;
       const key = keyOf(span);
       if (!old.has(key)) old.set(key, []);

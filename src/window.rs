@@ -311,6 +311,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         preview_timer: RefCell::new(None),
         preview_generation: Cell::new(0),
         preview_render: Cell::default(),
+        preview_state: RefCell::new(None),
+        preview_loads: Cell::new(0),
         sync_timer: RefCell::new(None),
         preview_poll: RefCell::new(None),
         preview_y: Cell::new(0.0),

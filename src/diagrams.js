@@ -15,7 +15,11 @@
   let generation = 0;
 
   const pageTheme = () => (document.documentElement.classList.contains('dark') ? 'dark' : 'default');
-  const blocks = () => Array.from(document.querySelectorAll('div.mermaid'));
+  // The elements matching `selector` among `roots` and inside them.
+  const within = (roots, selector) =>
+    roots.flatMap((n) => (n.nodeType === 1 ? [...(n.matches(selector) ? [n] : []), ...n.querySelectorAll(selector)] : []));
+  // The page's blocks, or those in `roots` (nodes of the body a preview patch removed or added).
+  const blocks = (roots) => (roots ? within(roots, 'div.mermaid') : Array.from(document.querySelectorAll('div.mermaid')));
   const keyOf = (div, t) => {
     const pre = div.querySelector(':scope > pre');
     return t + '\n' + (pre ? pre.textContent : '');
@@ -76,8 +80,10 @@
   // Right after the page's body was replaced (no wait, so nothing flickers): every block
   // whose diagram is known shows it at once; the others keep showing the diagram that was
   // at the same place before (`previous`, in page order) until `run` has drawn theirs.
-  function apply(previous) {
-    blocks().forEach((div, i) => {
+  // After a patch, only the blocks of the nodes it added (`roots`), with what `take(removed)`
+  // returned.
+  function apply(previous, roots) {
+    blocks(roots).forEach((div, i) => {
       const key = keyOf(div, theme);
       const result = done.get(key);
       if (result) {
@@ -91,8 +97,8 @@
   }
 
   // The diagrams of the old body, before it is replaced (see `apply`).
-  function take() {
-    return blocks().map((div) => div.querySelector(':scope > .diagram'));
+  function take(roots) {
+    return blocks(roots).map((div) => div.querySelector(':scope > .diagram'));
   }
 
   // Draws every block not showing its own diagram yet, one at a time. Resolves `true` when

@@ -8,6 +8,7 @@ mod format;
 mod formatbar;
 mod goto;
 mod images;
+mod incremental;
 mod input;
 mod lines;
 mod links;
