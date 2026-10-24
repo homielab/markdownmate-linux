@@ -102,6 +102,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.4.0" date="2026-10-24">
+      <description>
+        <p>Mermaid diagrams in the preview, Find in Preview (Ctrl+F), a Markdown format bar (Shift+Ctrl+M), table commands with a table bar, Toggle Task, Footnote, Move and Duplicate Line commands, Unlinked Mentions under Backlinks, updating links after a note or folder is renamed or moved, links to files and folders dropped into a note, and a much faster preview of large notes with code.</p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-10-22">
       <description>
         <p>Backlinks to the current note, recent notes in Open Quickly, links that jump to a heading in the preview, inserting a table with Shift+Ctrl+T, table editing inside quotes and lists, monospace table rows, Show in Files and Copy Path in the sidebar, cleaner pasted web text, and a smoother preview with large notes.</p>
