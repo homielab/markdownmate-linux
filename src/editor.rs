@@ -51,6 +51,8 @@ pub(crate) struct Editor {
     /// Pending re-colouring of `#tags` in the editor.
     pub(crate) tag_timer: RefCell<Option<glib::SourceId>>,
     pub(crate) preview: webkit6::WebView,
+    /// Find in the preview: its bar above the page (`previewfind`); set once built.
+    pub(crate) preview_find: std::cell::OnceCell<Rc<crate::previewfind::Bar>>,
     /// Off-screen page being printed (kept alive until the next print).
     pub(crate) print_view: RefCell<Option<webkit6::WebView>>,
     /// A print page is rendering in the background; another Print/Export PDF is ignored meanwhile.
@@ -975,7 +977,15 @@ impl Editor {
         self.mode.set(mode);
         let editor = self.panes.start_child().expect("editor pane");
         editor.set_visible(mode != state::Mode::Preview);
-        self.preview.set_visible(mode != state::Mode::Edit);
+        self.panes
+            .end_child()
+            .expect("preview pane")
+            .set_visible(mode != state::Mode::Edit);
+        if mode == state::Mode::Edit
+            && let Some(find) = self.preview_find.get()
+        {
+            find.close(false);
+        }
         if mode == state::Mode::Split {
             // Not laid out yet (startup): the max-position handler halves it once it is.
             match self.panes.width() {

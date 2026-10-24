@@ -104,6 +104,7 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}scrollTo(0
             gio::Cancellable::NONE,
             move |result| match result {
                 Ok(_) => {
+                    editor.refresh_preview_find();
                     editor.sync_preview();
                     if has_diagrams {
                         editor.draw_diagrams();
@@ -113,6 +114,13 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}scrollTo(0
                 Err(_) => editor.load_preview(),
             },
         );
+    }
+
+    /// The page changed under an open Find in Preview bar: recount its matches.
+    pub(crate) fn refresh_preview_find(&self) {
+        if let Some(find) = self.preview_find.get() {
+            find.refresh();
+        }
     }
 
     /// Draws the preview's Mermaid diagrams (nothing is loaded for a page without one), then

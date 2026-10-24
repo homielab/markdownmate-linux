@@ -375,7 +375,7 @@ act_goto() {
     grep -qF 'Some X**bold**' "$NOTES/Welcome.md" || { echo "FAIL goto: cursor not at 3:6"; bad=1; }
 }
 
-# Find/replace in the note, starting in Preview: Ctrl+F switches to the editor; Esc back to it.
+# Find/replace in the note (Edit; Ctrl+F in Preview is Find in Preview, see previewfind).
 # The selected `Việt` becomes the search text (case-insensitive: 3 results); Enter selects the
 # 2nd (`việt`), Esc returns to the editor so `X` replaces it. Ctrl+H, `Nam`, Ctrl+Enter =
 # Replace All; one Ctrl+Z undoes all of it.
@@ -763,7 +763,7 @@ rm "$NOTES/Big.md"
 sed -i '$d' "$NOTES/Welcome.md"
 run find mode=preview
 run goto mode=preview
-NOTE="$NOTES/Search.md" run search mode=preview
+NOTE="$NOTES/Search.md" run search mode=edit
 run format mode=edit
 # Line commands: Toggle Task (Ctrl+Enter), Move Line (Alt+Down, Alt+Ctrl+Down, menu action),
 # Duplicate Line (Shift+Ctrl+D), Footnote (menu action); each one undo step.
@@ -967,6 +967,45 @@ printf '`roadmap` in code\n[[Roadmap]] linked\nroadmaps plural\nOur roadmap here
 NOTE="$NOTES/Roadmap.md" run mentions mode=edit
 rm "$NOTES/Roadmap.md" "$NOTES/Mentions.md"
 NOTE="$NOTES/Tags.md" run tags mode=split
+# Find in Preview: Ctrl+F in Preview opens the bar above the page; `apple` finds 3 matches
+# (case-insensitive, all highlighted: previewfind.png, "3 results"), Enter / Shift+Enter step,
+# `zzz` shows "No results" (previewfind-none.png), Esc closes it and clears the highlights
+# (previewfind-closed.png). Side by side: Ctrl+F with the preview focused opens the preview's
+# bar, with the editor focused the editor's (previewfind-split.png: both bars). Typing in the
+# bars never edits the note.
+act_previewfind() {
+    timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
+    xdotool key ctrl+f
+    sleep 1
+    xdotool type 'apple'
+    sleep 1
+    xdotool key Return Return shift+Return
+    sleep 1
+    scrot -o "$OUT/previewfind.png"
+    xdotool key ctrl+a type 'zzz'
+    sleep 1
+    scrot -o "$OUT/previewfind-none.png"
+    xdotool key ctrl+a type 'apple'
+    sleep 1
+    xdotool key Escape
+    sleep 1
+    scrot -o "$OUT/previewfind-closed.png"
+    xdotool key ctrl+3
+    sleep 2
+    xdotool mousemove 820 300 click 1 key ctrl+f
+    sleep 1
+    xdotool type 'pear'
+    xdotool mousemove 400 300 click 1 key ctrl+f
+    sleep 1
+    xdotool type 'banana'
+    sleep 1
+    scrot -o "$OUT/previewfind-split.png"
+    [ "$(cat "$NOTES/Fruit.md")" = "$(printf '# Fruit\n\nApple, pear and apple pie.\n\nAn APPLE a day.\n\nbanana')" ] \
+        || { echo "FAIL previewfind: the note changed"; bad=1; }
+}
+printf '# Fruit\n\nApple, pear and apple pie.\n\nAn APPLE a day.\n\nbanana' > "$NOTES/Fruit.md"
+NOTE="$NOTES/Fruit.md" run previewfind mode=preview
+rm "$NOTES/Fruit.md"
 # pref <row title>: opens Preferences (Ctrl+,) and focuses that row through the dialog's own
 # search (Ctrl+F, the title, Tab to the first result, Space jumps to the real row; Enter does
 # not), so no Tab counting when Preferences gains rows.

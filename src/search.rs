@@ -134,6 +134,23 @@ impl Bar {
         }
     }
 
+    /// Find in Preview, when the keys belong to it: Preview mode, or side by side with the
+    /// focus in the preview pane (page or its find bar); `open` also needs its bar shown.
+    fn preview_find(&self, open: bool) -> Option<&crate::previewfind::Bar> {
+        let editor = &self.editor;
+        let find = editor.preview_find.get()?;
+        let wanted = match editor.mode.get() {
+            state::Mode::Preview => editor.path.borrow().is_some(),
+            state::Mode::Split => {
+                let pane = editor.panes.end_child()?;
+                gtk::prelude::GtkWindowExt::focus(&editor.window)
+                    .is_some_and(|w| w == pane || w.is_ancestor(&pane))
+            }
+            state::Mode::Edit => false,
+        };
+        (wanted && (!open || find.is_open())).then_some(find.as_ref())
+    }
+
     fn replace_one(&self) {
         let (mut start, mut end) = self.bounds();
         if self.context.occurrence_position(&start, &end) > 0 {
@@ -315,21 +332,30 @@ pub(crate) fn find_bar(editor: &Rc<Editor>, pane: &gtk::Box, app: &adw::Applicat
     });
 
     // Ctrl+F/H/G không bị GTK hay GtkSourceView dùng; Shift+Ctrl+F là Find in Folder.
+    // In Preview, or side by side with the focus in the preview, Ctrl+F / Ctrl+G go to Find
+    // in Preview (`previewfind`) instead; Ctrl+H always edits.
     let window = &editor.window;
     for (name, accels, run) in [
         (
             "find",
             &["<Control>f"][..],
-            (|b: &Bar| b.open(false)) as fn(&Bar),
+            (|b: &Bar| match b.preview_find(false) {
+                Some(p) => p.open(),
+                None => b.open(false),
+            }) as fn(&Bar),
         ),
         ("replace", &["<Control>h"][..], |b| b.open(true)),
         ("find-next", &["<Control>g"][..], |b| {
-            if b.widget.is_visible() {
+            if let Some(p) = b.preview_find(true) {
+                p.next();
+            } else if b.widget.is_visible() {
                 b.next();
             }
         }),
         ("find-previous", &["<Shift><Control>g"][..], |b| {
-            if b.widget.is_visible() {
+            if let Some(p) = b.preview_find(true) {
+                p.previous();
+            } else if b.widget.is_visible() {
                 b.previous();
             }
         }),

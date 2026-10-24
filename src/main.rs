@@ -18,6 +18,7 @@ mod notes;
 mod outline;
 mod paste;
 mod preview;
+mod previewfind;
 mod quick;
 mod relink;
 mod render;

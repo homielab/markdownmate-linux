@@ -220,10 +220,14 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         settings.set_enable_javascript_markup(false);
     }
     crate::diagrams::keep_world(&preview);
-    preview.set_visible(false);
+    preview.set_vexpand(true);
+    // The preview under its find bar (`previewfind`); the mode shows or hides the whole pane.
+    let preview_pane = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    preview_pane.append(&preview);
+    preview_pane.set_visible(false);
     let panes = gtk::Paned::builder()
         .start_child(&editor_pane)
-        .end_child(&preview)
+        .end_child(&preview_pane)
         .shrink_start_child(false)
         .shrink_end_child(false)
         .hexpand(true)
@@ -294,6 +298,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         mentions_gen: Arc::default(),
         tag_timer: RefCell::new(None),
         preview,
+        preview_find: std::cell::OnceCell::new(),
         print_view: RefCell::new(None),
         print_busy: Cell::new(false),
         mode: Cell::new(state::Mode::Edit),
@@ -355,6 +360,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     ));
 
     image_input(&view, &editor);
+    let preview_find = crate::previewfind::find_bar(&editor.preview, &preview_pane);
+    editor.preview_find.set(preview_find).ok();
     crate::search::find_bar(&editor, &editor_pane, app);
     crate::editor::typewriter_scrolling(&editor, &scroll);
 
@@ -985,6 +992,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         }
         // Mermaid is installed only if the page has a diagram (`diagrams`).
         editor.draw_diagrams();
+        editor.refresh_preview_find();
     });
 
     // The web process died (crash, out of memory): the app keeps running; the next edit or
@@ -1273,6 +1281,7 @@ fn shortcuts_window() -> gtk::ShortcutsWindow {
                         ("<Control>1", "Edit"),
                         ("<Control>2", "Preview"),
                         ("<Control>3", "Side by side"),
+                        ("<Control>f", "Find in preview (preview focused)"),
                         ("<Alt><Control>o", "Outline"),
                         ("<Control>equal", "Zoom in"),
                         ("<Control>minus", "Zoom out"),
