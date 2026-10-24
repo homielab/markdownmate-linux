@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- TypeScript code blocks are coloured: ```` ```ts ````, ```` ```typescript ```` and ```` ```tsx ```` in Preview, Side by side, Print and exports; the code block language list offers `ts`, `tsx` and `typescript`.
 - Faster Backlinks in large folders: with 10,000 notes the panel lists a note's backlinks in about 0.3 s instead of a minute and a half. Link updates after renaming or moving a note in the sidebar use the same faster lookup.
 - Export as RTF… (main menu): saves the note as a `.rtf` file that opens formatted in LibreOffice Writer and other word processors — headings, emphasis, links, lists, quotes, code, tables; images as `alt (path)` text, formulas as TeX, front matter left out.
 - Clicking a `[[wiki link]]` to a note that doesn't exist (Ctrl+click in the editor, click in the preview) creates it empty and opens it, as in the macOS app: `Name.md` at the open folder's top level (beside the note when no folder is open), `[[Folder/Name]]` only into an existing folder; `#heading` and `|text` are ignored. Names that can't be a file still show the message.

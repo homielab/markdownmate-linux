@@ -126,6 +126,9 @@ pub const FENCE_LANGUAGES: &[&str] = &[
     "sh",
     "sql",
     "tcl",
+    "ts",
+    "tsx",
+    "typescript",
     "xml",
     "yml",
 ];
@@ -301,17 +304,30 @@ mod tests {
             let known = crate::render::highlights(lang);
             assert!(known || ["math", "mermaid"].contains(lang), "{lang}");
         }
-        for short in ["js", "sh", "yml", "py"] {
+        for short in ["js", "sh", "yml", "py", "ts", "tsx"] {
             assert!(FENCE_LANGUAGES.contains(&short), "{short}");
         }
         assert_eq!(
             fence_suggestions("p"),
-            ["pascal", "perl", "php", "py", "applescript", "cpp", "lisp"]
+            [
+                "pascal",
+                "perl",
+                "php",
+                "py",
+                "applescript",
+                "cpp",
+                "lisp",
+                "typescript"
+            ]
         );
         assert_eq!(fence_suggestions("PY"), ["py"]);
         assert_eq!(fence_suggestions("py"), Vec::<&str>::new());
         assert_eq!(&fence_suggestions("me")[..1], ["mermaid"]);
         assert_eq!(fence_suggestions("rst"), ["rust"]);
+        assert_eq!(
+            &fence_suggestions("t")[..4],
+            ["tcl", "ts", "tsx", "typescript"]
+        );
         assert!(fence_suggestions("zz").is_empty());
     }
 

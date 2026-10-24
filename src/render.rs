@@ -576,9 +576,11 @@ static HIGHLIGHTED: LazyLock<Mutex<Highlighted>> = LazyLock::new(Default::defaul
 /// on the spot, so the HTML never depends on what was cached.
 struct Highlighter(Highlighted);
 
-/// syntect's bundled syntaxes, loaded on the first highlighted code block only.
-static SYNTAXES: LazyLock<syntect::parsing::SyntaxSet> =
-    LazyLock::new(syntect::parsing::SyntaxSet::load_defaults_newlines);
+/// syntect's bundled syntaxes plus TypeScript and TSX (`resources/syntaxes`, compiled into
+/// one dump by its `build-dump.sh`), loaded on the first highlighted code block only (≈ 4 ms).
+static SYNTAXES: LazyLock<syntect::parsing::SyntaxSet> = LazyLock::new(|| {
+    syntect::dumps::from_binary(include_bytes!("../resources/syntaxes/syntaxes.packdump"))
+});
 
 /// The language token syntect looks up for a fence's language (` ```rust,ignore ` → `rust`).
 fn lang_token(lang: Option<&str>) -> &str {
@@ -2096,6 +2098,18 @@ mod tests {
         forget_highlighting();
         assert_eq!(to_html(&edited, &|_| None), warm);
         assert_ne!(warm, cold);
+    }
+
+    #[test]
+    fn typescript_is_highlighted() {
+        let code = "interface A<T> { x: readonly T[] }\nconst f = (a: A<number>): void => {};\n";
+        for token in ["ts", "typescript", "tsx", "TypeScript"] {
+            assert!(highlights(token), "{token}");
+            let html = highlight_code(token, code);
+            assert!(html.contains("<span class=\"hl-storage"), "{token}: {html}");
+        }
+        let tsx = highlight_code("tsx", "const e = <div className=\"x\">{n}</div>;\n");
+        assert!(tsx.contains("hl-tag"), "{tsx}");
     }
 
     #[test]

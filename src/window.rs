@@ -1244,6 +1244,13 @@ fn about_dialog(editor: &Rc<Editor>) {
         gtk::License::Custom,
         Some("SIL Open Font License 1.1 (https://openfontlicense.org)"),
     );
+    // Compiled into the preview's code highlighting (`render.rs`, `resources/syntaxes`).
+    dialog.add_legal_section(
+        "TypeScript and TSX syntaxes",
+        Some("© Microsoft Corporation"),
+        gtk::License::Apache20,
+        None,
+    );
     dialog.present(Some(&editor.window));
 }
 
