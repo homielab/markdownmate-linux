@@ -15,8 +15,16 @@ IMAGE=markdownmate-srccheck-$ARCH
 OUT=dist/ppa-deb
 ls dist/ppa/*.dsc > /dev/null
 
+# The build-deps image (~2 GB) only lives for this run: removed on exit, success or failure.
+cleanup() {
+    docker rm -fv "$IMAGE" > /dev/null 2>&1 || true
+    docker image rm -f "$IMAGE" > /dev/null 2>&1 || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
 # 1. With network: build-deps + lintian, saved as an image.
-docker rm -f "$IMAGE" > /dev/null 2>&1 || true
+cleanup
 docker run -i $PLATFORM --name "$IMAGE" -v "$PWD/dist/ppa":/src:ro ubuntu:24.04 bash -s <<'IN'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -26,7 +34,7 @@ apt-get build-dep -y -qq /src/*.dsc > /dev/null
 useradd -m builder
 IN
 docker commit "$IMAGE" "$IMAGE" > /dev/null
-docker rm "$IMAGE" > /dev/null
+docker rm -fv "$IMAGE" > /dev/null
 
 # 2. Network off: lintian, unpack, build, copy the .deb out.
 rm -rf "$OUT" && mkdir -p "$OUT"
@@ -46,6 +54,7 @@ grep -E "^test result:" /tmp/build.log
 cp /tmp/*.deb /out/
 ls /out
 IN
+cleanup
 
 # 3. Install it in a clean container and start the app.
 DIST=$OUT scripts/check-deb.sh

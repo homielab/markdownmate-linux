@@ -18,3 +18,6 @@ RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-too
         --component clippy,rustfmt
 
 WORKDIR /work
+
+# Lets `./dev.sh clean` find this repo's old, untagged images (left behind by Dockerfile changes).
+LABEL com.homielab.markdownmate.dev=1

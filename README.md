@@ -253,7 +253,19 @@ No Rust or GTK needed on the host, only Docker (e.g. OrbStack on macOS). `./dev.
 
 CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` on every push and pull request to `main`, on `ubuntu-24.04`; run the same three commands through `./dev.sh` before pushing.
 
-The cargo registry and build output live in Docker volumes (`markdownmate-cargo-registry`, `markdownmate-target`), so later runs are fast and no `target/` appears in the repo. Reset them with `docker volume rm markdownmate-cargo-registry markdownmate-target`. The container has no display, but the app can be smoke-tested headless:
+The cargo registry and build output live in Docker volumes (`markdownmate-cargo-registry`, `markdownmate-target`), so later runs are fast and no `target/` appears in the repo. Dev builds keep only line tables as debug info (`[profile.dev]` in `Cargo.toml`), so backtraces still show file:line while the target volume stays smaller (about 0.75 GB after `cargo build --tests`).
+
+When you're done with a work session or a release, free the space with:
+
+```bash
+./dev.sh clean
+```
+
+It removes the build output (`markdownmate-target`, and `markdownmate-target-amd64` after `ARCH=amd64` runs), the `markdownmate-dev-amd64` image, any leftover `markdownmate-srccheck-*` image or container, and old untagged `markdownmate-dev` images left behind by `Dockerfile` changes (found by their `LABEL`). It keeps the `markdownmate-dev` image and the `markdownmate-cargo-registry` volume, so the next build only recompiles; it never touches other Docker objects. To start completely fresh, also `docker volume rm markdownmate-cargo-registry`.
+
+Packaging (`scripts/package-deb.sh`, `packaging/build-source.sh`, `scripts/check-source.sh`, `scripts/check-deb.sh`) is only needed when preparing a release; day-to-day work needs just `cargo build`, `clippy` and `fmt` through `./dev.sh`. `scripts/check-source.sh` removes its temporary build-deps image and containers when it exits, pass or fail.
+
+The container has no display, but the app can be smoke-tested headless:
 
 ```sh
 ./dev.sh scripts/smoke.sh
