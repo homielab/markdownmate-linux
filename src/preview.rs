@@ -10,7 +10,7 @@ use webkit6::prelude::*;
 
 use crate::editor::Editor;
 use crate::{PREVIEW_DELAY, PREVIEW_LINE_JS, SCRIPT_WORLD, SYNC_DELAY, SYNC_JS, file_name};
-use crate::{diagrams, render, save, state};
+use crate::{diagrams, math, render, save, state};
 
 impl Editor {
     /// Side by side: re-render the preview shortly after typing stops.
@@ -84,18 +84,22 @@ impl Editor {
     }
 
     /// Replaces the shown page's head and body with `html` in place (scroll position kept).
-    /// Diagrams already drawn are reused; only a changed one is drawn again (`diagrams`).
+    /// Diagrams and formulas already drawn are reused; only a changed one is drawn again
+    /// (`diagrams`, `math`).
     fn swap_page(self: &Rc<Self>, html: &str) {
         // The class carries light/dark and the head the theme, so style changes apply too.
         let script = format!(
-            "(function(h){{var y=scrollY,d=new DOMParser().parseFromString(h,'text/html');{}\
+            "(function(h){{var y=scrollY,d=new DOMParser().parseFromString(h,'text/html');{}{}\
 document.documentElement.className=d.documentElement.className;\
-document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}scrollTo(0,y);return true}})({})",
+document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo(0,y);return true}})({})",
             diagrams::TAKE,
+            math::TAKE,
+            math::APPLY,
             diagrams::APPLY,
             render::js_string(html)
         );
         let has_diagrams = render::has_diagrams(html);
+        let has_math = render::has_math(html);
         let editor = Rc::clone(self);
         self.preview.evaluate_javascript(
             &script,
@@ -106,6 +110,9 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}scrollTo(0
                 Ok(_) => {
                     editor.refresh_preview_find();
                     editor.sync_preview();
+                    if has_math {
+                        editor.draw_math();
+                    }
                     if has_diagrams {
                         editor.draw_diagrams();
                     }
@@ -121,6 +128,17 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}scrollTo(0
         if let Some(find) = self.preview_find.get() {
             find.refresh();
         }
+    }
+
+    /// Typesets the preview's formulas with KaTeX (nothing is loaded for a page without one),
+    /// then follows the editor again: KaTeX changed the page's heights.
+    pub(crate) fn draw_math(self: &Rc<Self>) {
+        let editor = Rc::clone(self);
+        math::draw(&self.preview, move |typeset| {
+            if typeset {
+                editor.sync_preview();
+            }
+        });
     }
 
     /// Draws the preview's Mermaid diagrams (nothing is loaded for a page without one), then
@@ -311,9 +329,9 @@ pub(crate) fn export_html(editor: &Rc<Editor>) {
                 let Ok(html) = gio::spawn_blocking(job).await else {
                     return editor.toast("Could not render the note");
                 };
-                // Diagrams are drawn in an off-screen WebView and saved as static SVG; without
-                // a usable WebKit sandbox they stay code blocks.
-                if !render::has_diagrams(&html) || !sandbox_usable() {
+                // Diagrams and formulas are drawn in an off-screen WebView and saved as static
+                // SVG / KaTeX HTML; without a usable WebKit sandbox they stay code / MathML.
+                if !(render::has_diagrams(&html) || render::has_math(&html)) || !sandbox_usable() {
                     return write_export(&editor, dest, html);
                 }
                 let weak = Rc::downgrade(&editor);
@@ -323,13 +341,37 @@ pub(crate) fn export_html(editor: &Rc<Editor>) {
                         return;
                     };
                     let weak = weak.clone();
-                    diagrams::finished_page(view, move |drawn| {
+                    finished_page(view, move |drawn| {
                         if let Some(editor) = weak.upgrade() {
                             write_export(&editor, dest, drawn.unwrap_or(html));
                         }
                     });
                 });
             });
+        },
+    );
+}
+
+/// Export as HTML: the page shown in `view` (after `offscreen` drew it) as a static file: no
+/// script, diagrams as SVG without their code, formulas as KaTeX HTML with its style sheet
+/// (fonts embedded) in the head. None if the page could not be read.
+fn finished_page(view: &webkit6::WebView, done: impl FnOnce(Option<String>) + 'static) {
+    let script = format!(
+        "{}{}'<!doctype html>'+document.documentElement.outerHTML",
+        diagrams::FINISH,
+        math::FINISH
+    );
+    view.evaluate_javascript(
+        &script,
+        Some(SCRIPT_WORLD),
+        None,
+        gio::Cancellable::NONE,
+        move |result| {
+            let html = result
+                .ok()
+                .filter(|v| v.is_string())
+                .map(|v| v.to_str().to_string());
+            done(html)
         },
     );
 }
@@ -482,16 +524,17 @@ fn print_page(editor: &Rc<Editor>, done: impl Fn(&webkit6::WebView) + 'static) {
 }
 
 /// Loads `html` in an off-screen WebView kept in `editor.print_view` and runs `done` once it
-/// is loaded and its diagrams are drawn. Without a diagram no script runs at all; with one,
-/// only the app's script world runs (as in the preview: page scripts off).
+/// is loaded and its formulas and diagrams are drawn (KaTeX's fonts loaded). Without a formula
+/// or diagram no script runs at all; with one, only the app's script world runs (as in the
+/// preview: page scripts off).
 fn offscreen(editor: &Editor, html: &str, uri: &str, done: impl Fn(&webkit6::WebView) + 'static) {
-    let has_diagrams = render::has_diagrams(html);
+    let scripts = render::has_diagrams(html) || render::has_math(html);
     let view = webkit6::WebView::new();
     if let Some(settings) = WebViewExt::settings(&view) {
-        settings.set_enable_javascript(has_diagrams);
+        settings.set_enable_javascript(scripts);
         settings.set_enable_javascript_markup(false);
     }
-    if has_diagrams {
+    if scripts {
         diagrams::keep_world(&view);
     }
     let done = Rc::new(done);
@@ -499,11 +542,15 @@ fn offscreen(editor: &Editor, html: &str, uri: &str, done: impl Fn(&webkit6::Web
         if event != webkit6::LoadEvent::Finished {
             return;
         }
-        if !has_diagrams {
+        if !scripts {
             return done(view);
         }
         let (view, done) = (view.clone(), Rc::clone(&done));
-        diagrams::draw(&view.clone(), move |_| done(&view));
+        let target = view.clone();
+        math::draw(&target, move |_| {
+            let target = view.clone();
+            diagrams::draw(&target, move |_| done(&view));
+        });
     });
     view.load_html(html, Some(uri));
     editor.print_view.replace(Some(view));

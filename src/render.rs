@@ -23,13 +23,14 @@ fn to_html(md: &str, wiki: &dyn Fn(&str) -> Option<PathBuf>) -> String {
     body_html(md, wiki, true, true, false)
 }
 
-/// `to_html`, with syntect code highlighting only if `highlight`, clickable task
-/// checkboxes and code Copy buttons only if `tasks`, and `data-sourcepos="L:C-L:C"` on
-/// elements (for scroll sync) only if `sourcepos`.
+/// `to_html`, with syntect code highlighting and formulas marked for KaTeX (`math_html`)
+/// only if `rich` (the preview and exports, not Copy as HTML), clickable task checkboxes and
+/// code Copy buttons only if `tasks`, and `data-sourcepos="L:C-L:C"` on elements (for scroll
+/// sync) only if `sourcepos`.
 pub(crate) fn body_html(
     md: &str,
     wiki: &dyn Fn(&str) -> Option<PathBuf>,
-    highlight: bool,
+    rich: bool,
     tasks: bool,
     sourcepos: bool,
 ) -> String {
@@ -63,17 +64,18 @@ pub(crate) fn body_html(
             node.data_mut().value = NodeValue::Text(marked.into());
             continue;
         }
-        // Formulas become a marker in the AST (raw HTML would be escaped) and their MathML
+        // Formulas become a marker in the AST (raw HTML would be escaped) and their HTML
         // is put back after rendering.
         let formula = match &node.data().value {
             NodeValue::Math(math) => {
                 let dollars = if math.display_math { "$$" } else { "$" };
-                Some((math_html(&math.literal, math.display_math, dollars), false))
+                let html = math_html(&math.literal, math.display_math, dollars, rich);
+                Some((html, false))
             }
             // A ```math block (GitHub/GitLab) becomes a paragraph holding the formula, so
             // it keeps `data-sourcepos` and gets no Copy button.
             NodeValue::CodeBlock(block) if block.info.split_whitespace().next() == Some("math") => {
-                Some((math_html(block.literal.trim_end(), true, ""), true))
+                Some((math_html(block.literal.trim_end(), true, "", rich), true))
             }
             _ => None,
         };
@@ -95,7 +97,7 @@ pub(crate) fn body_html(
         if let NodeValue::CodeBlock(block) = &node.data().value {
             let diagram = block.fenced && is_diagram(&block.info);
             code_lines.push((node.data().sourcepos.start.line, diagram));
-            if highlight {
+            if rich {
                 let lang = block.info.split(|c: char| c.is_ascii_whitespace()).next();
                 code_blocks.push((lang_token(lang).to_string(), block.literal.clone()));
             }
@@ -129,13 +131,13 @@ pub(crate) fn body_html(
     }
     let highlighter = Highlighter(highlight_all(code_blocks));
     let mut plugins = comrak::options::Plugins::default();
-    if highlight {
+    if rich {
         plugins.render.codefence_syntax_highlighter = Some(&highlighter);
     }
     let mut html = String::new();
     comrak::format_html_with_plugins(root, &options, &mut html, &plugins)
         .expect("writing to a String");
-    if highlight {
+    if rich {
         *HIGHLIGHTED.lock().unwrap_or_else(PoisonError::into_inner) = highlighter.0;
     }
     // comrak ends each heading with an empty `<a href="#id" … class="anchor"></a>`: dropped,
@@ -258,9 +260,30 @@ pub fn has_diagrams(html: &str) -> bool {
     html.contains("<div class=\"mermaid\"")
 }
 
+/// Whether a page made by `page` / `export_page` has a formula, so it needs KaTeX (`math`).
+/// The note's text is escaped, so it cannot fake this markup.
+pub fn has_math(html: &str) -> bool {
+    html.contains("<span class=\"math")
+}
+
 /// LaTeX as MathML (WebKit renders it natively, no script), or, if math-core cannot
-/// convert it, the source between `delim`s as escaped `<code class="math-error">`.
-fn math_html(latex: &str, display: bool, delim: &str) -> String {
+/// convert it, the source between `delim`s as escaped `<code class="math-error">`. If
+/// `katex`, that goes into a `<span class="math[ display]" data-delim data-tex>` holding the
+/// source, which KaTeX typesets in the preview and exports (`math`); without a script (or
+/// in Copy as HTML, no span) the MathML stays.
+fn math_html(latex: &str, display: bool, delim: &str, katex: bool) -> String {
+    let html = mathml(latex, display, delim);
+    if !katex {
+        return html;
+    }
+    let class = if display { "math display" } else { "math" };
+    let mut out = format!("<span class=\"{class}\" data-delim=\"{delim}\" data-tex=\"");
+    comrak::html::escape(&mut out, latex).expect("writing to a String");
+    out + "\">" + &html + "</span>"
+}
+
+/// `math_html`'s MathML (or error) part.
+fn mathml(latex: &str, display: bool, delim: &str) -> String {
     use math_core::{LatexToMathML, MathCoreConfig, MathDisplay};
     let mode = if display {
         MathDisplay::Block
@@ -683,15 +706,16 @@ fn strip_note_ext(name: &str) -> &str {
 }
 
 /// Full preview page. The CSP blocks the page's scripts and every network load: only local
-/// files (images next to the note) and inline styles. Mermaid diagrams are drawn by the app's
-/// own script world (`diagrams`), which the page cannot reach.
+/// files (images next to the note), inline styles and `data:` fonts (KaTeX's). Mermaid
+/// diagrams and KaTeX formulas are drawn by the app's own script world (`diagrams`, `math`),
+/// which the page cannot reach.
 pub fn page(md: &str, dark: bool, theme: Theme, wiki: &dyn Fn(&str) -> Option<PathBuf>) -> String {
-    let csp = "default-src 'none'; img-src file: data:; style-src 'unsafe-inline'";
+    let csp = "default-src 'none'; img-src file: data:; style-src 'unsafe-inline'; font-src data:";
     html_page(dark, theme, csp, "", &body_html(md, wiki, true, true, true))
 }
 
 /// Standalone HTML file of a note (Export as HTML): the preview's CSS in light mode, code
-/// highlighting, no script. Meant to sit next to the note (`note_dir`): relative images and
+/// highlighting, formulas marked for KaTeX (`math_html`), no script. Meant to sit next to the note (`note_dir`): relative images and
 /// `.md` links stay relative, wiki links become relative links to the target note (no local
 /// absolute paths in the file), unresolved wiki links become plain text. Images may load
 /// from the web when the file is opened elsewhere (`img-src *`).
@@ -704,7 +728,8 @@ pub fn export_page(
     let body = portable_body(md, note_dir, wiki, true);
     let mut escaped = String::new();
     comrak::html::escape(&mut escaped, title).expect("writing to a String");
-    let csp = "default-src 'none'; img-src * data: file:; style-src 'unsafe-inline'";
+    let csp =
+        "default-src 'none'; img-src * data: file:; style-src 'unsafe-inline'; font-src data:";
     html_page(
         false,
         Theme::Default,
@@ -716,8 +741,8 @@ pub fn export_page(
 
 /// Copy as HTML: the note's (or selection's) HTML for pasting into mail/docs, with the same
 /// links as `export_page` relative to `note_dir`. No page CSS or script; code is plain
-/// `<pre><code>` (the `hl-*` classes mean nothing without our CSS), tags plain `#tag` text in
-/// a classed span. The `<meta charset>` makes browsers/editors read the clipboard as UTF-8.
+/// `<pre><code>` (the `hl-*` classes mean nothing without our CSS), formulas MathML (no
+/// KaTeX), tags plain `#tag` text in a classed span. The `<meta charset>` makes browsers/editors read the clipboard as UTF-8.
 pub fn html_fragment(md: &str, note_dir: &Path, wiki: &dyn Fn(&str) -> Option<PathBuf>) -> String {
     format!(
         "<meta charset=\"utf-8\">{}",
@@ -730,10 +755,10 @@ fn portable_body(
     md: &str,
     note_dir: &Path,
     wiki: &dyn Fn(&str) -> Option<PathBuf>,
-    highlight: bool,
+    rich: bool,
 ) -> String {
     let wiki = |t: &str| wiki(t).map(|p| relative(note_dir, &p));
-    let mut body = body_html(md, &wiki, highlight, false, false);
+    let mut body = body_html(md, &wiki, rich, false, false);
     // A link cannot contain a link, so the next `</a>` closes it; the note's own text is
     // escaped and cannot contain this markup.
     let open = format!("<a href=\"{MISSING}");
@@ -984,7 +1009,9 @@ div.mermaid.drawn > pre { display: none; }
 div.mermaid .diagram { overflow-x: auto; text-align: center; }
 div.mermaid .diagram svg { max-width: 100%; height: auto; }
 p.mermaid-error { margin: .3em 0 0; font-size: .85em; color: var(--missing); white-space: pre-wrap; }
-@media print { html { background: none; } body { max-width: none; padding: 0; } pre, table, img, blockquote, div.mermaid { break-inside: avoid; } a.copy, pre.front-matter { display: none; } }
+code.math-error { color: var(--missing); }
+.katex-display { overflow-x: auto; overflow-y: hidden; }
+@media print { html { background: none; } body { max-width: none; padding: 0; } pre, table, img, blockquote, div.mermaid, .katex-display { break-inside: avoid; } a.copy, pre.front-matter { display: none; } }
 ";
 
 /// What the preview does with a navigation to `uri`.
@@ -1269,11 +1296,11 @@ mod tests {
     fn math() {
         let html = to_html("a $x^2$ b\n\n$$\\frac{a}{b}$$\n", &|_| None);
         assert!(
-            html.contains("a <math><msup><mi>x</mi><mn>2</mn></msup></math> b"),
+            html.contains("a <span class=\"math\" data-delim=\"$\" data-tex=\"x^2\"><math><msup><mi>x</mi><mn>2</mn></msup></math></span> b"),
             "{html}"
         );
         assert!(
-            html.contains("<math display=\"block\"><mfrac><mi>a</mi><mi>b</mi></mfrac></math>"),
+            html.contains("<span class=\"math display\" data-delim=\"$$\" data-tex=\"\\frac{a}{b}\"><math display=\"block\"><mfrac><mi>a</mi><mi>b</mi></mfrac></math></span>"),
             "{html}"
         );
         let html = to_html("$\\sum_{i=1}^n \\sqrt{i}$ $a<b$", &|_| None);
@@ -1282,14 +1309,16 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("<mo>&lt;</mo>"), "{html}");
-        // Bad LaTeX: the source, escaped; no raw HTML gets through.
+        // Bad LaTeX: the source, escaped (also for KaTeX); no raw HTML gets through.
         let html = to_html("$\\frac{a$ and $$\\nope<b>$$", &|_| None);
         assert!(
-            html.contains("<code class=\"math-error\">$\\frac{a$</code>"),
+            html.contains(
+                "data-tex=\"\\frac{a\"><code class=\"math-error\">$\\frac{a$</code></span>"
+            ),
             "{html}"
         );
         assert!(
-            html.contains("<code class=\"math-error\">$$\\nope&lt;b&gt;$$</code>"),
+            html.contains("data-tex=\"\\nope&lt;b&gt;\"><code class=\"math-error\">$$\\nope&lt;b&gt;$$</code></span>"),
             "{html}"
         );
         assert!(!html.contains("<b>"), "{html}");
@@ -1299,18 +1328,18 @@ mod tests {
         let html = to_html(md, &|_| None);
         assert!(
             html.starts_with(
-                "<p><math display=\"block\"><mfrac><mi>a</mi><mi>b</mi></mfrac></math></p>"
+                "<p><span class=\"math display\" data-delim=\"\" data-tex=\"\\frac{a}{b}\"><math display=\"block\"><mfrac><mi>a</mi><mi>b</mi></mfrac></math></span></p>"
             ),
             "{html}"
         );
         assert!(
-            html.contains("<p><code class=\"math-error\">\\frac{a</code></p>"),
+            html.contains("<code class=\"math-error\">\\frac{a</code></span></p>"),
             "{html}"
         );
         assert!(html.contains("<pre><code>x\n</code></pre>"), "{html}");
         let p = page(md, false, Theme::Default, &|_| None);
         assert!(
-            p.contains("<p data-sourcepos=\"1:1-3:3\"><math display"),
+            p.contains("<p data-sourcepos=\"1:1-3:3\"><span class=\"math display\""),
             "{p}"
         );
         assert!(p.contains("href=\"mm-copy:9\""), "{p}");
@@ -1320,16 +1349,34 @@ mod tests {
             to_html("$5 and $10\u{E004}0\u{E004}", &|_| None),
             "<p>$5 and $100</p>\n"
         );
-        // Export and Copy as HTML keep the MathML; the preview keeps `data-sourcepos`.
+        // The preview and Export mark formulas for KaTeX around the MathML (kept as the
+        // fallback); Copy as HTML has the MathML only. The preview keeps `data-sourcepos`.
         let md = "# T\n\n$x$\n";
         let mathml = "<math><mi>x</mi></math>";
-        assert!(html_fragment(md, Path::new("/r"), &|_| None).contains(mathml));
-        assert!(export_page(md, "t", Path::new("/r"), &|_| None).contains(mathml));
+        let marked =
+            format!("<span class=\"math\" data-delim=\"$\" data-tex=\"x\">{mathml}</span>");
+        let copy = html_fragment(md, Path::new("/r"), &|_| None);
+        assert!(copy.contains(mathml) && !has_math(&copy), "{copy}");
+        let export = export_page(md, "t", Path::new("/r"), &|_| None);
+        assert!(export.contains(&marked) && has_math(&export), "{export}");
+        assert!(export.contains("font-src data:"), "{export}");
         let p = page(md, false, Theme::Default, &|_| None);
         assert!(
-            p.contains(&format!("<p data-sourcepos=\"3:1-3:3\">{mathml}</p>")),
+            p.contains(&format!("<p data-sourcepos=\"3:1-3:3\">{marked}</p>")),
             "{p}"
         );
+        assert!(has_math(&p) && p.contains("font-src data:"), "{p}");
+        // No formula, no KaTeX: prices, code, raw HTML that looks like the markup.
+        for md in [
+            "$5 and $10\n",
+            "`$x$`\n",
+            "<span class=\"math\" data-tex=\"x\">x</span>\n",
+        ] {
+            assert!(
+                !has_math(&page(md, false, Theme::Default, &|_| None)),
+                "{md}"
+            );
+        }
     }
 
     #[test]

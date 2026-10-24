@@ -67,23 +67,9 @@ pub(crate) fn draw(view: &webkit6::WebView, done: impl FnOnce(bool) + 'static) {
     });
 }
 
-/// Export as HTML: the page with its diagrams drawn as static SVG (no script), the code of
-/// drawn diagrams removed. Call after `draw`.
-pub(crate) fn finished_page(view: &webkit6::WebView, done: impl FnOnce(Option<String>) + 'static) {
-    view.evaluate_javascript(
-        "window.mmDiagrams?window.mmDiagrams.finish():null",
-        Some(SCRIPT_WORLD),
-        None,
-        gio::Cancellable::NONE,
-        move |result| {
-            let html = result
-                .ok()
-                .filter(|v| v.is_string())
-                .map(|v| v.to_str().to_string());
-            done(html)
-        },
-    );
-}
+/// Script for Export as HTML, before the page is read (after `draw`): the code of drawn
+/// diagrams removed, their static SVG stays.
+pub(crate) const FINISH: &str = "if(window.mmDiagrams)window.mmDiagrams.finish();";
 
 fn run(view: &webkit6::WebView, done: impl FnOnce(&str) + 'static) {
     view.call_async_javascript_function(

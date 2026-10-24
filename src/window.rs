@@ -216,7 +216,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     if let Some(settings) = WebViewExt::settings(&preview) {
         // No scripts from the page (the CSP blocks them too). JavaScript itself stays on only
         // for the app's own scripts in its script world: reading/restoring the scroll position
-        // (evaluate_javascript needs it) and drawing Mermaid diagrams (`diagrams`).
+        // (evaluate_javascript needs it), drawing Mermaid diagrams and KaTeX formulas
+        // (`diagrams`, `math`).
         settings.set_enable_javascript_markup(false);
     }
     crate::diagrams::keep_world(&preview);
@@ -990,7 +991,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             ),
             None => editor.sync_preview(),
         }
-        // Mermaid is installed only if the page has a diagram (`diagrams`).
+        // KaTeX / Mermaid are installed only if the page has a formula / diagram.
+        editor.draw_math();
         editor.draw_diagrams();
         editor.refresh_preview_find();
     });
@@ -1196,6 +1198,20 @@ fn about_dialog(editor: &Rc<Editor>) {
         Some("© 2014–2022 Knut Sveidqvist and the Mermaid contributors"),
         gtk::License::MitX11,
         None,
+    );
+    // Bundled for the preview's formulas (`math.rs`); its fonts' glyphs come from the MathJax
+    // fonts (SIL OFL 1.1).
+    dialog.add_legal_section(
+        "KaTeX",
+        Some("© 2013–2020 Khan Academy and other contributors"),
+        gtk::License::MitX11,
+        None,
+    );
+    dialog.add_legal_section(
+        "KaTeX fonts",
+        Some("© 2009–2010 Design Science, Inc.\n© 2014–2017 Khan Academy"),
+        gtk::License::Custom,
+        Some("SIL Open Font License 1.1 (https://openfontlicense.org)"),
     );
     dialog.present(Some(&editor.window));
 }

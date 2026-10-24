@@ -12,6 +12,7 @@ mod input;
 mod lines;
 mod links;
 mod lists;
+mod math;
 mod mentions;
 mod naming;
 mod notes;

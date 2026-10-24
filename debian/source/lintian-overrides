@@ -3,3 +3,6 @@ markdownmate source: source-is-missing [vendor/htmd/examples/*.html]
 markdownmate source: source-is-missing [vendor/html5ever/data/bench/*.html]
 # Mermaid's unmodified upstream dist/mermaid.min.js (npm package `mermaid`; version and how to update: resources/mermaid/README.md).
 markdownmate source: source-is-missing [resources/mermaid/mermaid.min.js]
+# KaTeX's unmodified upstream dist/katex.min.js and its katex.min.css with the fonts embedded (npm package `katex`; resources/katex/README.md).
+markdownmate source: source-is-missing [resources/katex/katex.min.js]
+markdownmate source: source-is-missing [resources/katex/katex.min.css]

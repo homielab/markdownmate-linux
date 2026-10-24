@@ -64,7 +64,7 @@ echo '# Term' > "$NOTES/Term.md"
 printf 'Việt\nviệt nam\nother VIỆT\n' > "$NOTES/Search.md"
 printf 'one\ntwo\n' > "$NOTES/Reload.md"
 printf '| Tên | b |\n|:-:|--|\n| Nguyễn Văn | 1 |' > "$NOTES/Table.md"
-printf '# Math\n\nInline $x^2 + \\sqrt{y}$ and a price: $5 and $10.\n\n$$\\sum_{i=1}^{n} \\frac{a_i}{b}$$\n\nBroken: $\\frac{a$\n\n```math\n\\int_0^1 x\\,dx = \\frac{1}{2}\n```\n' > "$NOTES/Math.md"
+printf '# Math\n\nInline $x^2 + \\sqrt{y}$ and a price: $5 and $10.\n\n$$\\sum_{i=1}^{n} \\frac{a_i}{b}$$\n\nBroken: $\\frac{a$\n\n```math\n\\int_0^1 x\\,dx = \\frac{1}{2}\n```\n\n$$\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix} \\mathbb{R}^{2 \\times 2}$$\n' > "$NOTES/Math.md"
 printf '# Diagram\n\n```mermaid\nflowchart LR\n  A[Write] --> B{Preview?}\n  B -->|yes| C[Diagram]\n  B -->|no| D[Code]\n```\n\nBetween.\n\n```mermaid\nflowchart LR\n  A --> \n```\n\nAfter.\n' > "$NOTES/Mermaid.md"
 printf '![a big red picture for the hover tooltip](big.svg)\n![a link to an image that does not exist](nope.png)\n![a web image that is never downloaded](https://example.com/a.png)\n' > "$NOTES/Image.md"
 printf '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480"><rect width="640" height="480" fill="red"/></svg>' > "$NOTES/big.svg"
@@ -902,11 +902,62 @@ NOTE="$NOTES/Wiki.md" run export mode=preview
 NOTE="$NOTES/Tasks.md" run task mode=preview
 NOTE="$NOTES/Wiki.md" run copy mode=preview
 NOTE="$NOTES/Code.md" run codecopy mode=preview
-# Formulas as MathML (screenshot): inline, block, a price left as text, bad LaTeX as code.
+# Formulas typeset by KaTeX (screenshot): inline, block, a matrix, a price left as text, bad
+# LaTeX as red source.
+math_log() {
+    ! grep -q 'could not .*math\|could not typeset' "$OUT/$1.log" || { echo "FAIL $1: math script failed"; bad=1; }
+}
+act_math() { math_log math; }
 NOTE="$NOTES/Math.md" run math mode=preview
+# Dark, side by side; typing in the sum typesets it again ("+ z" in math_dark-typed.png).
+act_math_dark() {
+    timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
+    xdotool mousemove 300 150 click 1 key ctrl+l
+    sleep 1
+    xdotool type '5:31'
+    xdotool key Return
+    sleep 1
+    xdotool type --delay 50 ' + z'
+    sleep 3
+    scrot -o "$OUT/math_dark-typed.png"
+    math_log math_dark
+}
+NOTE="$NOTES/Math.md" run math_dark "$(printf 'mode=split\nstyle=dark')"
+grep -qF '\frac{a_i}{b} + z$$' "$NOTES/Math.md" || { echo "FAIL math_dark: typed text not saved"; fail=1; }
+# Export as HTML: formulas as KaTeX HTML with its style sheet and fonts embedded, no script.
+act_math_export() {
+    timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
+    xdotool key shift+ctrl+e
+    sleep 2
+    xdotool key Return
+    sleep 6
+    local f="$NOTES/Math.html"
+    grep -qF 'class="katex' "$f" 2>/dev/null || { echo "FAIL math_export: no KaTeX in Math.html"; bad=1; }
+    grep -qF '<style id="mm-katex">' "$f" 2>/dev/null && grep -qF 'data:font/woff2' "$f" \
+        || { echo "FAIL math_export: KaTeX styles/fonts not embedded"; bad=1; }
+    grep -qF 'class="math-error"' "$f" 2>/dev/null || { echo "FAIL math_export: broken formula not shown as source"; bad=1; }
+    ! grep -qF '<script' "$f" 2>/dev/null || { echo "FAIL math_export: script in Math.html"; bad=1; }
+    [ -z "${KEEP_PDF:-}" ] || cp "$f" "$OUT/" 2>/dev/null || true
+    rm -f "$f"
+    math_log math_export
+}
+NOTE="$NOTES/Math.md" run math_export mode=preview
+# Export as PDF typesets the formulas first and waits for KaTeX's fonts.
+act_math_pdf() {
+    timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
+    action export-pdf
+    sleep 2
+    xdotool key Return
+    sleep 6
+    head -c 5 "$NOTES/Math.pdf" 2>/dev/null | grep -q '%PDF' || { echo "FAIL math_pdf: Math.pdf not written"; bad=1; }
+    [ -z "${KEEP_PDF:-}" ] || cp "$NOTES/Math.pdf" "$OUT/" 2>/dev/null || true
+    rm -f "$NOTES/Math.pdf"
+    math_log math_pdf
+}
 # Formulas coloured in the editor (screenshot): not the price, not code.
 NOTE="$NOTES/Math.md" run math_edit mode=edit
 NOTE="$NOTES/Wiki.md" run export_pdf mode=preview
+NOTE="$NOTES/Math.md" run math_pdf mode=edit
 # Mermaid (screenshots): the flowchart drawn, the broken one as code with an error line under it.
 mermaid_log() {
     ! grep -q 'could not .*diagram' "$OUT/$1.log" || { echo "FAIL $1: diagram script failed"; bad=1; }

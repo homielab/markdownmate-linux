@@ -131,7 +131,6 @@
         if (pre) pre.remove();
       }
     }
-    return '<!doctype html>' + document.documentElement.outerHTML;
   }
 
   window.mmDiagrams = { apply, take, run, finish };

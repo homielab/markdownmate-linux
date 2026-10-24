@@ -1,7 +1,7 @@
 # Store & PPA copy
 
 Chữ và ảnh dùng khi phát hành: trang Launchpad PPA, website, GitHub, mạng xã hội. Phần chữ công khai viết bằng tiếng Anh; ghi chú cho Boss bằng tiếng Việt.
-Giữ đồng bộ với `packaging/com.homielab.MarkdownMate.metainfo.xml` (App Center / GNOME Software đọc file đó, không đọc file này). Chỉ ghi tính năng đã có: có công thức toán `$…$` (hiển thị bằng MathML qua `math-core`, từ 0.2.0); có sơ đồ Mermaid (```` ```mermaid ````, từ 0.4.0); có Find in Preview, format bar, lệnh bảng, backlinks (từ 0.3.0–0.4.0); chưa có Flatpak, Snap, sync; chỉ Ubuntu 24.04 (noble). App còn đang phát triển sớm: bài đăng nói rõ điều đó.
+Giữ đồng bộ với `packaging/com.homielab.MarkdownMate.metainfo.xml` (App Center / GNOME Software đọc file đó, không đọc file này). Chỉ ghi tính năng đã có: có công thức toán `$…$` (MathML qua `math-core` từ 0.2.0; KaTeX từ bản sau 0.4.0); có sơ đồ Mermaid (```` ```mermaid ````, từ 0.4.0); có Find in Preview, format bar, lệnh bảng, backlinks (từ 0.3.0–0.4.0); chưa có Flatpak, Snap, sync; chỉ Ubuntu 24.04 (noble). App còn đang phát triển sớm: bài đăng nói rõ điều đó.
 
 ## Ảnh
 
