@@ -13,7 +13,10 @@ use crate::dialogs::{
     bookmarks_dialog, find_in_folder, go_to_line, open_quickly, preferences_dialog, reload_note,
 };
 use crate::editor::Editor;
-use crate::input::{Completer, LineCommand, image_input, insert_table, line_command, smart_lists};
+use crate::input::{
+    Completer, LineCommand, image_input, in_table, insert_table, line_command, smart_lists,
+    table_command,
+};
 use crate::preview::{copy_as_html, export_html, export_pdf, print_note};
 use crate::{
     APP_ID, MATH_STYLE, SCRIPT_WORLD, SYNC_DELAY, TABLE_STYLE, TAG_STYLE, UNTITLED, state_file,
@@ -84,6 +87,20 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
                 }
                 commands.append_submenu(Some(title), &submenu);
             }
+            // Table: Insert Table, then the commands of the table bar (`tablebar.rs`), greyed
+            // out while the cursor is not in a table.
+            let table = gio::Menu::new();
+            table.append(Some("Insert Table"), Some("win.insert-table"));
+            let edits = gio::Menu::new();
+            for e in crate::tablebar::COMMANDS {
+                let item = gio::MenuItem::new(Some(e.label), Some(&format!("win.{}", e.action)));
+                if !e.accel.is_empty() {
+                    item.set_attribute_value("accel", Some(&e.accel.to_variant()));
+                }
+                edits.append_item(&item);
+            }
+            table.append_section(None, &edits);
+            commands.append_submenu(Some("Table"), &table);
             menu.append_section(None, &commands);
         }
         menu.append_section(None, &section);
@@ -170,6 +187,12 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     // The `[[` suggestions float over the editor in this overlay.
     let overlay = gtk::Overlay::builder().child(&scroll).vexpand(true).build();
     editor_pane.append(&overlay);
+    // The table bar shows under the editor while the cursor is in a table.
+    let table_bar = crate::tablebar::bar();
+    let table_rule = gtk::Separator::new(gtk::Orientation::Horizontal);
+    table_rule.set_visible(false);
+    editor_pane.append(&table_rule);
+    editor_pane.append(&table_bar);
     editor_pane.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     editor_pane.append(&status);
     let completer = Completer::new(&view, &overlay);
@@ -466,6 +489,63 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         ));
         window.add_action(&action);
     }
+
+    // Table commands (`table.rs`) for the Table menu and the table bar; their keys are handled
+    // in the editor (`input.rs`). Enabled only while the cursor is in a table (`table_context`);
+    // Preview switches to Edit like Insert Table.
+    let mut table_actions = vec![];
+    for e in crate::tablebar::COMMANDS {
+        let command = e.command;
+        let action = gio::SimpleAction::new(e.action, None);
+        action.set_enabled(false);
+        action.connect_activate(clone!(
+            #[strong]
+            editor,
+            move |_, _| {
+                if editor.path.borrow().is_none() {
+                    return;
+                }
+                if editor.mode.get() == state::Mode::Preview {
+                    editor.set_mode(state::Mode::Edit);
+                }
+                editor.view.grab_focus();
+                if table_command(editor.buffer.upcast_ref(), command) {
+                    editor
+                        .view
+                        .scroll_mark_onscreen(&editor.buffer.get_insert());
+                } else {
+                    editor.view.error_bell();
+                }
+            }
+        ));
+        window.add_action(&action);
+        table_actions.push(action);
+    }
+    // Shows the table bar and enables the table commands while the cursor is in a table.
+    let table_context = Rc::new(clone!(
+        #[strong]
+        editor,
+        move || {
+            let on = in_table(editor.buffer.upcast_ref());
+            if table_bar.is_visible() != on {
+                table_bar.set_visible(on);
+                table_rule.set_visible(on);
+            }
+            for action in &table_actions {
+                action.set_enabled(on);
+            }
+        }
+    ));
+    editor.buffer.connect_changed(clone!(
+        #[strong]
+        table_context,
+        move |_| table_context()
+    ));
+    editor.buffer.connect_mark_set(move |buffer, _, mark| {
+        if *mark == buffer.get_insert() || *mark == buffer.selection_bound() {
+            table_context();
+        }
+    });
 
     // Ctrl+R is not bound by GTK or GtkSourceView; does nothing without an open note.
     let reload_action = gio::SimpleAction::new("reload", None);
@@ -1073,8 +1153,6 @@ fn shortcuts_window() -> gtk::ShortcutsWindow {
                         ("<Control>i", "Italic"),
                         ("<Control>k", "Link"),
                         ("<Control>Return", "Toggle task"),
-                        ("<Shift><Control>t", "Insert table"),
-                        ("Tab <Shift>Tab", "Next / previous table cell"),
                     ],
                 ),
                 (
@@ -1083,6 +1161,17 @@ fn shortcuts_window() -> gtk::ShortcutsWindow {
                         ("<Control><Alt>Up <Alt>Up", "Move line up"),
                         ("<Control><Alt>Down <Alt>Down", "Move line down"),
                         ("<Shift><Control>d", "Duplicate line"),
+                    ],
+                ),
+                (
+                    "Tables",
+                    &[
+                        ("<Shift><Control>t", "Insert table"),
+                        ("Tab <Shift>Tab", "Next / previous cell"),
+                        ("<Control><Alt>Return", "Add row below"),
+                        ("<Shift><Control><Alt>Return", "Add row above"),
+                        ("<Control><Alt>BackSpace", "Delete row"),
+                        ("<Shift><Control><Alt>BackSpace", "Delete column"),
                     ],
                 ),
             ],

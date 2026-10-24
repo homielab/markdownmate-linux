@@ -24,6 +24,7 @@ mod sidebar;
 mod state;
 mod stats;
 mod table;
+mod tablebar;
 mod tags;
 mod title;
 mod url;
@@ -124,7 +125,8 @@ fn main() -> gtk::glib::ExitCode {
             ".find-results > row { min-height: 0; }
              .sidebar-tree:drop(active) { box-shadow: none; }
              .sidebar-tree.drop-target, .sidebar-tree > row.drop-target {
-                 box-shadow: inset 0 0 0 1px @accent_bg_color; }",
+                 box-shadow: inset 0 0 0 1px @accent_bg_color; }
+             .table-bar button { padding-left: 8px; padding-right: 8px; min-height: 28px; }",
         );
         if let Some(display) = gtk::gdk::Display::default() {
             gtk::style_context_add_provider_for_display(

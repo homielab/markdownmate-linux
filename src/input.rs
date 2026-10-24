@@ -215,7 +215,8 @@ impl Completer {
 
 /// Smart lists (`lists.rs`): Enter continues / ends a list item, Tab / Shift+Tab indent list
 /// lines; in a table (`table.rs`) they move between cells / add a row instead; Ctrl+B / Ctrl+I / Ctrl+K format and `*` `_` `` ` `` `~` `[` `(` `"` wrap a selection
-/// (`format.rs`); Ctrl+Enter, Alt+Ctrl+Up / Down (or Alt+Up / Down, taking over GtkSourceView's
+/// (`format.rs`); Alt+Ctrl+Enter / Backspace (with or without Shift) run the table commands;
+/// Ctrl+Enter, Alt+Ctrl+Up / Down (or Alt+Up / Down, taking over GtkSourceView's
 /// own move-lines keys so a move is one undo step) and Shift+Ctrl+D run the line commands
 /// (`lines.rs`); the `[[` suggestion keys go first. Capture phase so it runs before the
 /// view inserts the newline / tab itself. On the view, so only while the editor has focus.
@@ -269,6 +270,31 @@ pub(crate) fn smart_lists(view: &sourceview5::View, completer: &Rc<Completer>) {
             _ if mods == M::SHIFT_MASK | M::CONTROL_MASK && key.to_lower() == Key::d => {
                 line_key(keys, LineCommand::Duplicate)
             }
+            // Table commands (`table.rs`): Alt+Ctrl+Enter adds a row below, Shift for above;
+            // Alt+Ctrl+Backspace deletes the row, Shift the column. Editor only, like the
+            // line commands; outside a table they ring the bell.
+            Key::Return | Key::KP_Enter
+                if mods & !M::SHIFT_MASK == M::ALT_MASK | M::CONTROL_MASK && !preedit.get() =>
+            {
+                table_shortcut(
+                    keys,
+                    if mods.contains(M::SHIFT_MASK) {
+                        table::Command::AddRowAbove
+                    } else {
+                        table::Command::AddRowBelow
+                    },
+                )
+            }
+            Key::BackSpace if mods & !M::SHIFT_MASK == M::ALT_MASK | M::CONTROL_MASK => {
+                table_shortcut(
+                    keys,
+                    if mods.contains(M::SHIFT_MASK) {
+                        table::Command::DeleteColumn
+                    } else {
+                        table::Command::DeleteRow
+                    },
+                )
+            }
             _ if mods == M::CONTROL_MASK => match key.to_lower() {
                 Key::b => {
                     format_selection(&buffer, |t, s| format::emphasis(t, s, format::Style::Bold))
@@ -294,6 +320,18 @@ pub(crate) fn smart_lists(view: &sourceview5::View, completer: &Rc<Completer>) {
         }
     });
     view.add_controller(keys);
+}
+
+/// A table command's shortcut in the editor: rings the bell when there is nothing to do.
+fn table_shortcut(keys: &gtk::EventControllerKey, command: table::Command) -> bool {
+    if let Some(view) = keys.widget().and_downcast::<gtk::TextView>() {
+        if table_command(&view.buffer(), command) {
+            view.scroll_mark_onscreen(&view.buffer().get_insert());
+        } else {
+            view.error_bell();
+        }
+    }
+    true
 }
 
 /// The editor's line commands (`lines.rs`).
@@ -611,27 +649,40 @@ fn line_text(buffer: &gtk::TextBuffer, n: i32) -> Option<String> {
     Some(buffer.text(&start, &end, false).to_string())
 }
 
-/// Tab / Shift+Tab / Enter in a GFM table outside code (`table.rs`): move between cells or
-/// add / leave a row, realigning the table, as one undo step. A selection is fine if it stays
-/// on one line (Tab selects the next cell's text). False outside a table.
-pub(crate) fn table_key(buffer: &gtk::TextBuffer, key: table::Key) -> bool {
+/// The consecutive lines containing `|` around the cursor (or the selection's start, when it
+/// stays on one line), the first one's line number, and the cursor's row and column in them.
+/// None when the selection spans lines or the cursor's line has no `|`.
+fn table_lines(buffer: &gtk::TextBuffer) -> Option<(i32, Vec<String>, usize, usize)> {
     let (a, b) = buffer.selection_bounds().unwrap_or_else(|| {
         let c = buffer.iter_at_mark(&buffer.get_insert());
         (c, c)
     });
     if a.line() != b.line() {
-        return false;
+        return None;
     }
     let piped = |n: i32| line_text(buffer, n).filter(|l| l.contains('|'));
     let row = a.line();
+    piped(row)?;
     let mut top = row;
     while top > 0 && piped(top - 1).is_some() {
         top -= 1;
     }
     let lines: Vec<String> = (top..).map_while(piped).collect();
+    Some((top, lines, (row - top) as usize, a.line_offset() as usize))
+}
+
+/// Replaces the table at the cursor with `f`'s result (`table.rs`, outside code) as one undo
+/// step and selects its `select` range (backwards: the cursor at its start). False when `f`
+/// has nothing to do.
+fn table_change(
+    buffer: &gtk::TextBuffer,
+    f: impl FnOnce(&[&str], usize, usize) -> Option<table::Edit>,
+) -> bool {
+    let Some((top, lines, row, col)) = table_lines(buffer) else {
+        return false;
+    };
     let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
-    let col = a.line_offset() as usize;
-    let Some(edit) = table::edit(&refs, (row - top) as usize, col, key) else {
+    let Some(edit) = f(&refs, row, col) else {
         return false;
     };
     let (Some(mut start), Some(mut end)) = (
@@ -654,6 +705,34 @@ pub(crate) fn table_key(buffer: &gtk::TextBuffer, key: table::Key) -> bool {
     buffer.select_range(&at(edit.select.1), &at(edit.select.0));
     buffer.end_user_action();
     true
+}
+
+/// Tab / Shift+Tab / Enter in a GFM table outside code (`table.rs`): move between cells or
+/// add / leave a row, realigning the table, as one undo step. A selection is fine if it stays
+/// on one line (Tab selects the next cell's text). False outside a table.
+pub(crate) fn table_key(buffer: &gtk::TextBuffer, key: table::Key) -> bool {
+    table_change(buffer, |lines, row, col| table::edit(lines, row, col, key))
+}
+
+/// A table command (Table menu, its shortcut, the table bar) on the table at the cursor, one
+/// undo step, the cursor left in its cell. False outside a table or with nothing to do (Delete
+/// Row on the header, Delete Column on the only column).
+pub(crate) fn table_command(buffer: &gtk::TextBuffer, command: table::Command) -> bool {
+    table_change(buffer, |lines, row, col| {
+        table::command(lines, row, col, command)
+    })
+}
+
+/// Whether the cursor is in a GFM table outside code: the table bar shows only then.
+pub(crate) fn in_table(buffer: &gtk::TextBuffer) -> bool {
+    let Some((top, lines, row, col)) = table_lines(buffer) else {
+        return false;
+    };
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    table::contains(&refs, row, col)
+        && buffer
+            .iter_at_line(top)
+            .is_some_and(|start| !in_code_block(buffer, &start))
 }
 
 /// Insert Table: an empty 3-column table at the cursor's line (`table::skeleton`), first

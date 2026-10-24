@@ -104,10 +104,23 @@ fn width(s: &str) -> usize {
         .sum()
 }
 
-/// `key` with the cursor at char `col` of `lines[row]`. `lines` are the consecutive lines
-/// containing `|` around the cursor; the table starts at the first header + delimiter pair.
-/// None = not in a table (or Enter on the header): the editor keeps its usual behaviour.
-pub fn edit(lines: &[&str], row: usize, col: usize, key: Key) -> Option<Edit> {
+/// The table around the cursor, parsed: its rows (rows[1] is the delimiter), alignments,
+/// column count `n`, prefix, and the cursor's cell `(r, c)` (the delimiter row counts as the
+/// header) with the cursor's char offset `at` in that cell's trimmed text.
+struct Table<'a> {
+    first: usize,
+    pre: &'a str,
+    rows: Vec<Vec<String>>,
+    aligns: Vec<Align>,
+    n: usize,
+    r: usize,
+    c: usize,
+    at: usize,
+}
+
+/// `lines` are the consecutive lines containing `|` around the cursor (at char `col` of
+/// `lines[row]`); the table starts at the first header + delimiter pair. None = not in a table.
+fn parse<'a>(lines: &[&'a str], row: usize, col: usize) -> Option<Table<'a>> {
     let header = |i: usize| {
         let pre = prefix(lines[i]);
         prefix(lines[i + 1]) == pre
@@ -122,17 +135,59 @@ pub fn edit(lines: &[&str], row: usize, col: usize, key: Key) -> Option<Edit> {
     let body: Vec<&str> = lines[first..].iter().map(|l| &l[pre.len()..]).collect();
     let line = body.get(row - first)?;
     let aligns = delimiter(body[1])?;
-    let mut rows: Vec<Vec<String>> = body.iter().map(|l| cells(l)).collect();
+    let rows: Vec<Vec<String>> = body.iter().map(|l| cells(l)).collect();
     let n = rows.iter().map(Vec::len).max()?;
     // The cursor's cell: pipes before it, not counting the leading one (`cells` drops it).
     let col = col.saturating_sub(pre.chars().count());
     let before: String = line.chars().take(col).collect();
-    let c = (cells(&format!("{before}x")).len() - 1).min(n - 1);
+    let mut split = cells(&format!("{before}x"));
+    let c = (split.len() - 1).min(n - 1);
+    let at = split.pop().map_or(0, |t| t.chars().count() - 1);
     // The delimiter row moves like the header.
-    let r = match row - first {
-        1 => 0,
-        r => r,
+    let (r, at) = match row - first {
+        1 => (0, 0),
+        r => (r, at),
     };
+    Some(Table {
+        first,
+        pre,
+        rows,
+        aligns,
+        n,
+        r,
+        c,
+        at,
+    })
+}
+
+impl Table<'_> {
+    /// The realigned table with the cursor at char `at` of cell `(tr, tc)`'s text.
+    fn edit(&self, (tr, tc): (usize, usize), at: usize) -> Edit {
+        let (text, (a, b)) = render(&self.rows, &self.aligns, self.n, (tr, tc));
+        // `pre` is added before the selected cell's row and every row above it.
+        let p = a + at.min(b - a) + self.pre.chars().count() * (tr + 1);
+        Edit {
+            first: self.first,
+            text: prefixed(&text, self.pre),
+            select: (p, p),
+        }
+    }
+}
+
+/// `key` with the cursor at char `col` of `lines[row]` (see `parse`). None = not in a table
+/// (or Enter on the header): the editor keeps its usual behaviour.
+pub fn edit(lines: &[&str], row: usize, col: usize, key: Key) -> Option<Edit> {
+    let t = parse(lines, row, col)?;
+    let Table {
+        first,
+        pre,
+        mut rows,
+        aligns,
+        n,
+        r,
+        c,
+        ..
+    } = t;
     let last = rows.len() - 1;
     let (tr, tc) = match key {
         Key::Tab if c + 1 < n => (r, c + 1),
@@ -162,13 +217,90 @@ pub fn edit(lines: &[&str], row: usize, col: usize, key: Key) -> Option<Edit> {
         rows.push(vec![]);
     }
     let (text, (a, b)) = render(&rows, &aligns, n, (tr, tc));
-    // `pre` is added before the selected cell's row and every row above it.
     let shift = pre.chars().count() * (tr + 1);
     Some(Edit {
         first,
         text: prefixed(&text, pre),
         select: (a + shift, b + shift),
     })
+}
+
+/// A table command from the Table menu, its shortcut or the table bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Command {
+    AddRowAbove,
+    AddRowBelow,
+    DeleteRow,
+    /// A column after the cursor's.
+    AddColumn,
+    DeleteColumn,
+    AlignLeft,
+    AlignCenter,
+    AlignRight,
+    Format,
+}
+
+/// `command` with the cursor at char `col` of `lines[row]` (see `parse`): the realigned table
+/// (alignment and `\|` kept) with the cursor in the same cell (same place in its text for
+/// Format / Align, at its start in the new or next row / column). None = not in a table, or
+/// nothing to do there: Add Row Above / Delete Row on the header or delimiter, Delete Column
+/// on the only column.
+pub fn command(lines: &[&str], row: usize, col: usize, command: Command) -> Option<Edit> {
+    let mut t = parse(lines, row, col)?;
+    let (r, c, n) = (t.r, t.c, t.n);
+    for row in &mut t.rows {
+        row.resize(n, String::new());
+    }
+    t.aligns.resize(n, Align::None);
+    let mut align = |a: Align| {
+        t.aligns[c] = a;
+        (r, c, t.at)
+    };
+    let (tr, tc, at) = match command {
+        Command::Format => (r, c, t.at),
+        Command::AlignLeft => align(Align::Left),
+        Command::AlignCenter => align(Align::Center),
+        Command::AlignRight => align(Align::Right),
+        Command::AddRowAbove if r < 2 => return None,
+        Command::AddRowAbove => {
+            t.rows.insert(r, vec![String::new(); n]);
+            (r, c, 0)
+        }
+        Command::AddRowBelow => {
+            let i = (r + 1).max(2);
+            t.rows.insert(i, vec![String::new(); n]);
+            (i, c, 0)
+        }
+        Command::DeleteRow if r < 2 => return None,
+        Command::DeleteRow => {
+            t.rows.remove(r);
+            let i = r.min(t.rows.len() - 1);
+            (if i < 2 { 0 } else { i }, c, 0)
+        }
+        Command::AddColumn => {
+            for row in &mut t.rows {
+                row.insert(c + 1, String::new());
+            }
+            t.aligns.insert(c + 1, Align::None);
+            t.n += 1;
+            (r, c + 1, 0)
+        }
+        Command::DeleteColumn if n < 2 => return None,
+        Command::DeleteColumn => {
+            for row in &mut t.rows {
+                row.remove(c);
+            }
+            t.aligns.remove(c);
+            t.n -= 1;
+            (r, c.min(n - 2), 0)
+        }
+    };
+    Some(t.edit((tr, tc), at))
+}
+
+/// Whether the cursor at char `col` of `lines[row]` is in a table (see `parse`).
+pub fn contains(lines: &[&str], row: usize, col: usize) -> bool {
+    parse(lines, row, col).is_some()
 }
 
 fn prefixed(text: &str, pre: &str) -> String {
@@ -512,5 +644,125 @@ mod tests {
     fn escaped_pipes_stay_in_the_cell() {
         let (text, _) = run("| a \\| b | c |\n|---|---|", 0, 1, Key::Tab).unwrap();
         assert_eq!(text, "| a \\| b | ‸c   |\n| ------ | --- |");
+    }
+
+    /// The note after `command`, the cursor marked with ‸.
+    fn cmd(text: &str, row: usize, col: usize, c: Command) -> Option<String> {
+        let lines: Vec<&str> = text.lines().collect();
+        let e = command(&lines, row, col, c)?;
+        assert_eq!(e.select.0, e.select.1, "a cursor, not a selection");
+        let before: String = e.text.chars().take(e.select.0).collect();
+        let mut out = lines[..e.first].join("\n");
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        Some(format!("{out}{before}‸{}", &e.text[before.len()..]))
+    }
+
+    const T: &str = "| a | b |\n|:-|--:|\n| 1 | 2 |\n| 3 | 4 |";
+
+    #[test]
+    fn adds_and_deletes_rows() {
+        assert_eq!(
+            cmd(T, 2, 7, Command::AddRowBelow).unwrap(),
+            "| a   |   b |\n| :-- | --: |\n| 1   |   2 |\n|     |    ‸ |\n| 3   |   4 |"
+        );
+        // Below the header: the first body row.
+        assert_eq!(
+            cmd(T, 0, 2, Command::AddRowBelow).unwrap(),
+            "| a   |   b |\n| :-- | --: |\n| ‸    |     |\n| 1   |   2 |\n| 3   |   4 |"
+        );
+        assert_eq!(
+            cmd(T, 3, 2, Command::AddRowAbove).unwrap(),
+            "| a   |   b |\n| :-- | --: |\n| 1   |   2 |\n| ‸    |     |\n| 3   |   4 |"
+        );
+        assert!(cmd(T, 0, 2, Command::AddRowAbove).is_none());
+        assert!(cmd(T, 1, 2, Command::AddRowAbove).is_none());
+        // Delete: the cursor moves to the same cell of the next row, else the one above,
+        // else the header.
+        assert_eq!(
+            cmd(T, 2, 7, Command::DeleteRow).unwrap(),
+            "| a   |   b |\n| :-- | --: |\n| 3   |   ‸4 |"
+        );
+        assert_eq!(
+            cmd(T, 3, 2, Command::DeleteRow).unwrap(),
+            "| a   |   b |\n| :-- | --: |\n| ‸1   |   2 |"
+        );
+        assert_eq!(
+            cmd("| a |\n|-|\n| 1 |", 2, 2, Command::DeleteRow).unwrap(),
+            "| ‸a   |\n| --- |"
+        );
+        assert!(cmd(T, 0, 2, Command::DeleteRow).is_none());
+        assert!(cmd(T, 1, 2, Command::DeleteRow).is_none());
+        // Not in a table.
+        assert!(cmd("| a |\ntext", 0, 2, Command::AddRowBelow).is_none());
+    }
+
+    #[test]
+    fn adds_and_deletes_columns() {
+        // After the cursor's column; alignments move with their column.
+        assert_eq!(
+            cmd(T, 2, 2, Command::AddColumn).unwrap(),
+            "| a   |     |   b |\n| :-- | --- | --: |\n| 1   | ‸    |   2 |\n| 3   |     |   4 |"
+        );
+        assert_eq!(
+            cmd(T, 0, 6, Command::AddColumn).unwrap(),
+            "| a   |   b | ‸    |\n| :-- | --: | --- |\n| 1   |   2 |     |\n| 3   |   4 |     |"
+        );
+        assert_eq!(
+            cmd(T, 2, 2, Command::DeleteColumn).unwrap(),
+            "|   b |\n| --: |\n|   ‸2 |\n|   4 |"
+        );
+        // The last column: the cursor goes to the one before.
+        assert_eq!(
+            cmd(T, 3, 7, Command::DeleteColumn).unwrap(),
+            "| a   |\n| :-- |\n| 1   |\n| ‸3   |"
+        );
+        assert!(cmd("| a |\n|-|\n| 1 |", 2, 2, Command::DeleteColumn).is_none());
+        // Short rows are filled first.
+        assert_eq!(
+            cmd("| a | b |\n|-|-|\n| 1 |", 2, 2, Command::AddColumn).unwrap(),
+            "| a   |     | b   |\n| --- | --- | --- |\n| 1   | ‸    |     |"
+        );
+    }
+
+    #[test]
+    fn aligns_and_formats_keeping_the_cursor() {
+        // The cursor keeps its place in the cell's text ("Nguy‸ễn").
+        let t = "| Tên | b |\n|---|---|\n| Nguyễn Văn | 1 |";
+        assert_eq!(
+            cmd(t, 2, 6, Command::AlignCenter).unwrap(),
+            "|    Tên     | b   |\n| :--------: | --- |\n| Nguy‸ễn Văn | 1   |"
+        );
+        assert_eq!(
+            cmd(t, 2, 16, Command::AlignRight).unwrap(),
+            "| Tên        |   b |\n| ---------- | --: |\n| Nguyễn Văn |   1‸ |"
+        );
+        assert_eq!(
+            cmd("|a|b|\n|--:|-|\n|1|2|", 2, 1, Command::AlignLeft).unwrap(),
+            "| a   | b   |\n| :-- | --- |\n| ‸1   | 2   |"
+        );
+        // On the delimiter row: the header cell.
+        assert_eq!(
+            cmd(T, 1, 5, Command::AlignCenter).unwrap(),
+            "| a   |  ‸b  |\n| :-- | :-: |\n| 1   |  2  |\n| 3   |  4  |"
+        );
+        // Format: alignment and `\|` kept; a `|` in a code span splits the cell, like the
+        // preview (GFM).
+        assert_eq!(
+            cmd("|a \\| b|`x|y`|\n|:-:|-|-|\n|1|2|3|", 2, 1, Command::Format).unwrap(),
+            "| a \\| b | `x  | y`  |\n| :----: | --- | --- |\n|   ‸1    | 2   | 3   |"
+        );
+        // In a quote and in a list item: the prefix stays on every row.
+        assert_eq!(
+            cmd("> |a|b|\n> |-|-|\n> |1|2|", 2, 6, Command::Format).unwrap(),
+            "> | a   | b   |\n> | --- | --- |\n> | 1   | 2‸   |"
+        );
+        assert_eq!(
+            cmd("- x\n  |a|b|\n  |-|-|\n  |1|2|", 3, 4, Command::AddRowBelow).unwrap(),
+            "- x\n  | a   | b   |\n  | --- | --- |\n  | 1   | 2   |\n  | ‸    |     |"
+        );
+        assert!(contains(&["| a |", "|-|"], 0, 1));
+        assert!(!contains(&["| a |", "| b |"], 0, 1));
     }
 }

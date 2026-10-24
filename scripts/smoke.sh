@@ -779,6 +779,34 @@ act_lines() {
 printf -- '- [ ] a\n- [ ] b\nthird\n' > "$NOTES/Lines.md"
 NOTE="$NOTES/Lines.md" run lines mode=edit
 rm "$NOTES/Lines.md"
+# Table commands: Add Row Below (Alt+Ctrl+Enter, one undo step), Align Column Right (the
+# table bar's action), Delete Column (Shift+Alt+Ctrl+Backspace), Delete Row
+# (Alt+Ctrl+Backspace); each realigns the table, the cursor stays in its cell.
+act_tablecmd() {
+    timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
+    local orig
+    orig=$(printf '| a | b |\n|---|---|\n| 1 | 2 |')
+    check_table() {
+        sleep 2
+        [ "$(cat "$NOTES/TableCmd.md")" = "$(printf -- "$2")" ] || { echo "FAIL tablecmd $1: got"; cat "$NOTES/TableCmd.md"; bad=1; }
+    }
+    xdotool mousemove 400 150 click 1 key ctrl+Home Down Down ctrl+alt+Return
+    xdotool type 'x'
+    check_table row-below '| a   | b   |\n| --- | --- |\n| 1   | 2   |\n| x    |     |'
+    scrot -o "$OUT/tablecmd.png"
+    xdotool key ctrl+z ctrl+z
+    check_table undo "$orig"
+    xdotool key ctrl+Home Down Down
+    action table-align-right
+    check_table align '|   a | b   |\n| --: | --- |\n|   1 | 2   |'
+    xdotool key shift+ctrl+alt+BackSpace
+    check_table delete-column '| b   |\n| --- |\n| 2   |'
+    xdotool key ctrl+alt+BackSpace
+    check_table delete-row '| b   |\n| --- |'
+}
+printf '| a | b |\n|---|---|\n| 1 | 2 |\n' > "$NOTES/TableCmd.md"
+NOTE="$NOTES/TableCmd.md" run tablecmd mode=edit
+rm "$NOTES/TableCmd.md"
 # Proportional editor font: table lines still show in monospace (#104).
 NOTE="$NOTES/Table.md" run table "$(printf 'mode=edit\nfont=Ubuntu 14')"
 run paste mode=edit
