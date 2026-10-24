@@ -1,7 +1,7 @@
 # Store & PPA copy
 
 Chữ và ảnh dùng khi phát hành: trang Launchpad PPA, website, GitHub, mạng xã hội. Phần chữ công khai viết bằng tiếng Anh; ghi chú cho Boss bằng tiếng Việt.
-Giữ đồng bộ với `packaging/com.homielab.MarkdownMate.metainfo.xml` (App Center / GNOME Software đọc file đó, không đọc file này). Chỉ ghi tính năng đã có — chưa có KaTeX/Mermaid, Flatpak, sync.
+Giữ đồng bộ với `packaging/com.homielab.MarkdownMate.metainfo.xml` (App Center / GNOME Software đọc file đó, không đọc file này). Chỉ ghi tính năng đã có: có công thức toán `$…$` (hiển thị bằng MathML qua `math-core`, từ 0.2.0); chưa có sơ đồ Mermaid, Flatpak, sync.
 
 ## Ảnh
 

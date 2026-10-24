@@ -6,7 +6,7 @@
 #   packaging/build-source.sh                     # signed, on a Debian/Ubuntu host with the key
 #
 # The upstream tarball holds every file git knows about (tracked, plus new files that
-# aren't ignored) except debian/ and the agent-team files, plus vendor/: every crate from
+# aren't ignored, CHANGELOG.md included) except debian/, plus vendor/: every crate from
 # Cargo.lock (`cargo vendor`, needs network here), because Launchpad builds offline.
 # vendor/ is never committed to git. Then sign (debsign, if built with -us -uc) and:
 #   dput ppa:homielab/markdownmate dist/ppa/markdownmate_<version>_source.changes
@@ -34,9 +34,8 @@ git() { command git -c safe.directory="$ROOT" -C "$ROOT" "$@"; }
 
 # upstream tarball
 mkdir "$SRC"
-git ls-files -co --exclude-standard -z -- . ':!debian' ':!agent-team' ':!agent.sh' ':!CLAUDE.md' |
+git ls-files -co --exclude-standard -z -- . ':!debian' |
   (cd "$ROOT" && tar --null -T - -cf -) | tar -xf - -C "$SRC"
-cp "$ROOT/agent-team/CHANGELOG.md" "$SRC/CHANGELOG.md"
 cargo vendor --locked --manifest-path "$SRC/Cargo.toml" "$SRC/vendor" > /dev/null
 STAMP=$(git log -1 --format=%ct) # reproducible, and not "ancient" to lintian
 tar -C "$WORK" --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$STAMP" \

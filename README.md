@@ -151,9 +151,9 @@ Your files and settings stay where they belong: **on your machine**. The only fi
 | Language | Rust (stable) |
 | UI | [GTK 4](https://gtk-rs.org) + [libadwaita](https://gnome.pages.gitlab.gnome.org/libadwaita/) |
 | Editor | [GtkSourceView 5](https://wiki.gnome.org/Projects/GtkSourceView) |
-| Preview | [WebKitGTK 6](https://webkitgtk.org), page scripts off; code highlighted in Rust by [syntect](https://github.com/trishume/syntect) (light/dark CSS classes); KaTeX and Mermaid bundled offline (planned) |
+| Preview | [WebKitGTK 6](https://webkitgtk.org), page scripts off; code highlighted in Rust by [syntect](https://github.com/trishume/syntect) (light/dark CSS classes); `$…$` math rendered to MathML by [math-core](https://crates.io/crates/math-core); no Mermaid diagrams yet |
 | Markdown | [comrak](https://github.com/kivikakk/comrak) (CommonMark + GFM) |
-| Packaging | `.deb` and Flatpak |
+| Packaging | `.deb`, published in the Launchpad PPA `ppa:homielab/markdownmate` |
 
 ---
 
@@ -197,9 +197,9 @@ Releases go to the PPA `ppa:homielab/markdownmate`. A PPA only takes a source pa
 scripts/check-source.sh                      # on the host: build it like Launchpad and start the app
 ```
 
-To release: bump `version` in `Cargo.toml`, add the version to `agent-team/CHANGELOG.md` and `debian/changelog` (`dch -v <version>-0ppa1 -D noble "New upstream release."`), commit, then push a tag `v<version>`. `.github/workflows/ppa.yml` builds the source package, signs it with the `PPA_GPG_PRIVATE_KEY`/`PPA_GPG_PASSPHRASE` repo secrets, checks the signature against keyserver.ubuntu.com and runs `dput`; Launchpad emails contact@homielab.com on accept/reject, then builds. A version already in the PPA is skipped (for a packaging-only fix bump `-0ppa2`). Re-run for an existing tag: `gh workflow run ppa.yml -f tag=v<version>`.
+To release: bump `version` in `Cargo.toml`, move the `## Unreleased` notes in `CHANGELOG.md` under `## <version>`, add the version to `debian/changelog` (`dch -v <version>-0ppa1 -D noble "New upstream release."`), commit, then push a tag `v<version>`. `.github/workflows/ppa.yml` builds the source package, signs it with the `PPA_GPG_PRIVATE_KEY`/`PPA_GPG_PASSPHRASE` repo secrets, checks the signature against keyserver.ubuntu.com and runs `dput`; Launchpad emails contact@homielab.com on accept/reject, then builds. A version already in the PPA is skipped (for a packaging-only fix bump `-0ppa2`). Re-run for an existing tag: `gh workflow run ppa.yml -f tag=v<version>`.
 
-- `packaging/build-source.sh` puts every file git knows about (except `debian/` and the `agent-team/` files) into the `.orig.tar.xz`, plus `vendor/`: all crates from `Cargo.lock`, fetched by `cargo vendor` (needs network) — about 8 MB compressed. `vendor/` is never committed to git. The version in `Cargo.toml` must match `debian/changelog` (`dch -v <version>-0ppa1 -D noble "New upstream release."`). To upload by hand (the container has no GPG key): `debsign -k <key> dist/ppa/markdownmate_<version>-0ppa1_source.changes` on a machine with the key registered on Launchpad, then `dput ppa:homielab/markdownmate` with the same file.
+- `packaging/build-source.sh` puts every file git knows about (except `debian/`, so `CHANGELOG.md` included) into the `.orig.tar.xz`, plus `vendor/`: all crates from `Cargo.lock`, fetched by `cargo vendor` (needs network) — about 8 MB compressed. `vendor/` is never committed to git. The version in `Cargo.toml` must match `debian/changelog` (`dch -v <version>-0ppa1 -D noble "New upstream release."`). To upload by hand (the container has no GPG key): `debsign -k <key> dist/ppa/markdownmate_<version>-0ppa1_source.changes` on a machine with the key registered on Launchpad, then `dput ppa:homielab/markdownmate` with the same file.
 - `debian/rules` builds with `cargo --offline --locked` against `vendor/` (via `--config` flags, so `./dev.sh cargo …` is unaffected), runs the unit tests, and installs the files with `scripts/package-deb.sh --stage` (the same layout as the manual `.deb`).
 - `scripts/check-source.sh` (needs Docker) installs the build-deps in a clean `ubuntu:24.04` container, then with the network off runs lintian (fails on `E:`) and `dpkg-source -x` + `dpkg-buildpackage -b` as a user without a writable HOME, and finally runs `scripts/check-deb.sh` on the resulting `.deb` (in `dist/ppa-deb/`). `ARCH=amd64` for the emulated amd64 build.
 
@@ -216,8 +216,8 @@ To release: bump `version` in `Cargo.toml`, add the version to `agent-team/CHANG
 ### Build from Source
 
 ```bash
-git clone https://github.com/homielab/markdownmate-ubuntu.git
-cd markdownmate-ubuntu
+git clone https://github.com/homielab/markdownmate-linux.git
+cd markdownmate-linux
 cargo run --release
 ```
 

@@ -37,5 +37,5 @@ override_dh_auto_install:
 	bash scripts/package-deb.sh --stage debian/markdownmate
 
 override_dh_installchangelogs:
-	# copied from agent-team/CHANGELOG.md by packaging/build-source.sh
+	# CHANGELOG.md at the top of the upstream tarball
 	dh_installchangelogs CHANGELOG.md
