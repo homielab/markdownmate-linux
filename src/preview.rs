@@ -509,13 +509,29 @@ fn write_export(editor: &Rc<Editor>, dest: std::path::PathBuf, html: String) {
 /// Export as Plain Text…: save dialog suggesting `<note>.txt` next to the note, then writes
 /// `plain::plain_text` of the editor's text (unsaved edits included).
 pub(crate) fn export_text(editor: &Rc<Editor>) {
+    export_converted(
+        editor,
+        "Export as Plain Text",
+        "txt",
+        crate::plain::plain_text,
+    );
+}
+
+/// Export as RTF…: the same with `rtf::rtf`, suggesting `<note>.rtf`.
+pub(crate) fn export_rtf(editor: &Rc<Editor>) {
+    export_converted(editor, "Export as RTF", "rtf", crate::rtf::rtf);
+}
+
+/// Save dialog titled `title` suggesting `<note>.<ext>` next to the note, then writes
+/// `convert` of the editor's text (unsaved edits included).
+fn export_converted(editor: &Rc<Editor>, title: &str, ext: &str, convert: fn(&str) -> String) {
     let Some(note) = editor.path.borrow().clone() else {
         return;
     };
     let dialog = gtk::FileDialog::builder()
-        .title("Export as Plain Text")
+        .title(title)
         .modal(true)
-        .initial_name(format!("{}.txt", stem(&note)))
+        .initial_name(format!("{}.{ext}", stem(&note)))
         .build();
     if let Some(dir) = note.parent() {
         dialog.set_initial_folder(Some(&gio::File::for_path(dir)));
@@ -531,8 +547,8 @@ pub(crate) fn export_text(editor: &Rc<Editor>) {
             let (start, end) = editor.buffer.bounds();
             let text = editor.buffer.text(&start, &end, true).to_string();
             glib::spawn_future_local(async move {
-                match gio::spawn_blocking(move || crate::plain::plain_text(&text)).await {
-                    Ok(plain) => write_export(&editor, dest, plain),
+                match gio::spawn_blocking(move || convert(&text)).await {
+                    Ok(out) => write_export(&editor, dest, out),
                     Err(_) => editor.toast("Could not export the note"),
                 }
             });

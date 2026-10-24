@@ -19,7 +19,7 @@ use crate::input::{
     table_command,
 };
 use crate::preview::{
-    copy_as_html, copy_as_rich_text, export_html, export_pdf, export_text, print_note,
+    copy_as_html, copy_as_rich_text, export_html, export_pdf, export_rtf, export_text, print_note,
 };
 use crate::{
     APP_ID, MATH_STYLE, SCRIPT_WORLD, SYNC_DELAY, TABLE_STYLE, TAG_STYLE, UNTITLED, state_file,
@@ -47,6 +47,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             ("Export as PDF…", "win.export-pdf"),
             ("Export as HTML…", "win.export-html"),
             ("Export as Plain Text…", "win.export-text"),
+            ("Export as RTF…", "win.export-rtf"),
             ("Copy as HTML", "win.copy-html"),
             ("Copy as Rich Text", "win.copy-rich-text"),
             ("Print…", "win.print"),
@@ -756,6 +757,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     // Does nothing without an open note.
     simple("export-pdf", export_pdf);
     simple("export-text", export_text);
+    simple("export-rtf", export_rtf);
     // No shortcut, as on macOS: none free fits next to Copy as HTML's.
     simple("copy-rich-text", copy_as_rich_text);
     simple("about", about_dialog);
