@@ -6,6 +6,8 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+## 0.5.0
+
 - Preferences ▸ Default App: shows whether MarkdownMate is the default app for Markdown files and has a Make Default button, so `.md` files open here from Files without digging through Open With.
 - TypeScript code blocks are coloured: ```` ```ts ````, ```` ```typescript ```` and ```` ```tsx ```` in Preview, Side by side, Print and exports; the code block language list offers `ts`, `tsx` and `typescript`.
 - Faster Backlinks in large folders: with 10,000 notes the panel lists a note's backlinks in about 0.3 s instead of a minute and a half. Link updates after renaming or moving a note in the sidebar use the same faster lookup.

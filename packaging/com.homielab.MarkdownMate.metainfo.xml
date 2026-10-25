@@ -102,6 +102,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.5.0" date="2026-10-25">
+      <description>
+        <p>KaTeX math in the preview, Today's Note (Ctrl+D), Copy as Rich Text, Export as Plain Text and as RTF, pasting spreadsheet cells as a table, completion of code block languages and wiki link headings, TypeScript highlighting, creating a note by clicking a missing wiki link, a Default App setting, much faster Backlinks in large folders and a faster preview while typing in large notes.</p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-10-24">
       <description>
         <p>Mermaid diagrams in the preview, Find in Preview (Ctrl+F), a Markdown format bar (Shift+Ctrl+M), table commands with a table bar, Toggle Task, Footnote, Move and Duplicate Line commands, Unlinked Mentions under Backlinks, updating links after a note or folder is renamed or moved, links to files and folders dropped into a note, and a much faster preview of large notes with code.</p>
