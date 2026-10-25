@@ -300,6 +300,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         backlinks,
         backlink_targets: RefCell::default(),
         backlinks_gen: Cell::new(0),
+        link_index: Arc::default(),
+        links_changed: RefCell::default(),
         mentions_expander,
         mentions,
         mention_targets: RefCell::default(),

@@ -5,7 +5,8 @@
 # build on Xvfb `runs` times with the folder open, every subfolder expanded and
 # `Area 0/Topic 0/Note 0.md` reopened, and prints the app's timing log (MARKDOWNMATE_TIMING,
 # ms after main started), its memory after it settles, after the Outline/Backlinks panel is
-# shown and after a switch to another note, and the tag re-index after a note changes on disk.
+# shown and after a switch to another note, and the tag re-index and Backlinks after a note
+# changes on disk.
 # Everything it starts and writes is removed on exit. See docs/PERFORMANCE.md.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -90,7 +91,7 @@ for run in $(seq 1 "$RUNS"); do
     n=$(grep -c "tags indexed" "$log")
     echo "Changed on disk #tagnew" >> "$NOTES/$changed"
     wait_for 60 sh -c "[ \$(grep -c 'tags indexed' '$log') -gt $n ]" || echo "no tag re-index"
-    echo "  note changed on disk: $(last "$log" "tags indexed")"
+    echo "  note changed on disk: $(last "$log" "tags indexed"), $(last "$log" "backlinks listed")"
     sleep 1
     echo "  memory at the end: $(rss $pid)"
 

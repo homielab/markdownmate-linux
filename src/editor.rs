@@ -2,8 +2,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use adw::prelude::*;
@@ -42,6 +42,10 @@ pub(crate) struct Editor {
     pub(crate) backlinks: gtk::ListBox,
     pub(crate) backlink_targets: RefCell<Vec<(PathBuf, usize)>>,
     pub(crate) backlinks_gen: Cell<u64>,
+    /// Every note's links (built in the background when a folder opens), and the notes whose
+    /// text changed since it was last synced.
+    pub(crate) link_index: Arc<Mutex<backlinks::LinkIndex>>,
+    pub(crate) links_changed: RefCell<HashSet<PathBuf>>,
     /// Unlinked Mentions under Backlinks (collapsed by default): the expander, its rows, the
     /// (note, 1-based line) of each, and the request generation (shared with the background
     /// search, which stops when it changes).
@@ -462,24 +466,24 @@ impl Editor {
     }
 
     /// Lists the notes linking to the open note under the outline (only while the panel is
-    /// shown). Reads every note from disk, so it runs on a background thread.
+    /// shown): a lookup in the link index, after bringing it up to date (`links_job`).
     pub(crate) fn refresh_backlinks(self: &Rc<Self>) {
         let generation = self.backlinks_gen.get() + 1;
         self.backlinks_gen.set(generation);
-        let (Some(target), Some(root)) = (self.path.borrow().clone(), self.root.borrow().clone())
+        let (Some(target), Some(_)) = (self.path.borrow().clone(), self.root.borrow().as_ref())
         else {
             return self.fill_backlinks(Vec::new());
         };
         if !self.outline_panel.is_visible() {
             return;
         }
-        let notes = self.note_list.borrow().to_vec(); // the Rc cannot cross threads
         let weak = Rc::downgrade(self);
         let start = Instant::now();
+        let Some(job) = self.links_job(move |index| index.backlinks(&target)) else {
+            return;
+        };
         glib::spawn_future_local(async move {
-            let Ok(found) =
-                gio::spawn_blocking(move || backlinks::find(notes, &root, &target)).await
-            else {
+            let Ok(found) = gio::spawn_blocking(job).await else {
                 return;
             };
             if let Some(editor) = weak.upgrade()
@@ -489,6 +493,44 @@ impl Editor {
                 editor.fill_backlinks(found);
             }
         });
+    }
+
+    /// A job for a background thread: brings the link index in line with the note list and
+    /// the notes changed since the last sync, then runs `then` on it. The first sync of a folder
+    /// reads every note; later ones only what changed. None without a folder.
+    fn links_job<T: Send + 'static>(
+        &self,
+        then: impl FnOnce(&backlinks::LinkIndex) -> T + Send + 'static,
+    ) -> Option<impl FnOnce() -> T + Send + 'static> {
+        let root = self.root.borrow().clone()?;
+        let notes = self.note_list.borrow().to_vec(); // the Rc cannot cross threads
+        let changed = self.links_changed.take();
+        let index = Arc::clone(&self.link_index);
+        Some(move || {
+            // A sync that panicked left at worst a partly updated index; the next one fixes it.
+            let mut index = index.lock().unwrap_or_else(|e| e.into_inner());
+            index.sync(&notes, &root, &changed);
+            then(&index)
+        })
+    }
+
+    /// Builds (or updates) the link index in the background, so Backlinks are ready when shown.
+    pub(crate) fn index_links(&self) {
+        let start = Instant::now();
+        let Some(job) = self.links_job(|_| ()) else {
+            return;
+        };
+        glib::spawn_future_local(async move {
+            if gio::spawn_blocking(job).await.is_ok() {
+                timing::took(start, "links indexed");
+            }
+        });
+    }
+
+    /// `path`'s text changed on disk (another app, our save, link updates): read it again at
+    /// the next sync of the link index.
+    pub(crate) fn note_changed(&self, path: PathBuf) {
+        self.links_changed.borrow_mut().insert(path);
     }
 
     fn fill_backlinks(&self, found: Vec<backlinks::Backlink>) {
@@ -592,6 +634,9 @@ impl Editor {
         let result = save::save_checked(&path, &self.saved.borrow(), &text);
         match result {
             Ok(outcome) => {
+                if matches!(outcome, save::Saved::Written) {
+                    self.note_changed(path.clone());
+                }
                 if let save::Saved::Conflict(copy) = outcome {
                     self.toast(&format!(
                         "{} changed or was removed on disk. Your version was saved as {}.",
@@ -1086,7 +1131,8 @@ impl Editor {
         });
     }
 
-    /// Re-lists tags RESCAN_DELAY after a note's content changed on disk.
+    /// Re-lists tags (and Backlinks, if shown) RESCAN_DELAY after a note's content changed on
+    /// disk.
     pub(crate) fn schedule_tags_index(self: &Rc<Self>) {
         if let Some(id) = self.tags_timer.take() {
             id.remove();
@@ -1095,6 +1141,7 @@ impl Editor {
         let id = glib::timeout_add_local_once(RESCAN_DELAY, move || {
             editor.tags_timer.take();
             editor.load_tags();
+            editor.refresh_backlinks();
         });
         self.tags_timer.replace(Some(id));
     }
@@ -1130,6 +1177,10 @@ impl Editor {
         self.note_list.replace(Rc::new(list));
         // Wiki links resolve against the scan: render again with the new note list.
         self.refresh_preview();
+        // Shown Backlinks bring the link index up to date themselves.
+        if !self.outline_panel.is_visible() {
+            self.index_links();
+        }
         self.refresh_backlinks();
         self.refresh_mentions();
         // The Tags panel is kept across rescans (its own refresh: `load_tags`).
@@ -1647,10 +1698,14 @@ impl Editor {
         let (plan, total) = (plan.clone(), found.len());
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
+            let paths: Vec<PathBuf> = closed.iter().map(|f| f.path.clone()).collect();
             let written = gio::spawn_blocking(move || relink::write(&plan, &closed))
                 .await
                 .unwrap_or(0);
             let Some(editor) = weak.upgrade() else { return };
+            for path in paths {
+                editor.note_changed(path);
+            }
             let done = done + written;
             editor.toast(&if done == total {
                 format!(
@@ -1747,7 +1802,7 @@ pub(crate) fn watch_dir(editor: &Rc<Editor>, dir: &Path) -> Option<gio::FileMoni
         .monitor_directory(gio::FileMonitorFlags::WATCH_MOVES, gio::Cancellable::NONE)
         .ok()?;
     let weak = Rc::downgrade(editor);
-    monitor.connect_changed(move |_, file, _, event| {
+    monitor.connect_changed(move |_, file, other, event| {
         use gio::FileMonitorEvent as E;
         // Content edits don't change the tree; the app's own temp file is never shown.
         let is_temp = file
@@ -1764,7 +1819,12 @@ pub(crate) fn watch_dir(editor: &Rc<Editor>, dir: &Path) -> Option<gio::FileMoni
             editor.schedule_rescan();
         // A note's text changed (an app's edit, or our save renaming its temp file): its tags
         // may have too.
-        } else if matches!(event, E::ChangesDoneHint) || (is_temp && event == E::Renamed) {
+        } else if event == E::ChangesDoneHint || (is_temp && event == E::Renamed) {
+            // Our save renames its temp file onto the note.
+            let note = if is_temp { other } else { Some(file) };
+            if let Some(path) = note.and_then(|f| f.path()) {
+                editor.note_changed(path);
+            }
             editor.schedule_tags_index();
         }
     });

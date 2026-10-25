@@ -116,11 +116,11 @@ three, a relative link to a note of its folder.
 Each launch reopens the folder with every subfolder expanded and `Area 0/Topic 0/Note 0.md` in
 the editor, then shows the Outline (Backlinks under it, Alt+Ctrl+O), switches to another note
 through a `markdownmate://open` link, and appends a tag to a third note on disk (the Tags list
-is indexed again). The times come from the app itself: with `MARKDOWNMATE_TIMING` set it
+is indexed again, Backlinks listed again). The times come from the app itself: with `MARKDOWNMATE_TIMING` set it
 prints `markdownmate-timing: <ms since main started> <what>` lines to stderr (`src/timing.rs`):
 *window shown* (first frame), *note opened*, *folder scanned* (the background folder walk),
-*sidebar filled*, *tags indexed* and *backlinks listed* (background jobs, with their own
-duration). Memory is the resident size (`VmRSS`) of the app and of its WebKit processes. The
+*sidebar filled*, *tags indexed*, *links indexed* and *backlinks listed* (background jobs, with
+their own duration). Memory is the resident size (`VmRSS`) of the app and of its WebKit processes. The
 script runs on Xvfb inside the container and removes the folder, the session and every process
 it started when it ends, also on failure. It takes about a minute.
 
@@ -141,6 +141,16 @@ three (the first launch of each is the slowest, files not yet cached).
 | memory after launch: app + WebKit | 339 + 44 MB | 300–343 + 45 MB |
 | memory after the outline, a note switch and a change | — | 304–341 + 37–45 MB |
 
+Link index (same machine and folder, 2026-10-25, three launches; before = the table's "After"):
+
+| Step | Before | After |
+|------|-------:|------:|
+| links indexed at folder open (background, every note read once) | — | 0.24–0.26 s |
+| **Backlinks of a note** (Outline shown after launch) | **0.28–0.40 s** | **1–2 ms** |
+| Backlinks after switching note | 0.22–0.37 s | 1 ms |
+| Backlinks again after another note changed on disk | (not refreshed) | 1–2 ms |
+| memory after launch: app + WebKit | 300–343 + 45 MB | 324–368 + 44–45 MB |
+
 Launch and the sidebar were already fine: the folder is walked on a background thread and the
 sidebar builds plain list items with widgets only for the visible rows. The cost was Backlinks:
 every wiki link of every note was resolved by comparing it with every note of the folder
@@ -151,6 +161,16 @@ compares the notes that have its name, with the same result as before (a test ch
 against the plain search). Link updates after a sidebar rename or move resolve their links the
 same way.
 
+Backlinks then still read every note on each note switch. Now the app keeps every note's links
+in memory (`backlinks::LinkIndex`): when a folder opens, a background thread reads each note
+once and keeps the lines holding links (number, snippet, wiki names, Markdown link files) and a
+map from each linked note to the lines linking to it, wiki links resolved through
+`render::WikiIndex`. A note saved by the app or changed on disk (the folder watcher's events) is
+read again on its own; when the note list changes (a note created, renamed, moved or deleted)
+notes new to the list are read and every link is resolved again from memory, since a new or
+renamed note can change where `[[Name]]` points. Backlinks of a note are then a lookup. A test
+compares the index with the full scan after edits, a rename, a move, a new and a deleted note.
+
 Memory doesn't grow with the folder: with 20 notes instead of 10,000 the app uses the same
 (328 MB after launch). Most of it is GTK's GL renderer, which in the container draws with Mesa's
 software rasteriser: with `GSK_RENDERER=cairo` (`./dev.sh sh -c 'GSK_RENDERER=cairo
@@ -159,7 +179,5 @@ scripts/measure-folder.sh 10000 1'`) the app uses 183 MB with 10,000 notes and 1
 ## Further ideas
 
 - Debounce preview refreshes by note size, so typing in a 5 MB note renders less often.
-- Backlinks still read every note on each note switch (≈ 0.3 s at 10,000 notes, off the main
-  thread); an index of each note's links, updated when a note changes, would make it instant.
 - Highlight code blocks lazily in the page (plain code first, highlighted as it scrolls into
   view).
