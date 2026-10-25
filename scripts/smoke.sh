@@ -92,6 +92,18 @@ wait_for() {
 file_is() { [ "$(cat "$1" 2>/dev/null)" = "$2" ]; }
 # file_line2_is <file> <text>: line 2 of the file is <text>.
 file_line2_is() { [ "$(sed -n 2p "$1" 2>/dev/null)" = "$2" ]; }
+# file_has <file> <text>: the file contains <text> somewhere; file_has_line: as a whole line;
+# file_lacks: it does not; file_tail_is <file> <n> <text>: its last <n> lines are <text>.
+file_has() { grep -qF -- "$2" "$1" 2>/dev/null; }
+file_has_line() { grep -qxF -- "$2" "$1" 2>/dev/null; }
+file_lacks() { ! grep -qF -- "$2" "$1" 2>/dev/null; }
+file_tail_is() { [ "$(tail -n "$2" "$1" 2>/dev/null)" = "$3" ]; }
+# first_line_starts <file> <char>: the file's first line starts with <char>.
+first_line_starts() { [ "$(head -1 "$1" 2>/dev/null | head -c1)" = "$2" ]; }
+# file_first_line_is <file> <text>: the file's first line is <text>.
+file_first_line_is() { [ "$(head -1 "$1" 2>/dev/null)" = "$2" ]; }
+# line4_is <file> <text>: line 4 of the file is <text>.
+line4_is() { [ "$(sed -n 4p "$1" 2>/dev/null)" = "$2" ]; }
 # run <name> <state mode line> [xdotool keys...]: start the app, screenshot, check it.
 # A function act_<name>, if defined, runs after the first screenshot.
 run() {
@@ -202,9 +214,8 @@ act_format() {
     xdotool mousemove 400 150 click 1 key ctrl+End Return type 'word'
     xdotool key ctrl+b ctrl+i ctrl+k
     xdotool type 'https://x'
-    sleep 2
+    wait_for 10 file_has "$NOTES/Welcome.md" '***[word](https://x)***' || { echo "FAIL format: note not formatted"; bad=1; }
     scrot -o "$OUT/format.png"
-    grep -qF '***[word](https://x)***' "$NOTES/Welcome.md" || { echo "FAIL format: note not formatted"; bad=1; }
 }
 
 # Table: Tab past the last cell adds a row, Enter adds one, Enter on the empty last row leaves
@@ -214,35 +225,30 @@ act_table() {
     xdotool mousemove 400 150 click 1 key ctrl+End Tab type 'x'
     xdotool key Tab; xdotool type 'y'
     xdotool key Return Return
-    sleep 2
-    grep -qxF '| Nguyễn Văn | 1   |' "$NOTES/Table.md" || { echo "FAIL table: columns not aligned"; bad=1; }
-    grep -qF '|     |' "$NOTES/Table.md" && { echo "FAIL table: empty last row not removed"; bad=1; }
+    wait_for 10 file_has_line "$NOTES/Table.md" '| Nguyễn Văn | 1   |' || { echo "FAIL table: columns not aligned"; bad=1; }
+    wait_for 10 file_lacks "$NOTES/Table.md" '|     |' || { echo "FAIL table: empty last row not removed"; bad=1; }
     xdotool key ctrl+z
-    sleep 2
-    grep -qxF '|            |     |' "$NOTES/Table.md" || { echo "FAIL table: leaving the table is not one undo step"; bad=1; }
+    wait_for 10 file_has_line "$NOTES/Table.md" '|            |     |' || { echo "FAIL table: leaving the table is not one undo step"; bad=1; }
     xdotool key Return; xdotool type 'after'
-    sleep 2
-    scrot -o "$OUT/table.png"
     local want
     want=$(printf '|    Tên     | b   |\n| :--------: | --- |\n| Nguyễn Văn | 1   |\n|     x      | y   |\nafter')
-    [ "$(cat "$NOTES/Table.md")" = "$want" ] || { echo "FAIL table: got"; cat "$NOTES/Table.md"; bad=1; }
+    wait_for 10 file_is "$NOTES/Table.md" "$want" || { echo "FAIL table: got"; cat "$NOTES/Table.md"; bad=1; }
+    scrot -o "$OUT/table.png"
     # Insert Table (Shift+Ctrl+T) under "after": blank line, empty 3-column table, the first
     # header cell selected; Tab moves to the second one (realigned on the next Tab, not on typing).
     xdotool key shift+ctrl+t; xdotool type 'k'
     xdotool key Tab; xdotool type 'v'
-    sleep 2
-    scrot -o "$OUT/table-insert.png"
     local base=$want
     want=$(printf '%s\n\n| k   | v    |     |\n| --- | --- | --- |\n|     |     |     |\n|     |     |     |' "$want")
-    [ "$(cat "$NOTES/Table.md")" = "$want" ] || { echo "FAIL table insert: got"; cat "$NOTES/Table.md"; bad=1; }
+    wait_for 10 file_is "$NOTES/Table.md" "$want" || { echo "FAIL table insert: got"; cat "$NOTES/Table.md"; bad=1; }
+    scrot -o "$OUT/table-insert.png"
     # In a `> ` quote (#126): Enter leaves the table above, every inserted line keeps `> `,
     # Tab moves to the next cell.
     xdotool key ctrl+End Return; xdotool type '> q'
     xdotool key shift+ctrl+t; xdotool type 'k'
     xdotool key Tab; xdotool type 'v'
-    sleep 2
     want=$(printf '%s\n\n| k   | v   |     |\n| --- | --- | --- |\n|     |     |     |\n> q\n>\n> | k   | v    |     |\n> | --- | --- | --- |\n> |     |     |     |\n> |     |     |     |' "$base")
-    [ "$(cat "$NOTES/Table.md")" = "$want" ] || { echo "FAIL table insert in quote: got"; cat "$NOTES/Table.md"; bad=1; }
+    wait_for 10 file_is "$NOTES/Table.md" "$want" || { echo "FAIL table insert in quote: got"; cat "$NOTES/Table.md"; bad=1; }
 }
 
 # Preview link to another note: clicking it opens that note (window title becomes Plan).
@@ -347,9 +353,8 @@ act_hover() {
 act_task() {
     timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
     xdotool mousemove 278 104 click 1
-    sleep 2
+    wait_for 10 file_first_line_is "$NOTES/Tasks.md" '- [x] first' || { echo "FAIL task: checkbox not ticked"; bad=1; }
     scrot -o "$OUT/task.png"
-    [ "$(head -1 "$NOTES/Tasks.md")" = '- [x] first' ] || { echo "FAIL task: checkbox not ticked"; bad=1; }
 }
 
 # Copy button on a code block in the preview (shown on hover) puts the block's code on the clipboard.
@@ -374,9 +379,8 @@ act_goto() {
     xdotool key Return
     sleep 1
     xdotool type 'X'
-    sleep 2
+    wait_for 10 file_has "$NOTES/Welcome.md" 'Some X**bold**' || { echo "FAIL goto: cursor not at 3:6"; bad=1; }
     scrot -o "$OUT/goto.png"
-    grep -qF 'Some X**bold**' "$NOTES/Welcome.md" || { echo "FAIL goto: cursor not at 3:6"; bad=1; }
 }
 
 # Find/replace in the note (Edit; Ctrl+F in Preview is Find in Preview, see previewfind).
@@ -428,28 +432,23 @@ act_wrap() {
     sleep 1
     xdotool key End Return type 'bold'
     xdotool key shift+Home asterisk asterisk
-    sleep 2
+    wait_for 10 file_has "$NOTES/Welcome.md" '[site](https://x.y/việt)' || { echo "FAIL wrap: URL not pasted as link"; bad=1; }
+    wait_for 10 file_has_line "$NOTES/Welcome.md" '**bold**' || { echo "FAIL wrap: ** not wrapped"; bad=1; }
     scrot -o "$OUT/wrap.png"
-    grep -qF '[site](https://x.y/việt)' "$NOTES/Welcome.md" || { echo "FAIL wrap: URL not pasted as link"; bad=1; }
-    grep -qxF '**bold**' "$NOTES/Welcome.md" || { echo "FAIL wrap: ** not wrapped"; bad=1; }
     xdotool key ctrl+z
-    sleep 2
-    grep -qxF '*bold*' "$NOTES/Welcome.md" || { echo "FAIL wrap: wrap is not one undo step"; bad=1; }
+    wait_for 10 file_has_line "$NOTES/Welcome.md" '*bold*' || { echo "FAIL wrap: wrap is not one undo step"; bad=1; }
     # Not a URL: pasted as usual over the selection (replaced, one undo step), multi-line too.
     printf 'chữ mới' | xclip -quiet -selection clipboard -i >/dev/null 2>&1 &
     sleep 1
     xdotool key End Return type 'old'
     xdotool key shift+Home ctrl+v
-    sleep 2
-    grep -qxF 'chữ mới' "$NOTES/Welcome.md" || { echo "FAIL wrap: text not pasted over the selection"; bad=1; }
+    wait_for 10 file_has_line "$NOTES/Welcome.md" 'chữ mới' || { echo "FAIL wrap: text not pasted over the selection"; bad=1; }
     xdotool key ctrl+z
-    sleep 2
-    grep -qxF 'old' "$NOTES/Welcome.md" || { echo "FAIL wrap: paste is not one undo step"; bad=1; }
+    wait_for 10 file_has_line "$NOTES/Welcome.md" 'old' || { echo "FAIL wrap: paste is not one undo step"; bad=1; }
     printf 'dòng một\ndòng hai' | xclip -quiet -selection clipboard -i >/dev/null 2>&1 &
     sleep 1
     xdotool key shift+Home ctrl+v
-    sleep 2
-    [ "$(tail -n 2 "$NOTES/Welcome.md")" = "$(printf 'dòng một\ndòng hai')" ] || { echo "FAIL wrap: multi-line paste"; bad=1; }
+    wait_for 10 file_tail_is "$NOTES/Welcome.md" 2 "$(printf 'dòng một\ndòng hai')" || { echo "FAIL wrap: multi-line paste"; bad=1; }
 }
 
 # Rich paste: clipboard text/html -> Markdown (one undo step); Shift+Ctrl+V pastes plain text
@@ -460,21 +459,17 @@ act_rich() {
         | xclip -quiet -selection clipboard -t text/html -i >/dev/null 2>&1 &
     sleep 1
     xdotool mousemove 400 150 click 1 key ctrl+End Return Return ctrl+v
-    sleep 2
-    scrot -o "$OUT/rich.png"
-    [ "$(tail -n 6 "$NOTES/Welcome.md")" = "$(printf '## Rich head\n\nA **bold** [link](https://x.y/)\n\n- one\n  - inner')" ] \
+    wait_for 10 file_tail_is "$NOTES/Welcome.md" 6 "$(printf '## Rich head\n\nA **bold** [link](https://x.y/)\n\n- one\n  - inner')" \
         || { echo "FAIL rich: HTML not pasted as Markdown"; bad=1; }
+    scrot -o "$OUT/rich.png"
     xdotool key ctrl+z
-    sleep 2
-    grep -qF 'Rich head' "$NOTES/Welcome.md" && { echo "FAIL rich: paste is not one undo step"; bad=1; }
+    wait_for 10 file_lacks "$NOTES/Welcome.md" 'Rich head' || { echo "FAIL rich: paste is not one undo step"; bad=1; }
     xdotool key shift+ctrl+v
-    sleep 2
-    grep -qF '<h2>Rich head</h2>' "$NOTES/Welcome.md" || { echo "FAIL rich: Shift+Ctrl+V converted HTML"; bad=1; }
+    wait_for 10 file_has "$NOTES/Welcome.md" '<h2>Rich head</h2>' || { echo "FAIL rich: Shift+Ctrl+V converted HTML"; bad=1; }
     printf '**raw** <b>x</b>' | xclip -quiet -selection clipboard -i >/dev/null 2>&1 &
     sleep 1
     xdotool key Return shift+ctrl+v
-    sleep 2
-    grep -qxF '**raw** <b>x</b>' "$NOTES/Welcome.md" || { echo "FAIL rich: Shift+Ctrl+V plain text"; bad=1; }
+    wait_for 10 file_has_line "$NOTES/Welcome.md" '**raw** <b>x</b>' || { echo "FAIL rich: Shift+Ctrl+V plain text"; bad=1; }
 }
 
 # Ctrl+R with unsaved edits asks first: Escape (Cancel) keeps them and auto-save resumes; then
@@ -486,17 +481,15 @@ act_reload() {
     sleep 1
     scrot -o "$OUT/reload-ask.png"
     xdotool key Escape
-    sleep 2
-    grep -qx 'kept' "$NOTES/Reload.md" || { echo "FAIL reload: Cancel lost the edits"; bad=1; }
+    wait_for 10 file_has_line "$NOTES/Reload.md" 'kept' || { echo "FAIL reload: Cancel lost the edits"; bad=1; }
     xdotool type 'lost' && xdotool key ctrl+r
     printf 'from disk\nline 2\n' > "$NOTES/Reload.md"
     sleep 1
     xdotool key Tab space
     sleep 2
     xdotool type 'X'
-    sleep 2
+    wait_for 10 file_is "$NOTES/Reload.md" "$(printf 'from disk\nline 2\nX')" || { echo "FAIL reload: $(cat "$NOTES/Reload.md")"; bad=1; }
     scrot -o "$OUT/reload.png"
-    [ "$(cat "$NOTES/Reload.md")" = "$(printf 'from disk\nline 2\nX')" ] || { echo "FAIL reload: $(cat "$NOTES/Reload.md")"; bad=1; }
 }
 
 # Typing `[[we` pops up note names; Enter inserts the first one and closes the link. Then
@@ -508,15 +501,13 @@ act_complete() {
     scrot -o "$OUT/complete.png"
     xdotool key Return
     xdotool type ' done'
-    sleep 2
-    grep -qF '[[Welcome]] done' "$NOTES/Welcome.md" || { echo "FAIL complete: [[Welcome]] not inserted"; bad=1; }
+    wait_for 10 file_has "$NOTES/Welcome.md" '[[Welcome]] done' || { echo "FAIL complete: [[Welcome]] not inserted"; bad=1; }
     xdotool type ' #wo'
     sleep 1
     scrot -o "$OUT/complete-tag.png"
     xdotool key Return
     xdotool type ' tag'
-    sleep 2
-    grep -qF '[[Welcome]] done #work tag' "$NOTES/Welcome.md" || { echo "FAIL complete: #work not inserted"; bad=1; }
+    wait_for 10 file_has "$NOTES/Welcome.md" '[[Welcome]] done #work tag' || { echo "FAIL complete: #work not inserted"; bad=1; }
 }
 
 # Outline from Preview: Alt+Ctrl+O focuses the first heading; Down + Enter jumps to `## Second`
@@ -531,15 +522,13 @@ act_outline() {
     sleep 1
     xdotool key End
     xdotool type ' X'
-    sleep 2
+    wait_for 10 file_has_line "$NOTES/Outline.md" '## Second X' || { echo "FAIL outline: cursor not at ## Second"; bad=1; }
     scrot -o "$OUT/outline.png"
-    grep -qxF '## Second X' "$NOTES/Outline.md" || { echo "FAIL outline: cursor not at ## Second"; bad=1; }
     xdotool key ctrl+Home
     sleep 1
     scrot -o "$OUT/outline-follow.png"
     xdotool type 'Y'
-    sleep 2
-    grep -qxF 'Y# Top' "$NOTES/Outline.md" || { echo "FAIL outline: editor lost focus"; bad=1; }
+    wait_for 10 file_has_line "$NOTES/Outline.md" 'Y# Top' || { echo "FAIL outline: editor lost focus"; bad=1; }
     # Right-click the (now first) heading `Second X` (#123): Copy Link puts a wiki link on the clipboard.
     xdotool mousemove 740 75; sleep 0.5; xdotool click 3
     sleep 1
@@ -561,10 +550,9 @@ act_backlinks() {
     xdotool key Tab Return
     sleep 1
     xdotool type 'X'
-    sleep 2
-    scrot -o "$OUT/backlinks-open.png"
-    grep -qx 'X\[t\](../Target.md)' "$NOTES/Projects/Ref2.md" \
+    wait_for 10 file_has_line "$NOTES/Projects/Ref2.md" 'X[t](../Target.md)' \
         || { echo "FAIL backlinks: Ref2.md not opened at line 2"; bad=1; }
+    scrot -o "$OUT/backlinks-open.png"
 }
 
 # Unlinked Mentions under Backlinks (collapsed; searched only once expanded): Mentions.md
@@ -581,10 +569,9 @@ act_mentions() {
     xdotool key Tab Return
     sleep 1
     xdotool type 'X'
-    sleep 2
-    scrot -o "$OUT/mentions-open.png"
-    sed -n 4p "$NOTES/Mentions.md" | grep -qx 'XOur roadmap here' \
+    wait_for 10 line4_is "$NOTES/Mentions.md" 'XOur roadmap here' \
         || { echo "FAIL mentions: Mentions.md not opened at line 4"; bad=1; }
+    scrot -o "$OUT/mentions-open.png"
 }
 
 # Tags: the sidebar lists #việc-làm, #work (2 notes), #project under it. Clicking #work lists
@@ -598,8 +585,7 @@ act_tags() {
     sleep 1
     xdotool key ctrl+1
     xdotool type 'Z'
-    sleep 2
-    grep -qxF 'ZNote for #work' "$NOTES/Projects/Tagged.md" || { echo "FAIL tags: tagged note not opened"; bad=1; }
+    wait_for 10 file_has_line "$NOTES/Projects/Tagged.md" 'ZNote for #work' || { echo "FAIL tags: tagged note not opened"; bad=1; }
 }
 
 # Bookmarks: the header button opens the dialog, Enter bookmarks the open folder (saved in
@@ -611,16 +597,15 @@ act_bookmarks() {
     sleep 1
     scrot -o "$OUT/bookmarks-dialog.png"
     xdotool key Return
-    sleep 1
-    grep -qxF "bookmark=$NOTES" "$XDG_CONFIG_HOME/markdownmate/state" || { echo "FAIL bookmarks: folder not bookmarked"; bad=1; }
+    wait_for 10 file_has_line "$XDG_CONFIG_HOME/markdownmate/state" "bookmark=$NOTES" || { echo "FAIL bookmarks: folder not bookmarked"; bad=1; }
     xdotool key alt+2
     sleep 1
     xdotool key alt+1
-    sleep 2
+    wait_for 10 file_has_line "$XDG_CONFIG_HOME/markdownmate/state" "folder=$NOTES/Projects" || { echo "FAIL bookmarks: Alt+1 did not open Projects"; bad=1; }
     scrot -o "$OUT/bookmarks-open.png"
-    grep -qxF "folder=$NOTES/Projects" "$XDG_CONFIG_HOME/markdownmate/state" || { echo "FAIL bookmarks: Alt+1 did not open Projects"; bad=1; }
     # Recent folders: newest first, then the dialog lists the other one under "Recent".
-    [ "$(grep '^recent=' "$XDG_CONFIG_HOME/markdownmate/state" | head -2 | tr '\n' ' ')" = "recent=$NOTES/Projects recent=$NOTES " ] \
+    recent_ok() { [ "$(grep '^recent=' "$XDG_CONFIG_HOME/markdownmate/state" | head -2 | tr '\n' ' ')" = "recent=$NOTES/Projects recent=$NOTES " ]; }
+    wait_for 10 recent_ok \
         || { echo "FAIL bookmarks: recent folders not saved newest first"; bad=1; }
     xdotool mousemove 68 28 click 1
     sleep 1
@@ -773,8 +758,7 @@ act_lines() {
     local orig
     orig=$(printf -- '- [ ] a\n- [ ] b\nthird')
     check_lines() {
-        sleep 2
-        [ "$(cat "$NOTES/Lines.md")" = "$(printf -- "$2")" ] || { echo "FAIL lines $1: got"; cat "$NOTES/Lines.md"; bad=1; }
+        wait_for 10 file_is "$NOTES/Lines.md" "$(printf -- "$2")" || { echo "FAIL lines $1: got"; cat "$NOTES/Lines.md"; bad=1; }
     }
     xdotool mousemove 400 150 click 1 key ctrl+Home ctrl+Return
     check_lines task '- [x] a\n- [ ] b\nthird'
@@ -808,8 +792,7 @@ act_tablecmd() {
     local orig
     orig=$(printf '| a | b |\n|---|---|\n| 1 | 2 |')
     check_table() {
-        sleep 2
-        [ "$(cat "$NOTES/TableCmd.md")" = "$(printf -- "$2")" ] || { echo "FAIL tablecmd $1: got"; cat "$NOTES/TableCmd.md"; bad=1; }
+        wait_for 10 file_is "$NOTES/TableCmd.md" "$(printf -- "$2")" || { echo "FAIL tablecmd $1: got"; cat "$NOTES/TableCmd.md"; bad=1; }
     }
     xdotool mousemove 400 150 click 1 key ctrl+Home Down Down ctrl+alt+Return
     xdotool type 'x'
@@ -1081,9 +1064,8 @@ act_tags_off() {
     sleep 2
     scrot -o "$OUT/tags_off-prefs.png"
     xdotool key Escape
-    sleep 2
+    wait_for 10 file_has_line "$XDG_CONFIG_HOME/markdownmate/state" 'tags=true' || { echo "FAIL tags_off: Tags switch not saved"; bad=1; }
     scrot -o "$OUT/tags_off-on.png"
-    grep -qx 'tags=true' "$XDG_CONFIG_HOME/markdownmate/state" || { echo "FAIL tags_off: Tags switch not saved"; bad=1; }
 }
 NOTE="$NOTES/Tags.md" run tags_off "$(printf 'mode=split\ntags=false')"
 # Preferences from the state file (line numbers, no wrap, 2-space list indent, bold 14pt font);
@@ -1094,14 +1076,12 @@ act_prefs() {
     xdotool key Return
     xdotool type 'b'
     xdotool key Tab
-    sleep 2
-    grep -qx '  - b' "$NOTES/Outline.md" || { echo "FAIL prefs: list not indented 2 spaces"; bad=1; }
+    wait_for 10 file_has_line "$NOTES/Outline.md" '  - b' || { echo "FAIL prefs: list not indented 2 spaces"; bad=1; }
     pref 'Show Line Numbers'
     scrot -o "$OUT/prefs-dialog.png"
     xdotool key space
-    sleep 1
+    wait_for 10 file_has_line "$XDG_CONFIG_HOME/markdownmate/state" 'line_numbers=false' || { echo "FAIL prefs: switch not saved"; bad=1; }
     scrot -o "$OUT/prefs-toggled.png"
-    grep -qx 'line_numbers=false' "$XDG_CONFIG_HOME/markdownmate/state" || { echo "FAIL prefs: switch not saved"; bad=1; }
 }
 NOTE="$NOTES/Outline.md" run prefs "$(printf 'mode=edit\nline_numbers=true\nwrap=false\nindent=2\nfont=Monospace Bold 14')"
 # Typewriter scrolling on in the state file: Go to Line 40 of the long Welcome note puts it in
@@ -1113,17 +1093,15 @@ act_typewriter() {
     scrot -o "$OUT/typewriter.png"
     pref 'Typewriter Scrolling'
     xdotool key space
-    sleep 1
-    grep -qx 'typewriter=false' "$XDG_CONFIG_HOME/markdownmate/state" || { echo "FAIL typewriter: switch not saved"; bad=1; }
+    wait_for 10 file_has_line "$XDG_CONFIG_HOME/markdownmate/state" 'typewriter=false' || { echo "FAIL typewriter: switch not saved"; bad=1; }
 }
 run typewriter "$(printf 'mode=split\ntypewriter=true')"
 # Zoom: Ctrl+= twice and Ctrl+- once from 120% (state) -> 130% saved; screenshot shows it.
 act_zoom() {
     timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
     xdotool mousemove 400 150 click 1 key ctrl+equal ctrl+equal ctrl+minus
-    sleep 2
+    wait_for 10 file_has_line "$XDG_CONFIG_HOME/markdownmate/state" 'zoom=130' || { echo "FAIL zoom: zoom=130 not saved"; bad=1; }
     scrot -o "$OUT/zoom.png"
-    grep -qx 'zoom=130' "$XDG_CONFIG_HOME/markdownmate/state" || { echo "FAIL zoom: zoom=130 not saved"; bad=1; }
 }
 run zoom "$(printf 'mode=split\nzoom=120')"
 # Themes: editor scheme (Paper/Graphite from packaging/styles) + preview colours, checkbox.
@@ -1140,9 +1118,8 @@ act_style() {
     xdotool key space
     sleep 1
     xdotool key Up Up Return
-    sleep 2
+    wait_for 10 file_has_line "$XDG_CONFIG_HOME/markdownmate/state" 'style=system' || { echo "FAIL style: style=system not saved"; bad=1; }
     scrot -o "$OUT/style-system.png"
-    grep -qx 'style=system' "$XDG_CONFIG_HOME/markdownmate/state" || { echo "FAIL style: style=system not saved"; bad=1; }
 }
 NOTE="$NOTES/Themes.md" run style "$(printf 'mode=split\nstyle=dark')"
 # Drag and drop in the sidebar: drag the open note Code.md (row 2) onto the Projects folder
@@ -1203,8 +1180,7 @@ act_dropin() {
     drop_files 75 drop-single "$TMP/outside/Single.md"
     timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
     xdotool mousemove 400 150 click 1 key ctrl+Home type 'S'
-    sleep 2
-    head -1 "$NOTES/Projects/Single.md" 2>/dev/null | grep -q '^S' || { echo "FAIL dropin: Single.md not copied into Projects and opened"; bad=1; }
+    wait_for 10 first_line_starts "$NOTES/Projects/Single.md" S || { echo "FAIL dropin: Single.md not copied into Projects and opened"; bad=1; }
     [ "$(cat "$TMP/outside/Single.md")" = single ] || { echo "FAIL dropin: source changed"; bad=1; }
     rm -f "$NOTES/Out.md" "$NOTES/Out 2.md" "$NOTES/Projects/Single.md"
 }
@@ -1245,14 +1221,15 @@ act_quick_recent() {
     scrot -o "$OUT/quick-recent.png"
     xdotool key Return; sleep 1
     xdotool type 'Q'
-    sleep 2
-    head -1 "$NOTES/Welcome.md" | grep -q '^Q' || { echo "FAIL quick_recent: Enter did not go back to Welcome"; bad=1; }
+    wait_for 10 first_line_starts "$NOTES/Welcome.md" Q || { echo "FAIL quick_recent: Enter did not go back to Welcome"; bad=1; }
 }
 run quick_recent mode=edit
 sed -i '1s/^Q//' "$NOTES/Welcome.md"
 # Vị trí con trỏ theo note: Ctrl+L 40, sang Todo rồi về Welcome (Open Quickly) -> con trỏ vẫn
 # dòng 40 (gõ `Z`); bấm mở rộng Projects. Khởi động lại (state giữ nguyên) -> gõ `Y` vẫn ở
 # dòng 40 (sau `Z`), Projects còn mở rộng (`expanded=` trong state, ảnh pos-restart.png).
+# line40_starts <text>: line 40 of Welcome.md starts with <text>.
+line40_starts() { [ "$(sed -n 40p "$NOTES/Welcome.md" 2>/dev/null | head -c "${#1}")" = "$1" ]; }
 act_pos() {
     timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
     xdotool key ctrl+l; sleep 1; xdotool type '40'; xdotool key Return; sleep 1
@@ -1261,15 +1238,13 @@ act_pos() {
     done
     xdotool type 'Z'
     xdotool mousemove 60 75 click 1
-    sleep 2
-    [ "$(sed -n 40p "$NOTES/Welcome.md" | head -c1)" = Z ] || { echo "FAIL pos: cursor not back on line 40"; bad=1; }
+    wait_for 10 line40_starts Z || { echo "FAIL pos: cursor not back on line 40"; bad=1; }
 }
 act_pos_restart() {
     timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
     xdotool mousemove 400 300 type 'Y'
-    sleep 2
-    [ "$(sed -n 40p "$NOTES/Welcome.md" | head -c2)" = ZY ] || { echo "FAIL pos_restart: cursor not restored after restart"; bad=1; }
-    grep -qxF "expanded=$NOTES/Projects" "$XDG_CONFIG_HOME/markdownmate/state" || { echo "FAIL pos_restart: expanded folder not saved"; bad=1; }
+    wait_for 10 line40_starts ZY || { echo "FAIL pos_restart: cursor not restored after restart"; bad=1; }
+    wait_for 10 file_has_line "$XDG_CONFIG_HOME/markdownmate/state" "expanded=$NOTES/Projects" || { echo "FAIL pos_restart: expanded folder not saved"; bad=1; }
 }
 run pos mode=edit
 KEEP_STATE=1 run pos_restart mode=edit
