@@ -520,7 +520,7 @@ mod tests {
         };
         let text = state.serialize();
         assert!(text.is_ascii());
-        assert_eq!(text.lines().count(), 14);
+        assert_eq!(text.lines().count(), 15);
         assert_eq!(State::parse(&text), state);
     }
 
