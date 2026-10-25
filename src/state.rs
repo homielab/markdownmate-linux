@@ -110,6 +110,73 @@ impl Theme {
     }
 }
 
+/// How wide the text runs (Preferences ▸ Text Width): the editor's text and the preview's
+/// page are centred at most this wide. Full Width = the whole editor, the preview its own
+/// reading width (exports always keep that).
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub enum TextWidth {
+    Narrow,
+    Medium,
+    Wide,
+    #[default]
+    Full,
+}
+
+impl TextWidth {
+    pub const ALL: [TextWidth; 4] = [
+        TextWidth::Narrow,
+        TextWidth::Medium,
+        TextWidth::Wide,
+        TextWidth::Full,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            TextWidth::Narrow => "narrow",
+            TextWidth::Medium => "medium",
+            TextWidth::Wide => "wide",
+            TextWidth::Full => "full",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            TextWidth::Narrow => "Narrow",
+            TextWidth::Medium => "Medium",
+            TextWidth::Wide => "Wide",
+            TextWidth::Full => "Full Width",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<TextWidth> {
+        TextWidth::ALL.into_iter().find(|w| w.name() == name)
+    }
+
+    /// The widest the text may be, in pixels (as the macOS app); None = no limit.
+    pub fn pixels(self) -> Option<i32> {
+        match self {
+            TextWidth::Narrow => Some(680),
+            TextWidth::Medium => Some(820),
+            TextWidth::Wide => Some(1080),
+            TextWidth::Full => None,
+        }
+    }
+}
+
+/// Line spacing choices in percent of the font's line height (Preferences ▸ Line Spacing).
+pub const LINE_SPACINGS: [u32; 5] = [100, 115, 130, 150, 200];
+
+/// `line_spacing=` of the state file: a multiple like `1.15`, one of `LINE_SPACINGS`.
+fn parse_line_spacing(v: &str) -> Option<u32> {
+    let percent = (v.trim().parse::<f64>().ok()? * 100.0).round();
+    LINE_SPACINGS.into_iter().find(|s| f64::from(*s) == percent)
+}
+
+fn line_spacing_name(percent: u32) -> String {
+    let s = format!("{}.{:02}", percent / 100, percent % 100);
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
 /// Editor preferences (Ctrl+,). A missing or broken line keeps the default.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Prefs {
@@ -135,6 +202,9 @@ pub struct Prefs {
     /// Today's Note's folder, relative to the open folder (`daily::folder`); empty = the open
     /// folder itself.
     pub daily_folder: String,
+    /// Line height in percent of the font's (`LINE_SPACINGS`); 100 = the font's own.
+    pub line_spacing: u32,
+    pub text_width: TextWidth,
 }
 
 pub const ZOOM_MIN: u32 = 50;
@@ -165,6 +235,8 @@ impl Default for Prefs {
             typewriter: false,
             format_bar: false,
             daily_folder: crate::daily::DEFAULT_FOLDER.to_string(),
+            line_spacing: 100,
+            text_width: TextWidth::Full,
         }
     }
 }
@@ -254,6 +326,12 @@ impl State {
                         state.prefs.zoom = z.clamp(ZOOM_MIN, ZOOM_MAX);
                     }
                 }
+                Some(("line_spacing", v)) => {
+                    state.prefs.line_spacing = parse_line_spacing(v).unwrap_or(100)
+                }
+                Some(("text_width", v)) => {
+                    state.prefs.text_width = TextWidth::from_name(v).unwrap_or_default()
+                }
                 Some(("theme", v)) => state.prefs.theme = Theme::from_name(v).unwrap_or_default(),
                 Some(("style", v)) => state.prefs.style = Style::from_name(v).unwrap_or_default(),
                 // Written before side by side existed.
@@ -289,7 +367,7 @@ impl State {
             out += &format!("font={font}\n");
         }
         out += &format!(
-            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\ndaily_folder={}\n",
+            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\ndaily_folder={}\nline_spacing={}\ntext_width={}\n",
             p.line_numbers,
             p.wrap,
             p.indent,
@@ -301,7 +379,9 @@ impl State {
             p.ignore_colours,
             p.typewriter,
             p.format_bar,
-            p.daily_folder.replace('\n', " ")
+            p.daily_folder.replace('\n', " "),
+            line_spacing_name(p.line_spacing),
+            p.text_width.name()
         );
         out
     }
@@ -378,6 +458,27 @@ pub fn font_css(
     );
     css += &zoom_size(size_pt, zoom);
     css + " }"
+}
+
+/// The editor's line spacing as CSS (GTK's `line-height`, a multiple of the font's line
+/// height): "" at 100% (the font's own spacing).
+pub fn line_height_css(percent: u32) -> String {
+    if percent == 100 {
+        return String::new();
+    }
+    format!(
+        ".mm-editor {{ line-height: {}; }}",
+        line_spacing_name(percent)
+    )
+}
+
+/// The side margins that centre text at most `max` wide in a view `width` wide, never less
+/// than `min`.
+pub fn centred_margin(width: i32, max: Option<i32>, min: i32) -> i32 {
+    match max {
+        Some(max) => ((width - max) / 2).max(min),
+        None => min,
+    }
 }
 
 /// Only the zoomed size, for the system monospace font (no font chosen): "" at 100%.
@@ -520,7 +621,7 @@ mod tests {
         };
         let text = state.serialize();
         assert!(text.is_ascii());
-        assert_eq!(text.lines().count(), 15);
+        assert_eq!(text.lines().count(), 17);
         assert_eq!(State::parse(&text), state);
     }
 
@@ -676,6 +777,8 @@ mod tests {
             typewriter: true,
             format_bar: true,
             daily_folder: " Journal/2026 ".into(),
+            line_spacing: 115,
+            text_width: TextWidth::Medium,
         };
         let state = State {
             prefs: prefs.clone(),
@@ -689,11 +792,13 @@ mod tests {
         assert!(old.prefs.sync_scroll && old.prefs.tags && old.prefs.ignore_colours);
         assert!(!old.prefs.typewriter && !old.prefs.format_bar);
         assert_eq!(old.prefs.daily_folder, "Daily");
+        assert_eq!(old.prefs.line_spacing, 100);
+        assert_eq!(old.prefs.text_width, TextWidth::Full);
         // An empty daily notes folder (the open folder) stays empty.
         assert_eq!(State::parse("daily_folder=\n").prefs.daily_folder, "");
         // Broken values keep the default.
         let bad = State::parse(
-            "font= \nline_numbers=yes\nwrap=1\nindent=3\nindent=x\ntheme=neon\nstyle=dim\nsync_scroll=no\ntags=0\nignore_colours=off\ntypewriter=on\nformat_bar=yes\n",
+            "font= \nline_numbers=yes\nwrap=1\nindent=3\nindent=x\ntheme=neon\nstyle=dim\nsync_scroll=no\ntags=0\nignore_colours=off\ntypewriter=on\nformat_bar=yes\nline_spacing=1.2\nline_spacing=x\ntext_width=huge\n",
         );
         assert_eq!(bad.prefs, Prefs::default());
         for t in Theme::ALL {
@@ -702,6 +807,38 @@ mod tests {
         for s in Style::ALL {
             assert_eq!(Style::from_name(s.name()), Some(s));
         }
+    }
+
+    #[test]
+    fn line_height_and_centred_margin() {
+        assert_eq!(line_height_css(100), "");
+        assert_eq!(line_height_css(130), ".mm-editor { line-height: 1.3; }");
+        assert_eq!(line_height_css(200), ".mm-editor { line-height: 2; }");
+        assert_eq!(centred_margin(1000, None, 12), 12);
+        assert_eq!(centred_margin(1000, Some(680), 12), 160);
+        assert_eq!(centred_margin(600, Some(680), 12), 12);
+    }
+
+    #[test]
+    fn line_spacing_and_text_width_keys() {
+        for percent in LINE_SPACINGS {
+            let text = format!("line_spacing={}\n", line_spacing_name(percent));
+            assert_eq!(State::parse(&text).prefs.line_spacing, percent);
+        }
+        assert_eq!(line_spacing_name(100), "1");
+        assert_eq!(line_spacing_name(115), "1.15");
+        assert_eq!(line_spacing_name(130), "1.3");
+        assert_eq!(line_spacing_name(200), "2");
+        assert_eq!(State::parse("line_spacing=1.50\n").prefs.line_spacing, 150);
+        assert_eq!(State::parse("line_spacing=0\n").prefs.line_spacing, 100);
+        for w in TextWidth::ALL {
+            let state = State::parse(&format!("text_width={}\n", w.name()));
+            assert_eq!(state.prefs.text_width, w);
+        }
+        assert_eq!(TextWidth::Full.pixels(), None);
+        assert_eq!(TextWidth::Medium.pixels(), Some(820));
+        let serialized = State::default().serialize();
+        assert!(serialized.contains("\nline_spacing=1\ntext_width=full\n"));
     }
 
     #[test]

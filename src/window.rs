@@ -180,8 +180,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         .wrap_mode(gtk::WrapMode::WordChar)
         .monospace(true)
         .css_classes(["mm-editor"])
-        .left_margin(12)
-        .right_margin(12)
+        .left_margin(crate::editor::SIDE_MARGIN)
+        .right_margin(crate::editor::SIDE_MARGIN)
         .top_margin(12)
         .bottom_margin(crate::editor::BOTTOM_MARGIN)
         .build();
@@ -374,6 +374,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     editor.preview_find.set(preview_find).ok();
     crate::search::find_bar(&editor, &editor_pane, app);
     crate::editor::typewriter_scrolling(&editor, &scroll);
+    crate::editor::text_width_resizing(&editor, &scroll);
 
     buffer.connect_changed(clone!(
         #[strong]

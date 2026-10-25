@@ -100,11 +100,67 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
         }
     ));
 
+    let spacing_names: Vec<String> = state::LINE_SPACINGS
+        .iter()
+        .map(|s| format!("{}", f64::from(*s) / 100.0))
+        .collect();
+    let spacing_names: Vec<&str> = spacing_names.iter().map(String::as_str).collect();
+    let line_spacing = adw::ComboRow::builder()
+        .title("Line Spacing")
+        .model(&gtk::StringList::new(&spacing_names))
+        .selected(
+            state::LINE_SPACINGS
+                .iter()
+                .position(|s| *s == prefs.line_spacing)
+                .unwrap_or(0) as u32,
+        )
+        .build();
+    line_spacing.connect_selected_notify(clone!(
+        #[strong]
+        update,
+        move |r| {
+            let spacing = state::LINE_SPACINGS
+                .get(r.selected() as usize)
+                .copied()
+                .unwrap_or(100);
+            update(&|p| p.line_spacing = spacing);
+        }
+    ));
+
+    let width_names: Vec<&str> = state::TextWidth::ALL.iter().map(|w| w.title()).collect();
+    let text_width = adw::ComboRow::builder()
+        .title("Text Width")
+        .subtitle("Of the editor and preview")
+        .model(&gtk::StringList::new(&width_names))
+        .selected(
+            state::TextWidth::ALL
+                .iter()
+                .position(|w| *w == prefs.text_width)
+                .unwrap_or(0) as u32,
+        )
+        .build();
+    text_width.connect_selected_notify(clone!(
+        #[strong]
+        editor,
+        move |r| {
+            let width = state::TextWidth::ALL
+                .get(r.selected() as usize)
+                .copied()
+                .unwrap_or_default();
+            editor.prefs.borrow_mut().text_width = width;
+            editor.apply_prefs();
+            editor.remember();
+            editor.refresh_preview();
+        }
+    ));
+
     let group = adw::PreferencesGroup::builder().title("Editor").build();
     group.add(&font_row);
     group.add(&numbers);
     group.add(&wrap);
     group.add(&indent);
+    group.add(&line_spacing);
+    group.add(&text_width);
     group.add(&typewriter);
 
     let theme = adw::ComboRow::builder()

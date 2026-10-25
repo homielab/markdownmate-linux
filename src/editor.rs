@@ -226,10 +226,12 @@ impl Editor {
             }
             None => state::zoom_css(p.zoom),
         };
-        self.font_css.load_from_data(&css);
+        self.font_css
+            .load_from_data(&(css + &state::line_height_css(p.line_spacing)));
         // Only the on-screen preview: print and Export HTML use their own page at 100%.
         self.preview.set_zoom_level(f64::from(p.zoom) / 100.0);
         drop(p);
+        self.text_width_margins();
         self.typewriter_margin();
         self.typewriter_scroll();
     }
@@ -244,6 +246,17 @@ impl Editor {
         };
         if self.view.bottom_margin() != margin {
             self.view.set_bottom_margin(margin);
+        }
+    }
+
+    /// Text Width: side margins that centre the text at most that wide (Full Width: the normal
+    /// margin). Follows the view's width (`text_width_resizing`).
+    pub(crate) fn text_width_margins(&self) {
+        let max = self.prefs.borrow().text_width.pixels();
+        let margin = state::centred_margin(self.view.visible_rect().width(), max, SIDE_MARGIN);
+        if self.view.left_margin() != margin || self.view.right_margin() != margin {
+            self.view.set_left_margin(margin);
+            self.view.set_right_margin(margin);
         }
     }
 
@@ -1771,6 +1784,18 @@ pub(crate) fn moved(p: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
 
 /// The editor's normal bottom margin (px).
 pub(crate) const BOTTOM_MARGIN: i32 = 12;
+/// The editor's left and right margin at Full Width.
+pub(crate) const SIDE_MARGIN: i32 = 12;
+
+/// Text Width: the side margins follow the editor's width, once the main loop is idle (not
+/// during the size allocation that changed it: setting a margin queues a resize).
+pub(crate) fn text_width_resizing(editor: &Rc<Editor>, scroll: &gtk::ScrolledWindow) {
+    let editor = Rc::clone(editor);
+    scroll.hadjustment().connect_page_size_notify(move |_| {
+        let editor = Rc::clone(&editor);
+        glib::idle_add_local_once(move || editor.text_width_margins());
+    });
+}
 
 /// Typewriter scrolling: after the cursor moves or the text changes, once the main loop is
 /// idle (after GTK's own scroll-to-cursor), centre the cursor's line; not while a mouse button

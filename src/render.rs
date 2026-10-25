@@ -5,7 +5,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, PoisonError};
 
-use crate::state::Theme;
+use crate::state::{TextWidth, Theme};
 use crate::{state, tags};
 
 /// Markdown body as HTML: GFM (tables, task lists, strikethrough, autolinks, footnotes).
@@ -899,13 +899,30 @@ fn strip_note_ext(name: &str) -> &str {
 /// diagrams and KaTeX formulas are drawn by the app's own script world (`diagrams`, `math`),
 /// which the page cannot reach.
 pub fn page(md: &str, dark: bool, theme: Theme, wiki: &dyn Fn(&str) -> Option<PathBuf>) -> String {
-    preview_page(dark, theme, &body_html(md, wiki, true, true, true))
+    preview_page(
+        dark,
+        theme,
+        TextWidth::Full,
+        &body_html(md, wiki, true, true, true),
+    )
 }
 
-/// `page` around a body `body_html` (or `incremental`) made.
-pub(crate) fn preview_page(dark: bool, theme: Theme, body: &str) -> String {
+/// `page` around a body `body_html` (or `incremental`) made, its text at most `width` wide
+/// (Full Width: the page's own reading width, as exports).
+pub(crate) fn preview_page(dark: bool, theme: Theme, width: TextWidth, body: &str) -> String {
     let csp = "default-src 'none'; img-src file: data:; style-src 'unsafe-inline'; font-src data:";
-    html_page(dark, theme, csp, "", body)
+    html_page(dark, theme, csp, &width_css(width), body)
+}
+
+/// The `<style>` that sets the preview's text width; empty for Full Width. Placed before the
+/// page's CSS, so it is more specific than its `body` rule; print keeps the whole page.
+fn width_css(width: TextWidth) -> String {
+    match width.pixels() {
+        Some(px) => {
+            format!("<style>@media screen {{ html body {{ max-width: {px}px; }} }}</style>")
+        }
+        None => String::new(),
+    }
 }
 
 /// Standalone HTML file of a note (Export as HTML): the preview's CSS in light mode, code
@@ -1730,6 +1747,17 @@ mod tests {
             let name = &used[..used.find(')').unwrap()];
             assert!(VARS.contains(&name), "{name}");
         }
+    }
+
+    #[test]
+    fn preview_text_width() {
+        let narrow = preview_page(false, Theme::Default, TextWidth::Narrow, "<p>a</p>");
+        assert!(
+            narrow.contains("<style>@media screen { html body { max-width: 680px; } }</style>")
+        );
+        // Full Width: the page's own reading width, as before.
+        let full = preview_page(false, Theme::Default, TextWidth::Full, "<p>a</p>");
+        assert!(!full.contains("html body") && full.contains("max-width: 46em"));
     }
 
     #[test]

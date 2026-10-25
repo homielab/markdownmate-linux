@@ -6,6 +6,8 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Preferences ▸ Editor ▸ Line Spacing (1 to 2) and Text Width (Narrow, Medium, Wide or Full Width), as in the macOS app: on a wide screen the editor's text and the preview's page stay centred at a readable width. Defaults keep today's look; print and exports are unchanged.
+
 ## 0.5.0
 
 - Preferences ▸ Default App: shows whether MarkdownMate is the default app for Markdown files and has a Make Default button, so `.md` files open here from Files without digging through Open With.

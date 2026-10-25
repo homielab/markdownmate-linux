@@ -25,17 +25,18 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::render;
-use crate::state::Theme;
+use crate::state::{TextWidth, Theme};
 
 /// Resolves a wiki link's target (`render::resolve_wiki`); shared by the threads of a render.
 pub(crate) type Wiki<'a> = dyn Fn(&str) -> Option<PathBuf> + Sync + 'a;
 
-/// What a rendered chunk depends on besides its text: light/dark, the theme, and the notes
-/// wiki links resolve against (a fingerprint of the list, root and current note).
+/// What a rendered chunk depends on besides its text: light/dark, the theme, the text width,
+/// and the notes wiki links resolve against (a fingerprint of the list, root and current note).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Style {
     pub dark: bool,
     pub theme: Theme,
+    pub width: TextWidth,
     pub links: u64,
 }
 
@@ -133,7 +134,12 @@ pub(crate) fn render(
         }
         None => (
             None,
-            Update::Page(render::page(md, style.dark, style.theme, wiki)),
+            Update::Page(render::preview_page(
+                style.dark,
+                style.theme,
+                style.width,
+                &render::body_html(md, wiki, true, true, true),
+            )),
         ),
     }
 }
@@ -401,7 +407,7 @@ impl Preview {
         for chunk in &self.chunks {
             body.push_str(&shift(&chunk.html, chunk.line as isize - chunk.at as isize));
         }
-        render::preview_page(self.style.dark, self.style.theme, &body)
+        render::preview_page(self.style.dark, self.style.theme, self.style.width, &body)
     }
 
     /// The index of the chunk holding 1-based `line`.
@@ -795,6 +801,7 @@ mod tests {
     const STYLE: Style = Style {
         dark: false,
         theme: Theme::Default,
+        width: TextWidth::Full,
         links: 0,
     };
 

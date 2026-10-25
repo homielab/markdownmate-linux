@@ -339,6 +339,7 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
         let style = incremental::Style {
             dark: adw::StyleManager::default().is_dark(),
             theme: self.prefs.borrow().theme,
+            width: self.prefs.borrow().text_width,
             links,
         };
         move || {
