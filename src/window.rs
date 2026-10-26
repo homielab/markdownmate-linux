@@ -13,7 +13,7 @@ use webkit6::prelude::*;
 use crate::dialogs::{
     bookmarks_dialog, find_in_folder, go_to_line, open_quickly, preferences_dialog, reload_note,
 };
-use crate::editor::Editor;
+use crate::editor::{Editor, FolderScan};
 use crate::input::{
     Completer, LineCommand, image_input, in_table, insert_table, line_command, smart_lists,
     table_command,
@@ -24,11 +24,19 @@ use crate::preview::{
 use crate::{
     APP_ID, MATH_STYLE, SCRIPT_WORLD, SYNC_DELAY, TABLE_STYLE, TAG_STYLE, UNTITLED, state_file,
 };
-use crate::{choose_file, choose_folder, open_path};
+use crate::{choose_file, choose_folder, folder_of};
 use crate::{links, render, sidebar, state, title};
 
 /// `target`: a folder or note given on the command line; `None` reopens the last session.
 pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
+    // Reopen last session; anything gone since is skipped silently.
+    let mut session = state::load(&state_file()).usable();
+    // The folder to show is scanned on its own thread while the window is built.
+    let scan = match &target {
+        Some(target) => folder_of(target),
+        None => session.folder.as_deref(),
+    }
+    .map(|dir| FolderScan::start(dir, session.prefs.sidebar_sort));
     let header = adw::HeaderBar::new();
     // Open Recent is refilled by `Editor::fill_recent_menu`.
     let recent_menu = gio::Menu::new();
@@ -1117,22 +1125,20 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         }
     ));
 
-    // Reopen last session; anything gone since is skipped silently.
-    let mut last = state::load(&state_file()).usable();
     // Before anything calls `remember`, or the saved bookmarks would be overwritten.
     editor
         .bookmarks
-        .replace(std::mem::take(&mut last.bookmarks));
-    editor.recent.replace(std::mem::take(&mut last.recent));
+        .replace(std::mem::take(&mut session.bookmarks));
+    editor.recent.replace(std::mem::take(&mut session.recent));
     editor.fill_recent_menu();
-    editor.prefs.replace(std::mem::take(&mut last.prefs));
+    editor.prefs.replace(std::mem::take(&mut session.prefs));
     editor
         .positions
-        .replace(std::mem::take(&mut last.positions));
+        .replace(std::mem::take(&mut session.positions));
     // Chỉ dùng khi thư mục mở ra chính là thư mục đã lưu (`show_folder` lọc theo thư mục).
     editor
         .expanded
-        .replace(std::mem::take(&mut last.expanded).into_iter().collect());
+        .replace(std::mem::take(&mut session.expanded).into_iter().collect());
     editor.apply_prefs();
     let show_format_bar = editor.prefs.borrow().format_bar;
     format_action.change_state(&show_format_bar.to_variant());
@@ -1146,19 +1152,23 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             glib::ControlFlow::Break
         });
     }
-    // After the saved Style is applied: no light/dark flash on start.
-    window.present();
-    if let Some(target) = target {
-        open_path(&editor, &target);
-    } else if let Some(folder) = &last.folder {
-        editor.load_folder(folder);
-        if let Some(note) = &last.note {
-            editor.open(note);
-            if editor.path.borrow().is_some() {
-                editor.set_mode(last.mode);
-            }
+    // The note, then the folder: a scan that is already done fills the sidebar right here, so
+    // it is in the window's first frame; a slower one fills it when it ends.
+    if let Some(target) = &target {
+        if !target.is_dir() {
+            editor.open(target);
+        }
+    } else if let Some(note) = &session.note {
+        editor.open(note);
+        if editor.path.borrow().is_some() {
+            editor.set_mode(session.mode);
         }
     }
+    if let Some(scan) = scan {
+        editor.load_scan(scan);
+    }
+    // After the saved Style is applied: no light/dark flash on start.
+    window.present();
 }
 
 /// About MarkdownMate: name, version, links (same as the metainfo).

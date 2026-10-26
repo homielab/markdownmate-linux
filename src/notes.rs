@@ -177,7 +177,8 @@ impl Node {
 }
 
 /// Tree of `root`'s contents in `order`. Only an unreadable `root` is an error; unreadable
-/// subfolders are skipped. Notes' dates are read only when `order` sorts by one.
+/// subfolders are skipped. Notes' dates are read only when `order` sorts by one (under Name a
+/// plain file costs no `stat`, only the folder listing).
 pub fn scan(root: &Path, order: SortOrder) -> io::Result<Vec<Node>> {
     let mut nodes = Vec::new();
     for entry in fs::read_dir(root)?.flatten() {
@@ -194,12 +195,18 @@ pub fn scan(root: &Path, order: SortOrder) -> io::Result<Vec<Node>> {
             if !children.is_empty() {
                 nodes.push(Node::Dir { name, children });
             }
-        } else if is_note(&path)
-            // fs::metadata follows the link: keeps symlinked notes, drops symlinked folders.
-            && let Ok(meta) = fs::metadata(&path)
-            && meta.is_file()
-        {
-            let date = order.date(&meta);
+        } else if is_note(&path) {
+            // The listing's file type is enough for a plain file under Name; a symlink is
+            // followed (fs::metadata: keeps symlinked notes, drops symlinked folders), and a
+            // date order needs the file's dates anyway.
+            let date = if kind.is_file() && order == SortOrder::Name {
+                None
+            } else {
+                match fs::metadata(&path) {
+                    Ok(meta) if meta.is_file() => order.date(&meta),
+                    _ => continue,
+                }
+            };
             nodes.push(Node::Note { name, path, date });
         }
     }
@@ -365,6 +372,8 @@ mod tests {
         symlink(&t.0, t.0.join("sub/loop")).unwrap();
         symlink(t.0.join("real.md"), t.0.join("link.md")).unwrap();
         symlink(t.0.join("missing.md"), t.0.join("broken.md")).unwrap();
+        // A folder link named like a note is not a note either.
+        symlink(t.0.join("sub"), t.0.join("folder.md")).unwrap();
         assert_eq!(names(&t.0), ["sub/", "  n.md", "link.md", "real.md"]);
         // The looping folder link is not watched either.
         assert_eq!(folders(&t.0), [t.0.clone(), t.0.join("sub")]);

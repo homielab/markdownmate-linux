@@ -278,11 +278,21 @@ fn choose_file(editor: &Rc<Editor>) {
 
 /// Opens a folder, or a note inside its own folder.
 fn open_path(editor: &Rc<Editor>, target: &Path) {
-    if target.is_dir() {
-        editor.load_folder(target);
-    } else if let Some(dir) = target.parent() {
-        editor.load_folder(dir);
+    let Some(dir) = folder_of(target) else {
+        return;
+    };
+    editor.load_folder(dir);
+    if dir != target {
         editor.open(target);
+    }
+}
+
+/// The folder `open_path` shows for `target`: the folder itself, or a note's own folder.
+fn folder_of(target: &Path) -> Option<&Path> {
+    if target.is_dir() {
+        Some(target)
+    } else {
+        target.parent()
     }
 }
 

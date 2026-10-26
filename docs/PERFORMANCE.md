@@ -137,9 +137,10 @@ the editor, then shows the Outline (Backlinks under it, Alt+Ctrl+O), switches to
 through a `markdownmate://open` link, and appends a tag to a third note on disk (the Tags list
 is indexed again, Backlinks listed again). The times come from the app itself: with `MARKDOWNMATE_TIMING` set it
 prints `markdownmate-timing: <ms since main started> <what>` lines to stderr (`src/timing.rs`):
-*window shown* (first frame), *note opened*, *folder scanned* (the background folder walk),
-*sidebar filled*, *tags indexed*, *links indexed* and *backlinks listed* (background jobs, with
-their own duration). Memory is the resident size (`VmRSS`) of the app and of its WebKit processes. The
+*window shown* (first frame), *note opened*, *folder scanned* (the background folder walk; its
+duration runs from the start of the scan until the app takes the result), *sidebar filled*
+(the sidebar's list is built), *sidebar drawn* (first frame showing it), *tags indexed*, *links
+indexed* and *backlinks listed* (background jobs, with their own duration). Memory is the resident size (`VmRSS`) of the app and of its WebKit processes. The
 script runs on Xvfb inside the container and removes the folder, the session and every process
 it started when it ends, also on failure. It takes about a minute.
 
@@ -179,6 +180,30 @@ costs nothing measurable; a note changed on disk moves to its place in under 1 m
 | sidebar filled (after main started) | 217–672 ms | 213–642 ms | 220–721 ms | 264–570 ms |
 | note re-sorted after a change on disk | — | — | 0 ms | 0 ms |
 | memory after launch: app + WebKit | 300–343 + 45 MB | 324–368 + 44–45 MB |
+
+Sidebar at launch (same machine and folder, 2026-10-26, three launches, all folders open, Name;
+Date Modified / Created two launches each). Before = the build with sort orders; times after
+main started.
+
+| Step | Before | After |
+|------|-------:|------:|
+| folder walk itself, notes + folders to watch (background) | 19–22 ms | 7–8 ms (Date Modified 20 ms) |
+| folder scanned | 186–572 ms | 114–127 ms |
+| **sidebar filled** | **197–584 ms** | **124–138 ms** (Date Modified / Created 129–137 ms) |
+| sidebar drawn (first frame with it) | 208–594 ms | 179–410 ms, = window shown |
+| window shown | 161–392 ms | 179–410 ms |
+
+The walk of 10,000 notes took only about 20 ms; the sidebar waited for the main thread. The scan
+started only after `window.present()`, which itself takes 70–270 ms (GTK sets up the window and
+its GL renderer), and its result then waited until the first frame was drawn, so the sidebar
+came one or more frames after the window. The session's folder (or the one given on the command
+line) is now scanned on its own thread from the start of building the window; when the window
+is ready the scan is done, the note is opened and the sidebar is built before `present()`, so
+the first frame already shows it (about 12 ms more before the first frame). A scan that is not
+done by then (a slow or cold disk) fills the sidebar when it ends, as before. Under Name the
+walk no longer reads each note's metadata: the folder listing already says it is a plain file
+(symlinks are still followed, date orders still read the dates). Opening another folder,
+rescans and the expanded-folder restore are unchanged.
 
 Launch and the sidebar were already fine: the folder is walked on a background thread and the
 sidebar builds plain list items with widgets only for the visible rows. The cost was Backlinks:

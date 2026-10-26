@@ -1083,37 +1083,56 @@ impl Editor {
     /// added/removed/renamed entries. Results older than what is shown, or for a folder no
     /// longer wanted, are dropped.
     pub(crate) fn load_folder(self: &Rc<Self>, dir: &Path) {
+        let order = self.prefs.borrow().sidebar_sort;
+        self.load_scan(FolderScan::start(dir, order));
+    }
+
+    /// Shows `scan` like `load_folder`. A scan that has already finished (started while the
+    /// window was being built) is shown at once, so the sidebar is in the window's first frame;
+    /// otherwise when it finishes.
+    pub(crate) fn load_scan(self: &Rc<Self>, scan: FolderScan) {
         let scan_gen = self.scan_gen.get() + 1;
         self.scan_gen.set(scan_gen);
-        self.scan_dir.replace(Some(dir.to_path_buf()));
-        let dir = dir.to_path_buf();
+        self.scan_dir.replace(Some(scan.dir.clone()));
+        let FolderScan { dir, start, job } = scan;
+        if job.is_finished() {
+            self.apply_scan(scan_gen, &dir, start, job.join());
+            return;
+        }
         let weak = Rc::downgrade(self);
-        let start = Instant::now();
-        let order = self.prefs.borrow().sidebar_sort;
         glib::spawn_future_local(async move {
-            let d = dir.clone();
-            let result = gio::spawn_blocking(move || {
-                notes::scan(&d, order).map(|t| (t, notes::folders(&d)))
-            })
-            .await;
-            let Some(editor) = weak.upgrade() else {
-                return;
-            };
-            let wanted = editor.scan_dir.borrow().clone();
-            if !notes::is_fresh(scan_gen, editor.applied_gen.get(), &dir, wanted.as_deref()) {
-                return;
+            let result = gio::spawn_blocking(move || job.join())
+                .await
+                .unwrap_or_else(Err);
+            if let Some(editor) = weak.upgrade() {
+                editor.apply_scan(scan_gen, &dir, start, result);
             }
-            editor.applied_gen.set(scan_gen);
-            timing::took(start, "folder scanned");
-            match result {
-                Ok(Ok((tree, folders))) => return editor.show_folder(&dir, &tree, &folders),
-                Ok(Err(e)) => editor.toast(&format!("Cannot open {}: {e}", dir.display())),
-                Err(_) => editor.toast(&format!("Cannot open {}", dir.display())),
-            }
-            // A folder that could not be opened: rescans go back to the open one.
-            let root = editor.root.borrow().clone();
-            editor.scan_dir.replace(root);
         });
+    }
+
+    /// Shows scan number `scan_gen` of `dir` (`load_scan`) unless a newer one or another
+    /// folder was asked for since.
+    fn apply_scan(
+        self: &Rc<Self>,
+        scan_gen: u64,
+        dir: &Path,
+        start: Instant,
+        result: std::thread::Result<ScanResult>,
+    ) {
+        let wanted = self.scan_dir.borrow().clone();
+        if !notes::is_fresh(scan_gen, self.applied_gen.get(), dir, wanted.as_deref()) {
+            return;
+        }
+        self.applied_gen.set(scan_gen);
+        timing::took(start, "folder scanned");
+        match result {
+            Ok(Ok((tree, folders))) => return self.show_folder(dir, &tree, &folders),
+            Ok(Err(e)) => self.toast(&format!("Cannot open {}: {e}", dir.display())),
+            Err(_) => self.toast(&format!("Cannot open {}", dir.display())),
+        }
+        // A folder that could not be opened: rescans go back to the open one.
+        let root = self.root.borrow().clone();
+        self.scan_dir.replace(root);
     }
 
     /// Lists the tags of the last scan's notes in the Tags panel. Reads every note, so it runs
@@ -1203,6 +1222,12 @@ impl Editor {
         let side = gtk::Box::new(gtk::Orientation::Vertical, 0);
         side.append(&sidebar::sidebar(self, tree, dir));
         side.append(&self.tags_panel);
+        if timing::enabled() {
+            side.add_tick_callback(|_, _| {
+                timing::mark(|| "sidebar drawn".into());
+                glib::ControlFlow::Break
+            });
+        }
         self.split.set_sidebar(Some(&side));
         self.load_tags();
         // Show it at once, not animated: libadwaita 1.5 starts the slide-in with velocity
@@ -2004,4 +2029,31 @@ fn fill_note_rows(
         list.append(&row);
     }
     rows.into_iter().map(|(p, l, _)| (p, l)).collect()
+}
+
+/// What a folder scan gives: the sidebar's tree (`notes::scan`) and the folders to watch
+/// (`notes::folders`).
+type ScanResult = std::io::Result<(Vec<notes::Node>, Vec<PathBuf>)>;
+
+/// A folder scan running on its own thread; `Editor::load_scan` shows it.
+pub(crate) struct FolderScan {
+    dir: PathBuf,
+    start: Instant,
+    job: std::thread::JoinHandle<ScanResult>,
+}
+
+impl FolderScan {
+    /// Starts scanning `dir` in `order`. Launch starts the session's folder this way before
+    /// building the window, so the scan runs while GTK sets the window up.
+    pub(crate) fn start(dir: &Path, order: notes::SortOrder) -> FolderScan {
+        let d = dir.to_path_buf();
+        let job = std::thread::spawn(move || {
+            notes::scan(&d, order).map(|tree| (tree, notes::folders(&d)))
+        });
+        FolderScan {
+            dir: dir.to_path_buf(),
+            start: Instant::now(),
+            job,
+        }
+    }
 }
