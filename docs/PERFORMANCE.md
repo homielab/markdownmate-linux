@@ -99,6 +99,24 @@ operations, while swapping in a 72 MB body was not even part of the old number.
 the whole render (`SEED=<n> cargo test random_edits` for other edits); `perf::large_notes`
 checks it too.
 
+### Typing with Focus Mode
+
+`perf::focus_typing` (ignored; run it like `large_notes`, with `focus_typing` instead) types
+300 characters into a paragraph in the middle of the 5 MB note in a shown editor, waiting for
+each frame to be drawn, with Focus Mode off, on, then off again; it also times turning Focus
+Mode on and a cursor jump to another paragraph. In the container (Xvfb, GTK on llvmpipe,
+2026-10-26):
+
+| Focus Mode | to the next frame, per keystroke | CPU per keystroke |
+|---|---|---|
+| off | 52.8 ms | 19.8 ms |
+| on | 45.0 ms | 20.4 ms |
+| off again | 45.9 ms | 19.5 ms |
+
+Turning it on takes under 1 ms (one tag over the note), so does moving to another paragraph:
+the tag changes only on the old and new paragraph, read at most 1,000 lines each way. The
+frame times are software rendering's; the difference is within the noise.
+
 ## A folder of 10,000 notes
 
 `scripts/measure-folder.sh` times launch, the sidebar, the Tags list and Backlinks with a large

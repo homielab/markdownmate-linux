@@ -136,6 +136,8 @@ pub(crate) struct Editor {
     pub(crate) font_css: gtk::CssProvider,
     /// Main menu ▸ Open Recent: `recent` as `win.open-recent` items.
     pub(crate) recent_menu: gio::Menu,
+    /// Focus Mode (Shift+Ctrl+J): the editor dims all but the cursor's paragraph.
+    pub(crate) focus: Rc<crate::focus::Focus>,
 }
 
 impl Editor {
@@ -192,6 +194,7 @@ impl Editor {
             manager.scheme(state::Theme::Default.scheme(dark))
         });
         self.buffer.set_style_scheme(scheme.as_ref());
+        self.focus.set_colours(scheme.as_ref(), dark);
     }
 
     /// Applies `prefs` to the app style (light/dark) and the editor view (font, line numbers,

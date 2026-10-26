@@ -5,6 +5,7 @@ mod diagrams;
 mod dialogs;
 mod editor;
 mod find;
+mod focus;
 mod format;
 mod formatbar;
 mod goto;

@@ -115,6 +115,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             }
             table.append_section(None, &edits);
             commands.append_submenu(Some("Table"), &table);
+            // A check item (stateful action); Shift+Ctrl+J is a window accelerator.
+            commands.append(Some("Focus Mode"), Some("win.focus-mode"));
             menu.append_section(None, &commands);
         }
         menu.append_section(None, &section);
@@ -352,6 +354,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         prefs: RefCell::default(),
         recent_menu,
         font_css: gtk::CssProvider::new(),
+        // After the tags above, so its colour wins over theirs.
+        focus: crate::focus::Focus::attach(&buffer),
     });
     // Window-wide so the rule (class `mm-editor`) beats the theme's `.monospace` font.
     gtk::style_context_add_provider_for_display(
@@ -643,6 +647,27 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     ));
     window.add_action(&format_action);
     app.set_accels_for_action("win.format-bar", &["<Shift><Control>m"]);
+
+    // Focus Mode on/off (main menu, Shift+Ctrl+J, not bound by GTK or GtkSourceView), kept in
+    // the state file: `focus.rs`.
+    let focus_action = gio::SimpleAction::new_stateful("focus-mode", None, &false.to_variant());
+    focus_action.connect_change_state(clone!(
+        #[strong]
+        editor,
+        move |action, value| {
+            let Some(on) = value.and_then(|v| v.get::<bool>()) else {
+                return;
+            };
+            action.set_state(&on.to_variant());
+            editor.focus.set_on(on);
+            if editor.prefs.borrow().focus_mode != on {
+                editor.prefs.borrow_mut().focus_mode = on;
+                editor.remember();
+            }
+        }
+    ));
+    window.add_action(&focus_action);
+    app.set_accels_for_action("win.focus-mode", &["<Shift><Control>j"]);
 
     // Ctrl+R is not bound by GTK or GtkSourceView; does nothing without an open note.
     let reload_action = gio::SimpleAction::new("reload", None);
@@ -1076,6 +1101,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     editor.apply_prefs();
     let show_format_bar = editor.prefs.borrow().format_bar;
     format_action.change_state(&show_format_bar.to_variant());
+    let focus_mode = editor.prefs.borrow().focus_mode;
+    focus_action.change_state(&focus_mode.to_variant());
     if crate::timing::enabled() {
         window.add_tick_callback(|_, _| {
             crate::timing::mark(|| "window shown".into());
@@ -1341,6 +1368,7 @@ fn shortcuts_window() -> gtk::ShortcutsWindow {
                         ("<Control>3", "Side by side"),
                         ("<Control>f", "Find in preview (preview focused)"),
                         ("<Alt><Control>o", "Outline"),
+                        ("<Shift><Control>j", "Focus mode"),
                         ("<Control>equal", "Zoom in"),
                         ("<Control>minus", "Zoom out"),
                         ("<Control>0", "Reset zoom"),

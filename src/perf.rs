@@ -165,3 +165,119 @@ per block: first render {}, update after the keystroke {} (patch {} KB)",
         }
     }
 }
+
+/// CPU time of the whole process so far (all threads, the renderer's too), from `/proc`.
+fn cpu_time() -> Duration {
+    let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+    // After the command name in parentheses: state is field 3, utime / stime fields 14 / 15.
+    let fields: Vec<&str> = stat
+        .rsplit_once(')')
+        .map_or("", |(_, rest)| rest)
+        .split_whitespace()
+        .collect();
+    let ticks: u64 = [11, 12]
+        .iter()
+        .filter_map(|&i| fields.get(i)?.parse::<u64>().ok())
+        .sum();
+    Duration::from_millis(ticks * 10)
+}
+
+/// Typing into a 5 MB note in a shown editor, with Focus Mode off, on, then off again:
+/// keystrokes in a paragraph in the middle of the note, each followed by the main loop until
+/// the next frame is drawn (wall time per keystroke, and the process's CPU time); also turning
+/// Focus Mode on and a cursor jump to another paragraph. Run like `large_notes`
+/// (`focus_typing` instead), with a display.
+#[test]
+#[ignore]
+fn focus_typing() {
+    use sourceview5::prelude::*;
+    if gtk::init().is_err() {
+        eprintln!("no display");
+        return;
+    }
+    let md = sample_note(5_000_000);
+    let buffer = sourceview5::Buffer::new(None);
+    buffer.set_language(
+        sourceview5::LanguageManager::default()
+            .language("markdown")
+            .as_ref(),
+    );
+    buffer.set_text(&md);
+    let focus = crate::focus::Focus::attach(&buffer);
+    focus.set_colours(None, false);
+    let view = sourceview5::View::with_buffer(&buffer);
+    let scroll = gtk::ScrolledWindow::builder().child(&view).build();
+    let window = gtk::Window::builder()
+        .default_width(900)
+        .default_height(600)
+        .child(&scroll)
+        .build();
+    window.present();
+    let context = gtk::glib::MainContext::default();
+    let painted = std::rc::Rc::new(std::cell::Cell::new(0u64));
+    let settle = |budget: Duration| {
+        let start = Instant::now();
+        while context.pending() && start.elapsed() < budget {
+            context.iteration(false);
+        }
+    };
+    // Shown and highlighted, the first layout done.
+    let start = Instant::now();
+    while window.frame_clock().is_none() && start.elapsed() < Duration::from_secs(10) {
+        context.iteration(true);
+    }
+    let clock = window.frame_clock().expect("shown");
+    let p = std::rc::Rc::clone(&painted);
+    clock.connect_after_paint(move |_| p.set(p.get() + 1));
+    let middle = md[..md.len() / 2].rfind("\nParagraph ").expect("paragraph") + 11;
+    let place = |offset: usize| {
+        let at = buffer.iter_at_offset(md[..offset].chars().count() as i32);
+        buffer.place_cursor(&at);
+        view.scroll_to_iter(&mut at.clone(), 0.0, true, 0.0, 0.5);
+    };
+    let drawn = || {
+        let frame = painted.get();
+        let start = Instant::now();
+        while painted.get() == frame && start.elapsed() < Duration::from_secs(5) {
+            context.iteration(true);
+        }
+    };
+    place(middle);
+    settle(Duration::from_secs(120));
+    drawn();
+    let keys = 300;
+    let typing = |label: &str| {
+        let (start, cpu) = (Instant::now(), cpu_time());
+        let mut worst = Duration::ZERO;
+        for _ in 0..keys {
+            let key = Instant::now();
+            buffer.insert_at_cursor("x");
+            drawn();
+            worst = worst.max(key.elapsed());
+        }
+        let (took, cpu) = (start.elapsed(), cpu_time() - cpu);
+        eprintln!(
+            "{label}: {keys} keystrokes, {:.1} ms each to the next frame (worst {}), \
+CPU {:.2} ms per keystroke",
+            took.as_secs_f64() * 1000.0 / keys as f64,
+            ms(worst),
+            cpu.as_secs_f64() * 1000.0 / keys as f64
+        );
+    };
+    typing("focus mode off");
+    let start = Instant::now();
+    focus.set_on(true);
+    focus.update();
+    eprintln!("turn focus mode on: {}", ms(start.elapsed()));
+    drawn();
+    typing("focus mode on");
+    let start = Instant::now();
+    place(md[..middle].rfind("\nParagraph ").expect("paragraph") + 11);
+    focus.update();
+    eprintln!("cursor to another paragraph: {}", ms(start.elapsed()));
+    drawn();
+    focus.set_on(false);
+    drawn();
+    typing("focus mode off again");
+    window.destroy();
+}
