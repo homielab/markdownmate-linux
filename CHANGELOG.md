@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Preferences ▸ Privacy ▸ Load Images from the Web (off by default): turn it on to show `http(s)` images in Preview, Side by side, Print and Export as PDF / HTML, as in the macOS app; scripts and other web content stay blocked. Off, nothing is downloaded — now also while Export as HTML draws formulas or diagrams — and the preview says why a web image is missing.
 - The sidebar appears with the window: the last folder is read while the window opens, so with 10,000 notes the sidebar is filled about 0.13 s after launch instead of 0.2–0.6 s, already in the first frame.
 - Sort the sidebar by Name, Date Modified or Date Created (main menu ▸ Sort Sidebar By, or Sort By in the sidebar's right-click menu), as in the macOS app: folders first, dates newest first, remembered. A saved note moves to the top under Date Modified without closing folders. Names now sort naturally, so `Note 2` comes before `Note 10`.
 - Focus Mode (Shift+Ctrl+J, or main menu ▸ Focus Mode), as in the macOS app: the editor dims every paragraph except the one you are writing in, in every theme, light or dark. Off by default and remembered; typing in a 5 MB note is as fast with it on.

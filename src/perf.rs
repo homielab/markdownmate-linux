@@ -91,7 +91,7 @@ fn large_notes() {
             .is_multiple_of(2)
             .then(|| std::path::PathBuf::from(format!("/n/{t}.md")))
     };
-    let _ = render::page("```rust\nx\n```\n", false, Theme::Default, &wiki); // load syntaxes
+    let _ = render::page("```rust\nx\n```\n", false, Theme::Default, false, &wiki); // load syntaxes
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     eprintln!("threads: {threads}");
     for mb in [1, 5] {
@@ -100,7 +100,7 @@ fn large_notes() {
         // Opening the note: nothing highlighted yet.
         let cold = render::forget_highlighting;
         let (full, html) = best(runs, cold, || {
-            render::page(&md, false, Theme::Default, &wiki)
+            render::page(&md, false, Theme::Default, false, &wiki)
         });
         let (plain, _) = best(runs, cold, || {
             render::body_html(&md, &wiki, false, true, true)
@@ -111,16 +111,17 @@ fn large_notes() {
         let mid = md[..md.len() / 2].rfind("fn section_").expect("code") + 3;
         edited.insert(mid, 'x');
         let shown = || {
-            render::page(&md, false, Theme::Default, &wiki);
+            render::page(&md, false, Theme::Default, false, &wiki);
         };
         let (rerender, _) = best(runs, shown, || {
-            render::page(&edited, false, Theme::Default, &wiki)
+            render::page(&edited, false, Theme::Default, false, &wiki)
         });
         // The preview: the first page rendered per block, then a keystroke patching it.
         let style = Style {
             dark: false,
             theme: Theme::Default,
             width: crate::state::TextWidth::Full,
+            web_images: false,
             links: 0,
         };
         let (blocks, _) = best(runs, cold, || incremental::render(None, &md, style, &wiki));
@@ -135,7 +136,7 @@ fn large_notes() {
         };
         let patched = after.expect("blocks").page();
         assert!(
-            patched == render::page(&edited, false, Theme::Default, &wiki),
+            patched == render::page(&edited, false, Theme::Default, false, &wiki),
             "the patched page is the whole render"
         );
         let sent: usize = patch_out.edits.iter().map(|e| e.html.len()).sum();
@@ -159,7 +160,7 @@ per block: first render {}, update after the keystroke {} (patch {} KB)",
             std::fs::create_dir_all(&dir).expect("output dir");
             std::fs::write(dir.join(format!("{mb}mb.html")), &html).expect("write page");
             render::forget_highlighting();
-            let edited_html = render::page(&edited, true, Theme::Paper, &wiki);
+            let edited_html = render::page(&edited, true, Theme::Paper, false, &wiki);
             std::fs::write(dir.join(format!("{mb}mb-edited.html")), edited_html)
                 .expect("write page");
         }

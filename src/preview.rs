@@ -373,6 +373,7 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
             dark: adw::StyleManager::default().is_dark(),
             theme: self.prefs.borrow().theme,
             width: self.prefs.borrow().text_width,
+            web_images: self.prefs.borrow().web_images,
             links,
         };
         move || {
@@ -399,10 +400,11 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
                 self.prefs.borrow().theme,
             )
         });
+        let web_images = self.prefs.borrow().web_images;
         move || {
             let wiki =
                 |t: &str| render::resolve_wiki(t, &notes, &root, current.as_deref()).cloned();
-            render::page(&text, dark, theme, &wiki)
+            render::page(&text, dark, theme, web_images, &wiki)
         }
     }
 }
@@ -471,6 +473,7 @@ pub(crate) fn export_html(editor: &Rc<Editor>) {
             let notes = editor.note_list.borrow().to_vec(); // the Rc cannot cross threads
             let root = editor.root.borrow().clone().unwrap_or_default();
             let uri = gio::File::for_path(&note).uri().to_string();
+            let web_images = editor.prefs.borrow().web_images;
             // Rendered and written off the main thread: ~1s/MB of code would freeze the window.
             let job = move || {
                 let wiki = |t: &str| render::resolve_wiki(t, &notes, &root, Some(&note)).cloned();
@@ -486,9 +489,16 @@ pub(crate) fn export_html(editor: &Rc<Editor>) {
                 if !(render::has_diagrams(&html) || render::has_math(&html)) || !sandbox_usable() {
                     return write_export(&editor, dest, html);
                 }
+                // The file lets web images load wherever it is opened; drawing it here loads
+                // them only with Load Images from the Web on (the preview's CSP meanwhile).
+                let shown = if web_images {
+                    html.clone()
+                } else {
+                    html.replacen(render::EXPORT_CSP, render::PREVIEW_CSP, 1)
+                };
                 let weak = Rc::downgrade(&editor);
-                let pending = std::cell::RefCell::new(Some((dest, html.clone())));
-                offscreen(&editor, &html, &uri, move |view| {
+                let pending = std::cell::RefCell::new(Some((dest, html)));
+                offscreen(&editor, &shown, &uri, move |view| {
                     let Some((dest, html)) = pending.take() else {
                         return;
                     };
@@ -496,6 +506,10 @@ pub(crate) fn export_html(editor: &Rc<Editor>) {
                     finished_page(view, move |drawn| {
                         if let Some(editor) = weak.upgrade() {
                             drop_print_view(&editor, &page);
+                            let drawn = drawn.map(|d| match web_images {
+                                true => d,
+                                false => d.replacen(render::PREVIEW_CSP, render::EXPORT_CSP, 1),
+                            });
                             write_export(&editor, dest, drawn.unwrap_or(html));
                         }
                     });

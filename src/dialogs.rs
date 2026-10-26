@@ -270,6 +270,27 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
         let on = r.is_active();
         tags_update(&|p| p.ignore_colours = on);
     });
+    let web_images = adw::SwitchRow::builder()
+        .title("Load Images from the Web")
+        .subtitle("In the preview, print and exports. Off: nothing is downloaded")
+        .active(prefs.web_images)
+        .build();
+    web_images.connect_active_notify(clone!(
+        #[strong]
+        editor,
+        move |r| {
+            editor.prefs.borrow_mut().web_images = r.is_active();
+            editor.remember();
+            // A page keeps the CSP it was loaded with: load it again (also a hidden one,
+            // which coming back to Preview would only update in place).
+            if editor.preview_view.get().is_some() {
+                editor.load_preview();
+            }
+        }
+    ));
+    let privacy = adw::PreferencesGroup::builder().title("Privacy").build();
+    privacy.add(&web_images);
+
     let tag_group = adw::PreferencesGroup::builder().title("Tags").build();
     tag_group.add(&tags_on);
     tag_group.add(&colours);
@@ -296,6 +317,7 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
     page.add(&look);
     page.add(&tag_group);
     page.add(&notes_group);
+    page.add(&privacy);
     page.add(&default_app_group(editor));
     let dialog = adw::PreferencesDialog::new();
     dialog.set_search_enabled(true);

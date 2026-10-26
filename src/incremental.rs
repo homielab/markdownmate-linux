@@ -31,12 +31,13 @@ use crate::state::{TextWidth, Theme};
 pub(crate) type Wiki<'a> = dyn Fn(&str) -> Option<PathBuf> + Sync + 'a;
 
 /// What a rendered chunk depends on besides its text: light/dark, the theme, the text width,
-/// and the notes wiki links resolve against (a fingerprint of the list, root and current note).
+/// whether web images load (the page's CSP), and the notes wiki links resolve against (a fingerprint of the list, root and current note).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Style {
     pub dark: bool,
     pub theme: Theme,
     pub width: TextWidth,
+    pub web_images: bool,
     pub links: u64,
 }
 
@@ -138,6 +139,7 @@ pub(crate) fn render(
                 style.dark,
                 style.theme,
                 style.width,
+                style.web_images,
                 &render::body_html(md, wiki, true, true, true),
             )),
         ),
@@ -407,7 +409,13 @@ impl Preview {
         for chunk in &self.chunks {
             body.push_str(&shift(&chunk.html, chunk.line as isize - chunk.at as isize));
         }
-        render::preview_page(self.style.dark, self.style.theme, self.style.width, &body)
+        render::preview_page(
+            self.style.dark,
+            self.style.theme,
+            self.style.width,
+            self.style.web_images,
+            &body,
+        )
     }
 
     /// The index of the chunk holding 1-based `line`.
@@ -802,12 +810,28 @@ mod tests {
         dark: false,
         theme: Theme::Default,
         width: TextWidth::Full,
+        web_images: false,
         links: 0,
     };
 
     fn wiki(t: &str) -> Option<PathBuf> {
         t.starts_with('N')
             .then(|| PathBuf::from(format!("/n/{t}.md")))
+    }
+
+    #[test]
+    fn web_images_switch_renders_a_new_page() {
+        let md = "# A\n\n![w](https://x.org/w.png)\n";
+        let (state, _) = render(None, md, STYLE, &wiki);
+        let on = Style {
+            web_images: true,
+            ..STYLE
+        };
+        let (_, update) = render(state, md, on, &wiki);
+        let Update::Page(html) = update else {
+            panic!("the CSP only changes with a new page");
+        };
+        assert!(html.contains("http: https:"), "{html}");
     }
 
     /// The body of a page.
@@ -852,7 +876,7 @@ mod tests {
         let mut patches = 0;
         for (n, md) in texts.iter().enumerate() {
             let (next, update) = render(state.take(), md, STYLE, &wiki);
-            let whole = render::page(md, false, Theme::Default, &wiki);
+            let whole = render::page(md, false, Theme::Default, false, &wiki);
             match update {
                 Update::Page(page) => {
                     assert_eq!(page, whole, "page {n}");

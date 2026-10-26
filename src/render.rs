@@ -895,24 +895,67 @@ fn strip_note_ext(name: &str) -> &str {
 }
 
 /// Full preview page. The CSP blocks the page's scripts and every network load: only local
-/// files (images next to the note), inline styles and `data:` fonts (KaTeX's). Mermaid
-/// diagrams and KaTeX formulas are drawn by the app's own script world (`diagrams`, `math`),
-/// which the page cannot reach.
-pub fn page(md: &str, dark: bool, theme: Theme, wiki: &dyn Fn(&str) -> Option<PathBuf>) -> String {
+/// files (images next to the note), inline styles and `data:` fonts (KaTeX's), plus `http(s)`
+/// images if `web_images` (Preferences ▸ Load Images from the Web). Mermaid diagrams and KaTeX
+/// formulas are drawn by the app's own script world (`diagrams`, `math`), which the page
+/// cannot reach.
+pub fn page(
+    md: &str,
+    dark: bool,
+    theme: Theme,
+    web_images: bool,
+    wiki: &dyn Fn(&str) -> Option<PathBuf>,
+) -> String {
     preview_page(
         dark,
         theme,
         TextWidth::Full,
+        web_images,
         &body_html(md, wiki, true, true, true),
     )
 }
 
 /// `page` around a body `body_html` (or `incremental`) made, its text at most `width` wide
-/// (Full Width: the page's own reading width, as exports).
-pub(crate) fn preview_page(dark: bool, theme: Theme, width: TextWidth, body: &str) -> String {
-    let csp = "default-src 'none'; img-src file: data:; style-src 'unsafe-inline'; font-src data:";
-    html_page(dark, theme, csp, &width_css(width), body)
+/// (Full Width: the page's own reading width, as exports). Without `web_images`, a page
+/// showing a web image says on screen (not in print) why it is missing.
+pub(crate) fn preview_page(
+    dark: bool,
+    theme: Theme,
+    width: TextWidth,
+    web_images: bool,
+    body: &str,
+) -> String {
+    let (csp, hint) = if web_images {
+        (WEB_IMAGES_CSP, "")
+    } else {
+        (PREVIEW_CSP, WEB_IMAGES_HINT)
+    };
+    html_page(
+        dark,
+        theme,
+        csp,
+        &format!("{}{hint}", width_css(width)),
+        body,
+    )
 }
+
+/// The preview's CSP: local and `data:` images only, no script, nothing from the network.
+pub(crate) const PREVIEW_CSP: &str =
+    "default-src 'none'; img-src file: data:; style-src 'unsafe-inline'; font-src data:";
+/// `PREVIEW_CSP` with web images allowed (and nothing else from the network).
+const WEB_IMAGES_CSP: &str = "default-src 'none'; img-src file: data: http: https:; \
+style-src 'unsafe-inline'; font-src data:";
+/// Export as HTML: images from anywhere when the file is opened elsewhere.
+pub(crate) const EXPORT_CSP: &str =
+    "default-src 'none'; img-src * data: file:; style-src 'unsafe-inline'; font-src data:";
+
+/// A line above the page while it has a web image that is not loaded (a CSS rule, so it
+/// follows the page as it is patched while typing). `:has` needs WebKitGTK 2.42+; older ones
+/// drop the rule and show the broken image alone.
+const WEB_IMAGES_HINT: &str = "<style>@media screen { body:has(img[src^=\"http:\" i], \
+img[src^=\"https:\" i])::before { content: \"Web images are not loaded \\2014  Preferences \\25B8  \
+Load Images from the Web\"; display: block; margin-bottom: 1em; font-size: 0.8em; \
+opacity: 0.6; } }</style>";
 
 /// The `<style>` that sets the preview's text width; empty for Full Width. Placed before the
 /// page's CSS, so it is more specific than its `body` rule; print keeps the whole page.
@@ -929,7 +972,7 @@ fn width_css(width: TextWidth) -> String {
 /// highlighting, formulas marked for KaTeX (`math_html`), no script. Meant to sit next to the note (`note_dir`): relative images and
 /// `.md` links stay relative, wiki links become relative links to the target note (no local
 /// absolute paths in the file), unresolved wiki links become plain text. Images may load
-/// from the web when the file is opened elsewhere (`img-src *`).
+/// from the web when the file is opened elsewhere (`EXPORT_CSP`).
 pub fn export_page(
     md: &str,
     title: &str,
@@ -939,12 +982,10 @@ pub fn export_page(
     let body = portable_body(md, note_dir, wiki, true);
     let mut escaped = String::new();
     comrak::html::escape(&mut escaped, title).expect("writing to a String");
-    let csp =
-        "default-src 'none'; img-src * data: file:; style-src 'unsafe-inline'; font-src data:";
     html_page(
         false,
         Theme::Default,
-        csp,
+        EXPORT_CSP,
         &format!("<title>{escaped}</title>"),
         &body,
     )
@@ -1607,7 +1648,7 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("<pre><code>x\n</code></pre>"), "{html}");
-        let p = page(md, false, Theme::Default, &|_| None);
+        let p = page(md, false, Theme::Default, false, &|_| None);
         assert!(
             p.contains("<p data-sourcepos=\"1:1-3:3\"><span class=\"math display\""),
             "{p}"
@@ -1630,7 +1671,7 @@ mod tests {
         let export = export_page(md, "t", Path::new("/r"), &|_| None);
         assert!(export.contains(&marked) && has_math(&export), "{export}");
         assert!(export.contains("font-src data:"), "{export}");
-        let p = page(md, false, Theme::Default, &|_| None);
+        let p = page(md, false, Theme::Default, false, &|_| None);
         assert!(
             p.contains(&format!("<p data-sourcepos=\"3:1-3:3\">{marked}</p>")),
             "{p}"
@@ -1643,7 +1684,7 @@ mod tests {
             "<span class=\"math\" data-tex=\"x\">x</span>\n",
         ] {
             assert!(
-                !has_math(&page(md, false, Theme::Default, &|_| None)),
+                !has_math(&page(md, false, Theme::Default, false, &|_| None)),
                 "{md}"
             );
         }
@@ -1670,7 +1711,7 @@ mod tests {
     #[test]
     fn mermaid_blocks() {
         let md = "# D\n\n```mermaid\nflowchart LR\n  A --> B<C>\n```\n\n```rust\nfn x() {}\n```\n\n- item\n\n  ~~~ Mermaid\n  pie\n  ~~~\n";
-        let p = page(md, false, Theme::Default, &|_| None);
+        let p = page(md, false, Theme::Default, false, &|_| None);
         assert!(has_diagrams(&p));
         assert!(
             p.contains("<div class=\"mermaid\" data-sourcepos=\"3:1-6:3\"><pre><code class=\"language-mermaid\">flowchart LR\n  A --&gt; B&lt;C&gt;\n</code></pre></div>"),
@@ -1704,7 +1745,7 @@ mod tests {
             "```mermaidx\nx\n```\n",
         ] {
             assert!(
-                !has_diagrams(&page(md, false, Theme::Default, &|_| None)),
+                !has_diagrams(&page(md, false, Theme::Default, false, &|_| None)),
                 "{md}"
             );
         }
@@ -1712,7 +1753,7 @@ mod tests {
 
     #[test]
     fn page_blocks_scripts_and_network() {
-        let p = page("# a", true, Theme::Default, &|_| None);
+        let p = page("# a", true, Theme::Default, false, &|_| None);
         assert!(p.contains("default-src 'none'"));
         assert!(p.contains("class=\"dark\""));
         assert!(
@@ -1720,7 +1761,13 @@ mod tests {
             "{p}"
         );
         // Scroll sync markup keeps the task and Copy links working.
-        let p = page("- [ ] t\n\n```\nx\n```\n", false, Theme::Default, &|_| None);
+        let p = page(
+            "- [ ] t\n\n```\nx\n```\n",
+            false,
+            Theme::Default,
+            false,
+            &|_| None,
+        );
         assert!(
             p.contains("<a class=\"task\" href=\"mm-task:1\"><input"),
             "{p}"
@@ -1739,7 +1786,7 @@ mod tests {
                 for (k, v) in VARS.iter().zip(theme_values(theme, dark)) {
                     assert!(!v.is_empty() && css.contains(&format!("--{k}: {v};")));
                 }
-                assert!(page("a", dark, theme, &|_| None).contains(&css));
+                assert!(page("a", dark, theme, false, &|_| None).contains(&css));
             }
         }
         // Mọi biến mà CSS trang dùng đều được theme đặt.
@@ -1751,13 +1798,37 @@ mod tests {
 
     #[test]
     fn preview_text_width() {
-        let narrow = preview_page(false, Theme::Default, TextWidth::Narrow, "<p>a</p>");
+        let narrow = preview_page(false, Theme::Default, TextWidth::Narrow, false, "<p>a</p>");
         assert!(
             narrow.contains("<style>@media screen { html body { max-width: 680px; } }</style>")
         );
         // Full Width: the page's own reading width, as before.
-        let full = preview_page(false, Theme::Default, TextWidth::Full, "<p>a</p>");
+        let full = preview_page(false, Theme::Default, TextWidth::Full, false, "<p>a</p>");
         assert!(!full.contains("html body") && full.contains("max-width: 46em"));
+    }
+
+    #[test]
+    fn web_images_only_when_asked() {
+        let md = "![w](https://x.org/w.png) ![l](assets/l.png)";
+        let off = page(md, false, Theme::Default, false, &|_| None);
+        assert!(
+            off.contains(PREVIEW_CSP) && !off.contains("http: https:"),
+            "{off}"
+        );
+        assert!(off.contains("Web images are not loaded"), "{off}");
+        let on = page(md, false, Theme::Default, true, &|_| None);
+        assert!(on.contains("img-src file: data: http: https:;"), "{on}");
+        assert!(
+            on.contains("default-src 'none';") && !on.contains("script-src"),
+            "{on}"
+        );
+        assert!(!on.contains("Web images are not loaded"), "{on}");
+        // Same body either way; only the head differs.
+        let body = |p: &str| p[p.find("<body>").unwrap()..].to_string();
+        assert_eq!(body(&off), body(&on));
+        let export = export_page(md, "t", Path::new("/n"), &|_| None);
+        assert!(export.contains(EXPORT_CSP), "{export}");
+        assert_eq!(export.matches(EXPORT_CSP).count(), 1);
     }
 
     #[test]
@@ -2085,7 +2156,7 @@ mod tests {
     #[test]
     fn front_matter() {
         let md = "---\ntitle: <b>&</b>\ntags: [a]\n---\n# T\n\n- [ ] do\n\n```\nx\n```\n";
-        let p = page(md, false, Theme::Default, &|_| None);
+        let p = page(md, false, Theme::Default, false, &|_| None);
         assert!(
             p.contains("<pre class=\"front-matter\">---\ntitle: &lt;b&gt;&amp;&lt;/b&gt;\ntags: [a]\n---</pre>"),
             "{p}"
@@ -2109,7 +2180,9 @@ mod tests {
             assert!(out.contains(">T</h1>"), "{out}");
         }
         // `---` not on line 1: no front matter.
-        let p = page("x\n---\ny: 1\n---\n", false, Theme::Default, &|_| None);
+        let p = page("x\n---\ny: 1\n---\n", false, Theme::Default, false, &|_| {
+            None
+        });
         assert!(!p.contains("front-matter\">"), "{p}");
     }
 
@@ -2166,9 +2239,9 @@ $x^2 + \\frac{a}{b}$ math. [[Other note]] here.\n\n- item one\n- [ ] task\n  1. 
 ```javascript\nconst f = (a, b) => a.map(x => x + b).filter(Boolean);\n```\n\n\
 $$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> quote line\n\n";
         let md = chunk.repeat(1_000_000 / chunk.len() + 1);
-        let _ = page("```rust\nx\n```\n", false, Theme::Default, &|_| None); // load syntaxes
+        let _ = page("```rust\nx\n```\n", false, Theme::Default, false, &|_| None); // load syntaxes
         let start = std::time::Instant::now();
-        let html = page(&md, false, Theme::Default, &|_| None);
+        let html = page(&md, false, Theme::Default, false, &|_| None);
         eprintln!(
             "render {} KB -> {} KB in {:?}",
             md.len() / 1024,
