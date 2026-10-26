@@ -6,7 +6,8 @@
 # `Area 0/Topic 0/Note 0.md` reopened, and prints the app's timing log (MARKDOWNMATE_TIMING,
 # ms after main started), its memory after it settles, after the Outline/Backlinks panel is
 # shown and after a switch to another note, and the tag re-index and Backlinks after a note
-# changes on disk.
+# changes on disk. SORT=modified (or created) sorts the sidebar by that date instead of by
+# name, and also times moving the changed note to the top.
 # Everything it starts and writes is removed on exit. See docs/PERFORMANCE.md.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -62,7 +63,7 @@ other=$(note_path $((COUNT * 1065 / 10000)))
 changed=$(note_path $((COUNT * 1989 / 10000)))
 for run in $(seq 1 "$RUNS"); do
     {
-        printf 'folder=%s\nnote=%s\nmode=edit\n' "$NOTES" "$NOTES/$first"
+        printf 'folder=%s\nnote=%s\nmode=edit\nsidebar_sort=%s\n' "$NOTES" "$NOTES/$first" "${SORT:-name}"
         find "$NOTES" -mindepth 1 -type d | sed 's/^/expanded=/'
     } > "$XDG_CONFIG_HOME/markdownmate/state"
     log="$TMP/run$run.log"
@@ -91,7 +92,7 @@ for run in $(seq 1 "$RUNS"); do
     n=$(grep -c "tags indexed" "$log")
     echo "Changed on disk #tagnew" >> "$NOTES/$changed"
     wait_for 60 sh -c "[ \$(grep -c 'tags indexed' '$log') -gt $n ]" || echo "no tag re-index"
-    echo "  note changed on disk: $(last "$log" "tags indexed"), $(last "$log" "backlinks listed")"
+    echo "  note changed on disk: $(last "$log" "tags indexed"), $(last "$log" "backlinks listed")${SORT:+, $(last "$log" "note re-sorted")}"
     sleep 1
     echo "  memory at the end: $(rss $pid)"
 

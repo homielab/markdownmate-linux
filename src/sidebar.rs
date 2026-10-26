@@ -1,23 +1,37 @@
 //! Sidebar: the folder tree as a `gtk::ListView` over a `gtk::TreeListModel`. Virtualized:
 //! only rows on screen get widgets, and a folder's rows are added when it is expanded, so a
 //! folder of thousands of notes stays fast. Right-click: New Note, New Folder…, Rename…, Move
-//! to Trash. Drag an entry onto a folder (or empty space = the open folder) to move it.
-//! Below it, the Tags panel (`tags_panel`).
+//! to Trash, Sort By. Drag an entry onto a folder (or empty space = the open folder) to move it.
+//! Entries are in the scan's order (`notes::SortOrder`); under a date order a note whose date
+//! changed moves in place (`resort_note`). Below it, the Tags panel (`tags_panel`).
 
 use std::cell::{Ref, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
+use std::time::SystemTime;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
 
 use crate::{Editor, UNTITLED, file_name, notes};
 
-/// One sidebar entry; `children` (the folder's entries) is None for a note.
+/// One sidebar entry; `children` (the folder's entries) is None for a note. `date`: the one
+/// the order sorts by (`notes::Node::Note`).
 struct Item {
     name: String,
     path: PathBuf,
     children: Option<gio::ListStore>,
+    date: Option<SystemTime>,
+}
+
+impl Item {
+    fn key(&self) -> notes::Key<'_> {
+        notes::Key {
+            is_note: self.children.is_none(),
+            date: self.date,
+            name: &self.name,
+        }
+    }
 }
 
 /// The Item inside a model object.
@@ -40,12 +54,14 @@ fn store(nodes: &[notes::Node], dir: &Path) -> gio::ListStore {
                         name: name.clone(),
                         children: Some(store(children, &path)),
                         path,
+                        date: None,
                     }
                 }
-                notes::Node::Note { name, path } => Item {
+                notes::Node::Note { name, path, date } => Item {
                     name: name.clone(),
                     path: path.clone(),
                     children: None,
+                    date: *date,
                 },
             })
         })
@@ -53,6 +69,69 @@ fn store(nodes: &[notes::Node], dir: &Path) -> gio::ListStore {
     let store = gio::ListStore::new::<glib::BoxedAnyObject>();
     store.extend_from_slice(&items);
     store
+}
+
+/// Moves note `path` (under `root`, whose entries are `store`) to its place in `order` after
+/// its date changed on disk (saved here or by another app), without rebuilding the tree:
+/// expanded folders and the scroll position stay. Nothing to do under Name, or for a path
+/// not listed.
+pub fn resort_note(store: &gio::ListStore, root: &Path, path: &Path, order: notes::SortOrder) {
+    if order == notes::SortOrder::Name {
+        return;
+    }
+    let start = std::time::Instant::now();
+    let Ok(rel) = path.strip_prefix(root) else {
+        return;
+    };
+    let names: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let Some((note, dirs)) = names.split_last() else {
+        return;
+    };
+    let mut store = store.clone();
+    for dir in dirs {
+        let children = (0..store.n_items())
+            .filter_map(|i| store.item(i))
+            .find_map(|obj| {
+                let it = item(&obj);
+                it.children.clone().filter(|_| it.name == *dir)
+            });
+        let Some(children) = children else {
+            return;
+        };
+        store = children;
+    }
+    let Some((from, obj)) = (0..store.n_items())
+        .filter_map(|i| store.item(i).map(|obj| (i, obj)))
+        .find(|(_, obj)| {
+            let it = item(obj);
+            it.children.is_none() && it.name == *note
+        })
+    else {
+        return;
+    };
+    let date = std::fs::metadata(path).ok().and_then(|m| order.date(&m));
+    {
+        let boxed = obj
+            .downcast_ref::<glib::BoxedAnyObject>()
+            .expect("sidebar items are BoxedAnyObject");
+        boxed.borrow_mut::<Item>().date = date;
+    }
+    // The others are still in order: the note goes after every one that sorts before it.
+    let it = item(&obj);
+    let to = (0..store.n_items())
+        .filter(|&i| i != from)
+        .filter_map(|i| store.item(i))
+        .filter(|other| notes::compare(order, item(other).key(), it.key()).is_lt())
+        .count() as u32;
+    drop(it);
+    if to != from {
+        store.remove(from);
+        store.insert(to, &obj);
+    }
+    crate::timing::took(start, "note re-sorted");
 }
 
 /// Path of the folder shown by `row`; None for notes and destroyed rows.
@@ -84,7 +163,9 @@ fn track(editor: &Weak<Editor>, rows: &RefCell<Vec<gtk::TreeListRow>>, row: gtk:
 
 /// The sidebar for `tree` (the scan of `root`). Folders in `editor.expanded` open expanded.
 pub fn sidebar(editor: &Rc<Editor>, tree: &[notes::Node], root: &Path) -> gtk::ScrolledWindow {
-    let model = gtk::TreeListModel::new(store(tree, root), false, false, |obj| {
+    let entries = store(tree, root);
+    editor.sidebar_store.replace(Some(entries.clone()));
+    let model = gtk::TreeListModel::new(entries, false, false, |obj| {
         item(obj).children.clone().map(|s| s.upcast())
     });
     let weak = Rc::downgrade(editor);
@@ -192,7 +273,8 @@ pub fn sidebar(editor: &Rc<Editor>, tree: &[notes::Node], root: &Path) -> gtk::S
         .build()
 }
 
-/// Right-click menu of a sidebar entry: New Note, New Folder… (folders), Rename…, Move to Trash.
+/// Right-click menu of a sidebar entry: New Note, New Folder… (folders), Rename…, Show in
+/// Files, Copy Path, Move to Trash, then Sort By (the current order checked).
 /// The entry is read at click time: list rows are recycled for other entries.
 fn context_menu(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
     let gesture = gtk::GestureClick::builder()
@@ -290,6 +372,42 @@ fn context_menu(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
         );
         let (e, p) = (Rc::clone(&editor), path.clone());
         item("Move to Trash", Box::new(move || e.trash(&p)));
+        menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        let heading = gtk::Label::builder()
+            .label("Sort By")
+            .xalign(0.0)
+            .margin_start(12)
+            .margin_top(6)
+            .margin_bottom(3)
+            .css_classes(["dim-label", "caption-heading"])
+            .build();
+        menu.append(&heading);
+        let current = editor.prefs.borrow().sidebar_sort;
+        for order in notes::SortOrder::ALL {
+            let check = gtk::Image::from_icon_name("object-select-symbolic");
+            check.set_opacity(if order == current { 1.0 } else { 0.0 });
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            row.append(
+                &gtk::Label::builder()
+                    .label(order.title())
+                    .xalign(0.0)
+                    .hexpand(true)
+                    .build(),
+            );
+            row.append(&check);
+            let button = gtk::Button::builder().child(&row).has_frame(false).build();
+            let (popover, window) = (popover.clone(), editor.window.clone());
+            button.connect_clicked(move |_| {
+                popover.popdown();
+                // The window's action group: names without the `win.` prefix.
+                gio::prelude::ActionGroupExt::activate_action(
+                    &window,
+                    "sidebar-sort",
+                    Some(&order.name().to_variant()),
+                );
+            });
+            menu.append(&button);
+        }
         popover.popup();
     });
     widget.add_controller(gesture);
@@ -656,5 +774,58 @@ pub fn tag_notes(editor: &Rc<Editor>, tag: &str, notes: &[PathBuf]) {
     dialog.present(Some(&editor.window));
     if let Some(row) = list.row_at_index(0) {
         row.grab_focus();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn names(store: &gio::ListStore) -> Vec<String> {
+        (0..store.n_items())
+            .filter_map(|i| store.item(i))
+            .map(|obj| item(&obj).name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_changed_note_moves_to_its_place_in_place() {
+        let root = std::env::temp_dir().join(format!("mdmate-resort-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let now = SystemTime::now();
+        let touch = |rel: &str, secs_ago: u64| {
+            let path = root.join(rel);
+            std::fs::write(&path, "x").unwrap();
+            let file = std::fs::File::options().write(true).open(&path).unwrap();
+            file.set_modified(now - Duration::from_secs(secs_ago))
+                .unwrap();
+        };
+        for (rel, secs) in [("a.md", 30), ("b.md", 20), ("c.md", 10), ("sub/n.md", 5)] {
+            touch(rel, secs);
+        }
+        let order = notes::SortOrder::Modified;
+        let top = store(&notes::scan(&root, order).unwrap(), &root);
+        assert_eq!(names(&top), ["sub", "c.md", "b.md", "a.md"]);
+        let sub = item(&top.item(0).unwrap()).children.clone().unwrap();
+
+        touch("a.md", 0);
+        resort_note(&top, &root, &root.join("a.md"), order);
+        assert_eq!(names(&top), ["sub", "a.md", "c.md", "b.md"]);
+        // The folder object is the same: its rows (expanded or not) are untouched.
+        assert_eq!(item(&top.item(0).unwrap()).children.as_ref(), Some(&sub));
+
+        touch("c.md", 0);
+        resort_note(&top, &root, &root.join("c.md"), notes::SortOrder::Name);
+        assert_eq!(
+            names(&top),
+            ["sub", "a.md", "c.md", "b.md"],
+            "Name: nothing moves"
+        );
+        resort_note(&top, &root, &root.join("sub/n.md"), order);
+        resort_note(&top, &root, &root.join("gone.md"), order);
+        assert_eq!(names(&sub), ["n.md"]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

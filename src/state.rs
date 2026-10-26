@@ -207,6 +207,8 @@ pub struct Prefs {
     /// Line height in percent of the font's (`LINE_SPACINGS`); 100 = the font's own.
     pub line_spacing: u32,
     pub text_width: TextWidth,
+    /// How the sidebar is sorted (`notes::SortOrder`).
+    pub sidebar_sort: crate::notes::SortOrder,
 }
 
 pub const ZOOM_MIN: u32 = 50;
@@ -240,6 +242,7 @@ impl Default for Prefs {
             daily_folder: crate::daily::DEFAULT_FOLDER.to_string(),
             line_spacing: 100,
             text_width: TextWidth::Full,
+            sidebar_sort: crate::notes::SortOrder::Name,
         }
     }
 }
@@ -338,6 +341,10 @@ impl State {
                 Some(("text_width", v)) => {
                     state.prefs.text_width = TextWidth::from_name(v).unwrap_or_default()
                 }
+                Some(("sidebar_sort", v)) => {
+                    state.prefs.sidebar_sort =
+                        crate::notes::SortOrder::from_name(v).unwrap_or_default()
+                }
                 Some(("theme", v)) => state.prefs.theme = Theme::from_name(v).unwrap_or_default(),
                 Some(("style", v)) => state.prefs.style = Style::from_name(v).unwrap_or_default(),
                 // Written before side by side existed.
@@ -373,7 +380,7 @@ impl State {
             out += &format!("font={font}\n");
         }
         out += &format!(
-            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\nline_spacing={}\ntext_width={}\n",
+            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\n",
             p.line_numbers,
             p.wrap,
             p.indent,
@@ -388,7 +395,8 @@ impl State {
             p.focus_mode,
             p.daily_folder.replace('\n', " "),
             line_spacing_name(p.line_spacing),
-            p.text_width.name()
+            p.text_width.name(),
+            p.sidebar_sort.name()
         );
         out
     }
@@ -628,7 +636,7 @@ mod tests {
         };
         let text = state.serialize();
         assert!(text.is_ascii());
-        assert_eq!(text.lines().count(), 17);
+        assert_eq!(text.lines().count(), 19);
         assert_eq!(State::parse(&text), state);
     }
 
@@ -787,6 +795,7 @@ mod tests {
             daily_folder: " Journal/2026 ".into(),
             line_spacing: 115,
             text_width: TextWidth::Medium,
+            sidebar_sort: crate::notes::SortOrder::Modified,
         };
         let state = State {
             prefs: prefs.clone(),
@@ -802,11 +811,12 @@ mod tests {
         assert_eq!(old.prefs.daily_folder, "Daily");
         assert_eq!(old.prefs.line_spacing, 100);
         assert_eq!(old.prefs.text_width, TextWidth::Full);
+        assert_eq!(old.prefs.sidebar_sort, crate::notes::SortOrder::Name);
         // An empty daily notes folder (the open folder) stays empty.
         assert_eq!(State::parse("daily_folder=\n").prefs.daily_folder, "");
         // Broken values keep the default.
         let bad = State::parse(
-            "font= \nline_numbers=yes\nwrap=1\nindent=3\nindent=x\ntheme=neon\nstyle=dim\nsync_scroll=no\ntags=0\nignore_colours=off\ntypewriter=on\nformat_bar=yes\nfocus_mode=1\nline_spacing=1.2\nline_spacing=x\ntext_width=huge\n",
+            "font= \nline_numbers=yes\nwrap=1\nindent=3\nindent=x\ntheme=neon\nstyle=dim\nsync_scroll=no\ntags=0\nignore_colours=off\ntypewriter=on\nformat_bar=yes\nfocus_mode=1\nline_spacing=1.2\nline_spacing=x\ntext_width=huge\nsidebar_sort=size\n",
         );
         assert_eq!(bad.prefs, Prefs::default());
         for t in Theme::ALL {

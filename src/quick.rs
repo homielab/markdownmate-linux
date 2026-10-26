@@ -221,11 +221,13 @@ mod tests {
                 children: vec![Node::Note {
                     name: "b.md".into(),
                     path: "/n/d/b.md".into(),
+                    date: None,
                 }],
             },
             Node::Note {
                 name: "a.md".into(),
                 path: "/n/a.md".into(),
+                date: None,
             },
         ];
         let mut out = Vec::new();

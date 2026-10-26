@@ -129,6 +129,7 @@ three, a relative link to a note of its folder.
 
 ```sh
 ./dev.sh scripts/measure-folder.sh          # 10,000 notes, 3 launches; or: <notes> <launches>
+./dev.sh env SORT=modified scripts/measure-folder.sh   # sidebar by Date Modified (or created)
 ```
 
 Each launch reopens the folder with every subfolder expanded and `Area 0/Topic 0/Note 0.md` in
@@ -167,6 +168,16 @@ Link index (same machine and folder, 2026-10-25, three launches; before = the ta
 | **Backlinks of a note** (Outline shown after launch) | **0.28–0.40 s** | **1–2 ms** |
 | Backlinks after switching note | 0.22–0.37 s | 1 ms |
 | Backlinks again after another note changed on disk | (not refreshed) | 1–2 ms |
+
+Sidebar sort orders (same machine and folder, 2026-10-26, two launches each; before = no sort
+setting). Dates come from the `stat` the scan already makes for every note, so sorting by them
+costs nothing measurable; a note changed on disk moves to its place in under 1 ms.
+
+| Step | Before | Name | Date Modified | Date Created |
+|------|-------:|-----:|--------------:|-------------:|
+| folder scanned (background) | 52–219 ms | 37–206 ms | 33–215 ms | 66–188 ms |
+| sidebar filled (after main started) | 217–672 ms | 213–642 ms | 220–721 ms | 264–570 ms |
+| note re-sorted after a change on disk | — | — | 0 ms | 0 ms |
 | memory after launch: app + WebKit | 300–343 + 45 MB | 324–368 + 44–45 MB |
 
 Launch and the sidebar were already fine: the folder is walked on a background thread and the

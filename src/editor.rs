@@ -116,6 +116,8 @@ pub(crate) struct Editor {
     pub(crate) applied_gen: Cell<u64>,
     /// Folder of the newest scan (rescans target it, not a folder being replaced).
     pub(crate) scan_dir: RefCell<Option<PathBuf>>,
+    /// The sidebar's top-level entries (`sidebar::resort_note`).
+    pub(crate) sidebar_store: RefCell<Option<gio::ListStore>>,
     /// Every note from the last scan, for Open Quickly.
     pub(crate) note_list: RefCell<Rc<Vec<PathBuf>>>,
     /// Sidebar Tags panel and its list; the tags shown (row i = tag_index[i]); the number of
@@ -1087,10 +1089,13 @@ impl Editor {
         let dir = dir.to_path_buf();
         let weak = Rc::downgrade(self);
         let start = Instant::now();
+        let order = self.prefs.borrow().sidebar_sort;
         glib::spawn_future_local(async move {
             let d = dir.clone();
-            let result =
-                gio::spawn_blocking(move || notes::scan(&d).map(|t| (t, notes::folders(&d)))).await;
+            let result = gio::spawn_blocking(move || {
+                notes::scan(&d, order).map(|t| (t, notes::folders(&d)))
+            })
+            .await;
             let Some(editor) = weak.upgrade() else {
                 return;
             };
@@ -1775,6 +1780,32 @@ impl Editor {
         self.note_list.replace(Rc::new(list));
     }
 
+    /// Sorts the sidebar by `order` from now on (remembered): the folder is listed again,
+    /// expanded folders kept.
+    pub(crate) fn set_sidebar_sort(self: &Rc<Self>, order: notes::SortOrder) {
+        if self.prefs.borrow().sidebar_sort == order {
+            return;
+        }
+        self.prefs.borrow_mut().sidebar_sort = order;
+        self.remember();
+        let dir = self.scan_dir.borrow().clone();
+        if let Some(dir) = dir {
+            self.load_folder(&dir);
+        }
+    }
+
+    /// Note `path`'s content changed on disk: under a date order its sidebar entry moves.
+    pub(crate) fn resort_note(&self, path: &Path) {
+        let order = self.prefs.borrow().sidebar_sort;
+        let (Some(store), Some(root)) = (
+            self.sidebar_store.borrow().clone(),
+            self.root.borrow().clone(),
+        ) else {
+            return;
+        };
+        sidebar::resort_note(&store, &root, path, order);
+    }
+
     /// Rescans the open folder after RESCAN_DELAY of quiet (debounce).
     pub(crate) fn schedule_rescan(self: &Rc<Self>) {
         if let Some(id) = self.rescan_timer.take() {
@@ -1812,7 +1843,8 @@ pub(crate) fn watch_dir(editor: &Rc<Editor>, dir: &Path) -> Option<gio::FileMoni
     let weak = Rc::downgrade(editor);
     monitor.connect_changed(move |_, file, other, event| {
         use gio::FileMonitorEvent as E;
-        // Content edits don't change the tree; the app's own temp file is never shown.
+        // Content edits don't change the tree (a note may only move under a date order); the
+        // app's own temp file is never shown.
         let is_temp = file
             .basename()
             .is_some_and(|n| n.to_string_lossy().ends_with(".mmtmp"));
@@ -1831,6 +1863,7 @@ pub(crate) fn watch_dir(editor: &Rc<Editor>, dir: &Path) -> Option<gio::FileMoni
             // Our save renames its temp file onto the note.
             let note = if is_temp { other } else { Some(file) };
             if let Some(path) = note.and_then(|f| f.path()) {
+                editor.resort_note(&path);
                 editor.note_changed(path);
             }
             editor.schedule_tags_index();

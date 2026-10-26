@@ -652,6 +652,7 @@ dependencies = [
  "math-core",
  "sourceview5",
  "syntect",
+ "unicode-normalization",
  "webkit6",
 ]
 

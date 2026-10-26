@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Sort the sidebar by Name, Date Modified or Date Created (main menu ▸ Sort Sidebar By, or Sort By in the sidebar's right-click menu), as in the macOS app: folders first, dates newest first, remembered. A saved note moves to the top under Date Modified without closing folders. Names now sort naturally, so `Note 2` comes before `Note 10`.
 - Focus Mode (Shift+Ctrl+J, or main menu ▸ Focus Mode), as in the macOS app: the editor dims every paragraph except the one you are writing in, in every theme, light or dark. Off by default and remembered; typing in a 5 MB note is as fast with it on.
 - Fixed a crash on Intel graphics (Ubuntu 24.04, Wayland): the preview no longer hands its frames to GTK as GPU (DMA-BUF) buffers unless you set `WEBKIT_DISABLE_DMABUF_RENDERER` yourself; the README's troubleshooting section lists the settings to try if a crash remains.
 - Typing or opening a note no longer logs "Trying to snapshot GtkGizmo … without a current allocation" (the editor's scrollbar).

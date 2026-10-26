@@ -115,6 +115,17 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             }
             table.append_section(None, &edits);
             commands.append_submenu(Some("Table"), &table);
+            // Radio items of one stateful action (also in the sidebar's right-click menu).
+            let sort = gio::Menu::new();
+            for order in crate::notes::SortOrder::ALL {
+                let item = gio::MenuItem::new(Some(order.title()), None);
+                item.set_action_and_target_value(
+                    Some("win.sidebar-sort"),
+                    Some(&order.name().to_variant()),
+                );
+                sort.append_item(&item);
+            }
+            commands.append_submenu(Some("Sort Sidebar By"), &sort);
             // A check item (stateful action); Shift+Ctrl+J is a window accelerator.
             commands.append(Some("Focus Mode"), Some("win.focus-mode"));
             menu.append_section(None, &commands);
@@ -339,6 +350,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         dir_monitors: RefCell::new(Vec::new()),
         rescan_timer: RefCell::new(None),
         expanded: RefCell::new(HashSet::new()),
+        sidebar_store: RefCell::new(None),
         scan_gen: Cell::new(0),
         applied_gen: Cell::new(0),
         scan_dir: RefCell::new(None),
@@ -668,6 +680,29 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     ));
     window.add_action(&focus_action);
     app.set_accels_for_action("win.focus-mode", &["<Shift><Control>j"]);
+
+    // Sidebar order (main menu ▸ Sort Sidebar By, the sidebar's Sort By), kept in the state
+    // file: `notes::SortOrder`.
+    let sort_action = gio::SimpleAction::new_stateful(
+        "sidebar-sort",
+        Some(glib::VariantTy::STRING),
+        &crate::notes::SortOrder::default().name().to_variant(),
+    );
+    sort_action.connect_change_state(clone!(
+        #[strong]
+        editor,
+        move |action, value| {
+            let Some(order) = value
+                .and_then(|v| v.str())
+                .and_then(crate::notes::SortOrder::from_name)
+            else {
+                return;
+            };
+            action.set_state(&order.name().to_variant());
+            editor.set_sidebar_sort(order);
+        }
+    ));
+    window.add_action(&sort_action);
 
     // Ctrl+R is not bound by GTK or GtkSourceView; does nothing without an open note.
     let reload_action = gio::SimpleAction::new("reload", None);
@@ -1103,6 +1138,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     format_action.change_state(&show_format_bar.to_variant());
     let focus_mode = editor.prefs.borrow().focus_mode;
     focus_action.change_state(&focus_mode.to_variant());
+    let sort = editor.prefs.borrow().sidebar_sort;
+    sort_action.change_state(&sort.name().to_variant());
     if crate::timing::enabled() {
         window.add_tick_callback(|_, _| {
             crate::timing::mark(|| "window shown".into());
