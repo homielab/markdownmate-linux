@@ -230,19 +230,9 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     let completer = Completer::new(&view, &overlay);
     smart_lists(&view, &completer);
 
-    let preview = webkit6::WebView::new();
-    if let Some(settings) = WebViewExt::settings(&preview) {
-        // No scripts from the page (the CSP blocks them too). JavaScript itself stays on only
-        // for the app's own scripts in its script world: reading/restoring the scroll position
-        // (evaluate_javascript needs it), drawing Mermaid diagrams and KaTeX formulas
-        // (`diagrams`, `math`).
-        settings.set_enable_javascript_markup(false);
-    }
-    crate::diagrams::keep_world(&preview);
-    preview.set_vexpand(true);
     // The preview under its find bar (`previewfind`); the mode shows or hides the whole pane.
+    // Both are added on first use (`Editor::preview`).
     let preview_pane = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    preview_pane.append(&preview);
     preview_pane.set_visible(false);
     let panes = gtk::Paned::builder()
         .start_child(&editor_pane)
@@ -318,7 +308,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         mention_targets: RefCell::default(),
         mentions_gen: Arc::default(),
         tag_timer: RefCell::new(None),
-        preview,
+        preview_view: std::cell::OnceCell::new(),
         preview_find: std::cell::OnceCell::new(),
         print_view: RefCell::new(None),
         print_busy: Cell::new(false),
@@ -383,8 +373,6 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     ));
 
     image_input(&view, &editor);
-    let preview_find = crate::previewfind::find_bar(&editor.preview, &preview_pane);
-    editor.preview_find.set(preview_find).ok();
     crate::search::find_bar(&editor, &editor_pane, app);
     crate::editor::typewriter_scrolling(&editor, &scroll);
     crate::editor::text_width_resizing(&editor, &scroll);
@@ -978,92 +966,6 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         editor.sync_timer.replace(Some(id));
     });
 
-    // Side by side: the editor follows the preview when the user scrolls it (wheel/touchpad,
-    // keys, dragging the scrollbar). Watched from GTK, so the page's scripts stay off; the app's
-    // own scrolling of the preview sends no input events, so it never syncs back.
-    let input = gtk::EventControllerLegacy::new();
-    input.set_propagation_phase(gtk::PropagationPhase::Capture);
-    let weak = Rc::downgrade(&editor);
-    input.connect_event(move |_, event| {
-        let user_scroll = match event.event_type() {
-            gtk::gdk::EventType::Scroll | gtk::gdk::EventType::KeyPress => true,
-            gtk::gdk::EventType::MotionNotify => event
-                .modifier_state()
-                .contains(gtk::gdk::ModifierType::BUTTON1_MASK),
-            _ => false,
-        };
-        if let Some(editor) = weak.upgrade().filter(|_| user_scroll) {
-            editor.follow_preview();
-        }
-        glib::Propagation::Proceed
-    });
-    editor.preview.add_controller(input);
-    // A click on a link to a heading or footnote of the note scrolls the preview with no
-    // scroll input: the URI changes (same page, not loading) once it has scrolled.
-    let weak = Rc::downgrade(&editor);
-    editor.preview.connect_uri_notify(move |preview| {
-        if let Some(editor) = weak.upgrade().filter(|_| !preview.is_loading()) {
-            editor.follow_preview();
-        }
-    });
-
-    // After a load (side by side, scroll sync on): follow the editor. A new note starts at
-    // the top; re-renders of the same note update in place (refresh_preview).
-    let weak = Rc::downgrade(&editor);
-    editor.preview.connect_load_changed(move |_, event| {
-        if event != webkit6::LoadEvent::Finished {
-            return;
-        }
-        let Some(editor) = weak.upgrade() else {
-            return;
-        };
-        match editor.preview_anchor.take() {
-            Some(id) => editor.preview.evaluate_javascript(
-                &format!(
-                    "var e=document.getElementById({});if(e)e.scrollIntoView();0",
-                    render::js_string(&id)
-                ),
-                Some(SCRIPT_WORLD),
-                None,
-                gio::Cancellable::NONE,
-                |_| {},
-            ),
-            None => editor.sync_preview(),
-        }
-        // KaTeX / Mermaid are installed only if the page has a formula / diagram.
-        editor.draw_math();
-        editor.draw_diagrams();
-        editor.refresh_preview_find();
-    });
-
-    // The web process died (crash, out of memory): the app keeps running; the next edit or
-    // Reload starts a new one.
-    let weak = Rc::downgrade(&editor);
-    editor
-        .preview
-        .connect_web_process_terminated(move |_, reason| {
-            let Some(editor) = weak.upgrade() else {
-                return;
-            };
-            let title = match reason {
-                webkit6::WebProcessTerminationReason::ExceededMemoryLimit => {
-                    "Preview ran out of memory"
-                }
-                _ => "Preview stopped unexpectedly",
-            };
-            let toast = adw::Toast::builder()
-                .title(title)
-                .button_label("Reload")
-                .build();
-            let weak = Rc::downgrade(&editor);
-            toast.connect_button_clicked(move |_| {
-                if let Some(editor) = weak.upgrade() {
-                    editor.load_preview();
-                }
-            });
-            editor.toasts.add_toast(toast);
-        });
-
     // Ctrl+click on a link in the editor opens it like a click in the preview; the pointer
     // turns into a hand over links while Ctrl is held.
     let click = gtk::GestureClick::new();
@@ -1139,34 +1041,6 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             true
         });
 
-    // The preview never navigates away from the note: web links open in the default app,
-    // anchors (footnotes) scroll, links to notes in the open folder open them in the editor
-    // (relative hrefs arrive resolved against the note's file:// URI), anything else is ignored.
-    let weak = Rc::downgrade(&editor);
-    editor
-        .preview
-        .connect_decide_policy(move |_, decision, kind| {
-            use webkit6::PolicyDecisionType as T;
-            if !matches!(kind, T::NavigationAction | T::NewWindowAction) {
-                return false;
-            }
-            let Some(editor) = weak.upgrade() else {
-                return false;
-            };
-            let uri = decision
-                .downcast_ref::<webkit6::NavigationPolicyDecision>()
-                .and_then(|d| d.navigation_action())
-                .and_then(|mut a| a.request())
-                .and_then(|r| r.uri());
-            match uri.map(|u| (render::link_action(&u, &editor.page_uri()), u)) {
-                Some((render::Link::Follow, _)) => return false,
-                Some((link, uri)) => editor.follow(link, &uri),
-                None => {}
-            }
-            decision.ignore();
-            true
-        });
-
     // Closing the window (= quitting) saves first. If that fails, the first close is refused
     // so the text is not lost silently; closing again quits without saving.
     window.connect_close_request(clone!(
@@ -1224,6 +1098,121 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
 }
 
 /// About MarkdownMate: name, version, links (same as the metainfo).
+/// Wires the preview's page, made on first use (`Editor::preview`): scroll sync from the
+/// preview, scripts after each load, the web process dying, and links clicked in the page.
+pub(crate) fn wire_preview(editor: &Rc<Editor>, preview: &webkit6::WebView) {
+    // Side by side: the editor follows the preview when the user scrolls it (wheel/touchpad,
+    // keys, dragging the scrollbar). Watched from GTK, so the page's scripts stay off; the app's
+    // own scrolling of the preview sends no input events, so it never syncs back.
+    let input = gtk::EventControllerLegacy::new();
+    input.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let weak = Rc::downgrade(editor);
+    input.connect_event(move |_, event| {
+        let user_scroll = match event.event_type() {
+            gtk::gdk::EventType::Scroll | gtk::gdk::EventType::KeyPress => true,
+            gtk::gdk::EventType::MotionNotify => event
+                .modifier_state()
+                .contains(gtk::gdk::ModifierType::BUTTON1_MASK),
+            _ => false,
+        };
+        if let Some(editor) = weak.upgrade().filter(|_| user_scroll) {
+            editor.follow_preview();
+        }
+        glib::Propagation::Proceed
+    });
+    preview.add_controller(input);
+    // A click on a link to a heading or footnote of the note scrolls the preview with no
+    // scroll input: the URI changes (same page, not loading) once it has scrolled.
+    let weak = Rc::downgrade(editor);
+    preview.connect_uri_notify(move |preview| {
+        if let Some(editor) = weak.upgrade().filter(|_| !preview.is_loading()) {
+            editor.follow_preview();
+        }
+    });
+
+    // After a load (side by side, scroll sync on): follow the editor. A new note starts at
+    // the top; re-renders of the same note update in place (refresh_preview).
+    let weak = Rc::downgrade(editor);
+    preview.connect_load_changed(move |_, event| {
+        if event != webkit6::LoadEvent::Finished {
+            return;
+        }
+        let Some(editor) = weak.upgrade() else {
+            return;
+        };
+        crate::timing::mark(|| "preview loaded".into());
+        match editor.preview_anchor.take() {
+            Some(id) => editor.preview().evaluate_javascript(
+                &format!(
+                    "var e=document.getElementById({});if(e)e.scrollIntoView();0",
+                    render::js_string(&id)
+                ),
+                Some(SCRIPT_WORLD),
+                None,
+                gio::Cancellable::NONE,
+                |_| {},
+            ),
+            None => editor.sync_preview(),
+        }
+        // KaTeX / Mermaid are installed only if the page has a formula / diagram.
+        editor.draw_math();
+        editor.draw_diagrams();
+        editor.refresh_preview_find();
+    });
+
+    // The web process died (crash, out of memory): the app keeps running; the next edit or
+    // Reload starts a new one.
+    let weak = Rc::downgrade(editor);
+    preview.connect_web_process_terminated(move |_, reason| {
+        let Some(editor) = weak.upgrade() else {
+            return;
+        };
+        let title = match reason {
+            webkit6::WebProcessTerminationReason::ExceededMemoryLimit => {
+                "Preview ran out of memory"
+            }
+            _ => "Preview stopped unexpectedly",
+        };
+        let toast = adw::Toast::builder()
+            .title(title)
+            .button_label("Reload")
+            .build();
+        let weak = Rc::downgrade(&editor);
+        toast.connect_button_clicked(move |_| {
+            if let Some(editor) = weak.upgrade() {
+                editor.load_preview();
+            }
+        });
+        editor.toasts.add_toast(toast);
+    });
+
+    // The preview never navigates away from the note: web links open in the default app,
+    // anchors (footnotes) scroll, links to notes in the open folder open them in the editor
+    // (relative hrefs arrive resolved against the note's file:// URI), anything else is ignored.
+    let weak = Rc::downgrade(editor);
+    preview.connect_decide_policy(move |_, decision, kind| {
+        use webkit6::PolicyDecisionType as T;
+        if !matches!(kind, T::NavigationAction | T::NewWindowAction) {
+            return false;
+        }
+        let Some(editor) = weak.upgrade() else {
+            return false;
+        };
+        let uri = decision
+            .downcast_ref::<webkit6::NavigationPolicyDecision>()
+            .and_then(|d| d.navigation_action())
+            .and_then(|mut a| a.request())
+            .and_then(|r| r.uri());
+        match uri.map(|u| (render::link_action(&u, &editor.page_uri()), u)) {
+            Some((render::Link::Follow, _)) => return false,
+            Some((link, uri)) => editor.follow(link, &uri),
+            None => {}
+        }
+        decision.ignore();
+        true
+    });
+}
+
 fn about_dialog(editor: &Rc<Editor>) {
     let dialog = adw::AboutDialog::builder()
         .application_name("MarkdownMate")

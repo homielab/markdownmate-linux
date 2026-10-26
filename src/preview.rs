@@ -13,6 +13,37 @@ use crate::{PREVIEW_DELAY, PREVIEW_LINE_JS, SCRIPT_WORLD, SYNC_DELAY, SYNC_JS, f
 use crate::{diagrams, incremental, math, render, save, state};
 
 impl Editor {
+    /// The preview's page, made on first use: settings, zoom, find bar and signals
+    /// (`window::wire_preview`). Nothing of WebKit runs before, so a session spent in Edit
+    /// costs no WebKit process or memory.
+    pub(crate) fn preview(self: &Rc<Self>) -> &webkit6::WebView {
+        if let Some(view) = self.preview_view.get() {
+            return view;
+        }
+        let view = self.preview_view.get_or_init(web_view);
+        if let Some(settings) = WebViewExt::settings(view) {
+            // No scripts from the page (the CSP blocks them too). JavaScript itself stays on
+            // only for the app's own scripts in its script world: reading/restoring the scroll
+            // position (evaluate_javascript needs it), drawing Mermaid diagrams and KaTeX
+            // formulas (`diagrams`, `math`).
+            settings.set_enable_javascript_markup(false);
+        }
+        diagrams::keep_world(view);
+        view.set_vexpand(true);
+        view.set_zoom_level(f64::from(self.prefs.borrow().zoom) / 100.0);
+        let pane = self
+            .panes
+            .end_child()
+            .and_downcast::<gtk::Box>()
+            .expect("preview pane");
+        pane.append(view);
+        self.preview_find
+            .set(crate::previewfind::find_bar(view, &pane))
+            .ok();
+        crate::window::wire_preview(self, view);
+        view
+    }
+
     /// Side by side: re-render the preview shortly after typing stops.
     pub(crate) fn schedule_preview(self: &Rc<Self>) {
         if self.mode.get() != state::Mode::Split {
@@ -51,10 +82,10 @@ impl Editor {
         let uri = self.page_uri();
         // A footnote click leaves `#fragment` on the URI; still the same note.
         let same_note = self
-            .preview
+            .preview()
             .uri()
             .is_some_and(|u| u.split('#').next() == Some(uri.as_str()));
-        if !same_note || self.preview.is_loading() {
+        if !same_note || self.preview().is_loading() {
             self.load_preview();
             return;
         }
@@ -79,7 +110,7 @@ impl Editor {
             editor.preview_render.set(slot);
             if let Ok((state, update)) = result
                 && editor.preview_loads.get() == loads
-                && !editor.preview.is_loading()
+                && !editor.preview().is_loading()
             {
                 editor.preview_state.replace(state);
                 match update {
@@ -105,7 +136,7 @@ impl Editor {
         let has_math = patch.has_math();
         let has_diagrams = patch.has_diagrams();
         let editor = Rc::clone(self);
-        self.preview.evaluate_javascript(
+        self.preview().evaluate_javascript(
             &script,
             Some(SCRIPT_WORLD),
             None,
@@ -149,7 +180,7 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
         let has_diagrams = render::has_diagrams(html);
         let has_math = render::has_math(html);
         let editor = Rc::clone(self);
-        self.preview.evaluate_javascript(
+        self.preview().evaluate_javascript(
             &script,
             Some(SCRIPT_WORLD),
             None,
@@ -182,8 +213,9 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
     /// then follows the editor again: KaTeX changed the page's heights.
     pub(crate) fn draw_math(self: &Rc<Self>) {
         let editor = Rc::clone(self);
-        math::draw(&self.preview, move |typeset| {
+        math::draw(self.preview(), move |typeset| {
             if typeset {
+                crate::timing::mark(|| "formulas typeset".into());
                 editor.sync_preview();
             }
         });
@@ -193,8 +225,9 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
     /// follows the editor again: the diagrams changed the page's heights.
     pub(crate) fn draw_diagrams(self: &Rc<Self>) {
         let editor = Rc::clone(self);
-        diagrams::draw(&self.preview, move |drawn| {
+        diagrams::draw(self.preview(), move |drawn| {
             if drawn {
+                crate::timing::mark(|| "diagrams drawn".into());
                 editor.sync_preview();
             }
         });
@@ -223,7 +256,7 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
             format!("{SYNC_JS}({})", f64::from(iter.line() + 1) + part)
         };
         let editor = Rc::clone(self);
-        self.preview.evaluate_javascript(
+        self.preview().evaluate_javascript(
             &format!("{script};scrollY"),
             Some(SCRIPT_WORLD),
             None,
@@ -249,7 +282,7 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
         let editor = Rc::clone(self);
         let id = glib::timeout_add_local_once(SYNC_DELAY, move || {
             let e = Rc::clone(&editor);
-            editor.preview.evaluate_javascript(
+            editor.preview().evaluate_javascript(
                 PREVIEW_LINE_JS,
                 Some(SCRIPT_WORLD),
                 None,
@@ -314,7 +347,7 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
             };
             if editor.preview_generation.get() == generation {
                 editor.preview_state.replace(state);
-                editor.preview.load_html(&html, Some(&uri));
+                editor.preview().load_html(&html, Some(&uri));
             }
         });
     }
@@ -459,9 +492,10 @@ pub(crate) fn export_html(editor: &Rc<Editor>) {
                     let Some((dest, html)) = pending.take() else {
                         return;
                     };
-                    let weak = weak.clone();
+                    let (weak, page) = (weak.clone(), view.clone());
                     finished_page(view, move |drawn| {
                         if let Some(editor) = weak.upgrade() {
+                            drop_print_view(&editor, &page);
                             write_export(&editor, dest, drawn.unwrap_or(html));
                         }
                     });
@@ -640,8 +674,23 @@ fn copy_html_and_text(
 /// Print to File → PDF). Nothing without an open note.
 pub(crate) fn print_note(editor: &Rc<Editor>) {
     let window = editor.window.clone();
+    let weak = Rc::downgrade(editor);
     print_page(editor, move |view| {
-        webkit6::PrintOperation::new(view).run_dialog(Some(&window));
+        let op = webkit6::PrintOperation::new(view);
+        let (w, page) = (weak.clone(), view.clone());
+        let done = move || {
+            if let Some(editor) = w.upgrade() {
+                drop_print_view(&editor, &page);
+            }
+        };
+        let finished = done.clone();
+        op.connect_finished(move |_| finished());
+        let failed = done.clone();
+        op.connect_failed(move |_, _| failed());
+        // Returns once the dialog is closed; printing goes on until `finished`.
+        if op.run_dialog(Some(&window)) == webkit6::PrintOperationResponse::Cancel {
+            done();
+        }
     });
 }
 
@@ -684,15 +733,17 @@ pub(crate) fn export_pdf(editor: &Rc<Editor>) {
                 );
                 let op = webkit6::PrintOperation::new(view);
                 op.set_print_settings(&settings);
-                let (w, name) = (weak.clone(), file_name(&dest));
+                let (w, name, page) = (weak.clone(), file_name(&dest), view.clone());
                 op.connect_finished(move |_| {
                     if let Some(e) = w.upgrade() {
+                        drop_print_view(&e, &page);
                         e.toast(&format!("Exported {name}"));
                     }
                 });
-                let w = weak.clone();
+                let (w, page) = (weak.clone(), view.clone());
                 op.connect_failed(move |_, err| {
                     if let Some(e) = w.upgrade() {
+                        drop_print_view(&e, &page);
                         e.toast(&format!("Could not export: {err}"));
                     }
                 });
@@ -739,7 +790,7 @@ fn print_page(editor: &Rc<Editor>, done: impl Fn(&webkit6::WebView) + 'static) {
 /// preview: page scripts off).
 fn offscreen(editor: &Editor, html: &str, uri: &str, done: impl Fn(&webkit6::WebView) + 'static) {
     let scripts = render::has_diagrams(html) || render::has_math(html);
-    let view = webkit6::WebView::new();
+    let view = web_view();
     if let Some(settings) = WebViewExt::settings(&view) {
         settings.set_enable_javascript(scripts);
         settings.set_enable_javascript_markup(false);
@@ -764,6 +815,31 @@ fn offscreen(editor: &Editor, html: &str, uri: &str, done: impl Fn(&webkit6::Web
     });
     view.load_html(html, Some(uri));
     editor.print_view.replace(Some(view));
+}
+
+/// A new WebView. Its web context keeps the smallest caches (`DocumentViewer`): the app shows
+/// one local page at a time and never goes back or forward, so WebKit's page and resource
+/// caches only hold memory.
+fn web_view() -> webkit6::WebView {
+    if let Some(context) = webkit6::WebContext::default() {
+        context.set_cache_model(webkit6::CacheModel::DocumentViewer);
+    }
+    webkit6::WebView::new()
+}
+
+/// Lets go of the off-screen page `view` once its print or export is done, unless a newer
+/// one took its place: its web process (a whole WebKit renderer) ends with it. Dropped after
+/// the signal that reported it, not inside it.
+fn drop_print_view(editor: &Rc<Editor>, view: &webkit6::WebView) {
+    let (editor, view) = (Rc::clone(editor), view.clone());
+    glib::idle_add_local_once(move || {
+        let done = editor.print_view.borrow().as_ref() == Some(&view);
+        if done {
+            // Taken first: dropping the page may run its handlers.
+            let page = editor.print_view.take();
+            drop(page);
+        }
+    });
 }
 
 const NO_SANDBOX: &str =

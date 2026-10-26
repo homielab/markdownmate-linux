@@ -174,7 +174,68 @@ compares the index with the full scan after edits, a rename, a move, a new and a
 Memory doesn't grow with the folder: with 20 notes instead of 10,000 the app uses the same
 (328 MB after launch). Most of it is GTK's GL renderer, which in the container draws with Mesa's
 software rasteriser: with `GSK_RENDERER=cairo` (`./dev.sh sh -c 'GSK_RENDERER=cairo
-scripts/measure-folder.sh 10000 1'`) the app uses 183 MB with 10,000 notes and 195 MB with 20.
+scripts/measure-folder.sh 10000 1'`) the app uses 183 MB with 10,000 notes and 195 MB with 20. Breakdown and
+what the app trims: [Memory](#memory).
+
+## Memory
+
+Resident size (`VmRSS`, `/proc/<pid>/smaps` summed per mapping) with the folder of 20 notes,
+release build, Docker (OrbStack) on Apple Silicon, Xvfb, 2026-10-26. The container has no GPU:
+GTK and WebKit draw with OpenGL on Mesa's software rasterizer (llvmpipe), which is most of the
+memory and not the app's.
+
+| Launched in Edit | App | of which | WebKit processes |
+|------------------|----:|----------|-----------------:|
+| default (GTK's `ngl` renderer) | 288–334 MB | heap 123–167 MB, `libLLVM` 57 MB, WebKit libraries 26 MB, Mesa 12 MB, GTK 8 MB | network 45 MB |
+| `GSK_RENDERER=gl` | 287 MB | heap 122 MB, `libLLVM` 57 MB | network 45 MB |
+| `GSK_RENDERER=cairo` | 186–191 MB | heap 40 MB, `libLLVM` 47 MB | network 45 MB |
+
+heaptrack: the heap peaks at 191 MB with `ngl` and 65 MB with cairo, so about 125 MB of the
+app's heap and the 57 MB of LLVM (llvmpipe's shader compiler) are GTK's GL renderer on a
+software GPU. With a real GPU the driver's share differs (textures live in video memory).
+Forcing cairo for everyone is not measured safe (slower drawing, no GPU scrolling on real
+hardware), so the app leaves the renderer to GTK; on a machine without a GPU,
+`GSK_RENDERER=cairo markdownmate` saves about 140 MB.
+
+| Launched in Preview | App | WebKit processes |
+|---------------------|----:|-----------------:|
+| default | 317–320 MB | 336–355 MB (web process: heap 53 MB, other anonymous 92 MB, `libLLVM` 57 MB, WebKit 46 MB) |
+| `WEBKIT_DISABLE_COMPOSITING_MODE=1` | 324 MB | web process ≈ 120 MB |
+
+WebKit's accelerated compositing on llvmpipe costs about 150 MB in the web process; also a
+renderer cost, left to WebKit (on a GPU it scrolls and zooms the page smoothly).
+
+What the app controls, and does now:
+
+- **The preview's WebView is made the first time the preview is shown** (Ctrl+2 / Ctrl+3, or a
+  session reopened in Preview / Side by side), not at launch: before, the hidden WebView
+  started WebKit's network process (45 MB) and loaded WebKit in the app even for a session spent
+  in Edit.
+- **The off-screen page of Print, Export as PDF and Export as HTML is dropped once done**: before,
+  it and its web process (a whole renderer, ≈ 120–300 MB) stayed until the next print.
+- **WebKit keeps the smallest caches** (`CacheModel::DocumentViewer`): one local page at a time,
+  never back or forward.
+- Already on demand before: the syntax set (first highlighted code block), KaTeX and Mermaid
+  (only installed in pages with a formula / diagram).
+
+Before / after, same container, `scripts/measure-folder.sh` (launched in Edit, 2 launches each,
+with `WEBKIT_DISABLE_DMABUF_RENDERER=1`, the app's default):
+
+| Memory after launch, app + WebKit | Before | After |
+|-----------------------------------|-------:|------:|
+| 20 notes | 279–323 + 45 MB | 266–309 + 0 MB |
+| 10,000 notes | 323–362 + 44–45 MB | 309–351 + 0 MB |
+
+About 55–60 MB less in all for a session spent in Edit: the network process (45 MB) and
+≈ 13 MB of WebKit in the app. Once the preview is shown both versions use the same (app
+≈ 316 MB, WebKit ≈ 263 MB). The first preview is not slower: a note with a code block, a
+formula and a Mermaid diagram, reopened in Preview, is drawn 830–850 ms after the mode is set
+before and 760–860 ms after; switching from Edit with Ctrl+2 takes 240–1150 ms before
+(median ≈ 900 ms, 8 launches) and 270–970 ms after (median ≈ 850 ms): the WebView takes a few
+ms to make, the web process starts on the first page in both.
+
+`MARKDOWNMATE_TIMING` also logs `mode <Edit|Preview|Split>`, `preview loaded`, `formulas typeset`
+and `diagrams drawn`, to time the first preview of a note.
 
 ## Further ideas
 

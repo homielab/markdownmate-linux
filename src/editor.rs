@@ -55,10 +55,12 @@ pub(crate) struct Editor {
     pub(crate) mentions_gen: Arc<AtomicU64>,
     /// Pending re-colouring of `#tags` in the editor.
     pub(crate) tag_timer: RefCell<Option<glib::SourceId>>,
-    pub(crate) preview: webkit6::WebView,
-    /// Find in the preview: its bar above the page (`previewfind`); set once built.
+    /// The preview's page, made on first use (`preview()`): the first WebView starts WebKit's
+    /// network process and loads most of WebKit, memory a session spent in Edit never needs.
+    pub(crate) preview_view: std::cell::OnceCell<webkit6::WebView>,
+    /// Find in the preview: its bar above the page (`previewfind`); set with the page.
     pub(crate) preview_find: std::cell::OnceCell<Rc<crate::previewfind::Bar>>,
-    /// Off-screen page being printed (kept alive until the next print).
+    /// Off-screen page being printed or exported, dropped once done (`preview::offscreen`).
     pub(crate) print_view: RefCell<Option<webkit6::WebView>>,
     /// A print page is rendering in the background; another Print/Export PDF is ignored meanwhile.
     pub(crate) print_busy: Cell<bool>,
@@ -233,7 +235,9 @@ impl Editor {
         self.font_css
             .load_from_data(&(css + &state::line_height_css(p.line_spacing)));
         // Only the on-screen preview: print and Export HTML use their own page at 100%.
-        self.preview.set_zoom_level(f64::from(p.zoom) / 100.0);
+        if let Some(preview) = self.preview_view.get() {
+            preview.set_zoom_level(f64::from(p.zoom) / 100.0);
+        }
         drop(p);
         self.text_width_margins();
         self.typewriter_margin();
@@ -1041,6 +1045,7 @@ impl Editor {
 
     /// Shows the panes for `mode`; called by the `win.mode` action only.
     pub(crate) fn apply_mode(self: &Rc<Self>, mode: state::Mode) {
+        crate::timing::mark(|| format!("mode {mode:?}"));
         self.mode.set(mode);
         let editor = self.panes.start_child().expect("editor pane");
         editor.set_visible(mode != state::Mode::Preview);
@@ -1061,7 +1066,7 @@ impl Editor {
             }
         }
         if mode == state::Mode::Preview {
-            self.preview.grab_focus();
+            self.preview().grab_focus();
         } else {
             self.view.grab_focus();
         }

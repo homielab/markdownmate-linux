@@ -221,6 +221,8 @@ GDK_BACKEND=x11 markdownmate                    # XWayland instead of Wayland
 
 `coredumpctl list markdownmate` and `coredumpctl info <PID>` show the backtrace of a crash.
 
+On a machine without a GPU (a VM, remote desktop), GTK's OpenGL renderer runs on Mesa's software rasterizer and takes about 140 MB more memory than `GSK_RENDERER=cairo markdownmate`; see [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md#memory).
+
 ### Release: Launchpad PPA source package
 
 Releases go to the PPA `ppa:homielab/markdownmate`. A PPA only takes a source package; Launchpad builds it itself, offline, with Ubuntu's `rustc-1.91`/`cargo-1.91`. The packaging is in `debian/` (licence: all rights reserved, see `debian/copyright`).
