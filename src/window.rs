@@ -189,6 +189,17 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         .child(&view)
         .vexpand(true)
         .build();
+    // Typing and opening a note change the buffer inside a frame (input is handled in the
+    // frame clock's event phase). GtkTextView then validates the new lines only while drawing
+    // and grows its vertical adjustment mid-snapshot, after the scrollbar was allocated: GTK
+    // warns "Trying to snapshot GtkGizmo … without a current allocation" (the scrollbar's
+    // trough). Re-allocating the view lets it validate and resize the scrollbar in the layout
+    // phase of the same frame instead.
+    buffer.connect_changed(clone!(
+        #[weak]
+        view,
+        move |_| view.queue_allocate()
+    ));
     let status = gtk::Label::builder()
         .xalign(0.0)
         .margin_start(12)

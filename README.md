@@ -209,6 +209,18 @@ The preview runs in WebKit's sandbox (bubblewrap), which needs unprivileged user
 
 Without a usable sandbox the app stays in Edit mode instead of crashing. If the preview's web process crashes, a toast offers Reload.
 
+### Troubleshooting: crashes or a blank preview with some graphics drivers
+
+The preview (WebKitGTK) can hand its frames to GTK as GPU buffers (DMA-BUF). With some drivers, such as Intel graphics on Ubuntu 24.04 (the journal shows `MESA-INTEL: warning: … FINISHME: support YUV colorspace with DRM format modifiers`), that path is known to crash or blank WebKitGTK apps, so MarkdownMate starts with `WEBKIT_DISABLE_DMABUF_RENDERER=1` unless you set the variable yourself: the preview is then copied through shared memory, which a static page doesn't notice. To check whether a crash depends on the graphics stack, start the app from a terminal with other settings; a value you set always wins:
+
+```bash
+WEBKIT_DISABLE_DMABUF_RENDERER=0 markdownmate   # back to GPU buffers for the preview
+GSK_RENDERER=gl markdownmate                    # GTK's OpenGL renderer (also: ngl, vulkan, cairo)
+GDK_BACKEND=x11 markdownmate                    # XWayland instead of Wayland
+```
+
+`coredumpctl list markdownmate` and `coredumpctl info <PID>` show the backtrace of a crash.
+
 ### Release: Launchpad PPA source package
 
 Releases go to the PPA `ppa:homielab/markdownmate`. A PPA only takes a source package; Launchpad builds it itself, offline, with Ubuntu's `rustc-1.91`/`cargo-1.91`. The packaging is in `debian/` (licence: all rights reserved, see `debian/copyright`).

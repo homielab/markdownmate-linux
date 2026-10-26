@@ -6,6 +6,8 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Fixed a crash on Intel graphics (Ubuntu 24.04, Wayland): the preview no longer hands its frames to GTK as GPU (DMA-BUF) buffers unless you set `WEBKIT_DISABLE_DMABUF_RENDERER` yourself; the README's troubleshooting section lists the settings to try if a crash remains.
+- Typing or opening a note no longer logs "Trying to snapshot GtkGizmo … without a current allocation" (the editor's scrollbar).
 - Instant Backlinks in large folders: the links of every note are read once when the folder opens and kept up to date as notes are saved, changed on disk, renamed, moved, created or deleted, so with 10,000 notes the panel fills in a few milliseconds instead of about 0.3 s, and refreshes when another note changes on disk.
 - Preferences ▸ Editor ▸ Line Spacing (1 to 2) and Text Width (Narrow, Medium, Wide or Full Width), as in the macOS app: on a wide screen the editor's text and the preview's page stay centred at a readable width. Defaults keep today's look; print and exports are unchanged.
 

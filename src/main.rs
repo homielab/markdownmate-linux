@@ -98,7 +98,30 @@ else if(n)l=end-br.bottom/Math.max(nr.top-br.bottom,1)*(np[0]-end);else l=end}\
 return y+' '+l})()";
 const UNTITLED: &str = "Untitled.md";
 
+/// Renderer settings applied when the user hasn't set them (`main`, before GTK starts).
+/// `WEBKIT_DISABLE_DMABUF_RENDERER=1`: the preview hands its frames to GTK through shared
+/// memory instead of GPU (DMA-BUF) buffers. Importing those buffers is the path GTK 4.14
+/// and Intel's Mesa drivers warn about on Ubuntu 24.04 (`anv_formats.c … FINISHME: support
+/// YUV colorspace / multi-planar formats with DRM format modifiers`) and the one known to
+/// crash or blank WebKitGTK views on some GPUs; the preview is a static page, so copying its
+/// frames costs nothing noticeable. `WEBKIT_DISABLE_DMABUF_RENDERER=0` turns it back on.
+const RENDER_DEFAULTS: &[(&str, &str)] = &[("WEBKIT_DISABLE_DMABUF_RENDERER", "1")];
+
+/// The `RENDER_DEFAULTS` to set: those `is_set` says the user hasn't set (even to "").
+fn render_defaults(is_set: impl Fn(&str) -> bool) -> Vec<(&'static str, &'static str)> {
+    RENDER_DEFAULTS
+        .iter()
+        .copied()
+        .filter(|(name, _)| !is_set(name))
+        .collect()
+}
+
 fn main() -> gtk::glib::ExitCode {
+    for (name, value) in render_defaults(|name| std::env::var_os(name).is_some()) {
+        // SAFETY: first thing in `main`, before GTK, WebKit or anything else starts a thread,
+        // so nothing can read the environment at the same time.
+        unsafe { std::env::set_var(name, value) };
+    }
     timing::init();
     // HANDLES_OPEN: `markdownmate note.md` / Files ▸ Open With pass files to `open`.
     let app = adw::Application::builder()
@@ -259,5 +282,19 @@ fn open_path(editor: &Rc<Editor>, target: &Path) {
     } else if let Some(dir) = target.parent() {
         editor.load_folder(dir);
         editor.open(target);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_defaults_keep_the_users_settings() {
+        assert_eq!(
+            render_defaults(|_| false),
+            [("WEBKIT_DISABLE_DMABUF_RENDERER", "1")]
+        );
+        assert!(render_defaults(|name| name == "WEBKIT_DISABLE_DMABUF_RENDERER").is_empty());
     }
 }
