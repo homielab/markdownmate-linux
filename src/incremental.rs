@@ -138,7 +138,7 @@ pub(crate) fn render(
             Update::Page(render::preview_page(
                 style.dark,
                 style.theme,
-                style.width,
+                Some(style.width),
                 style.web_images,
                 &render::body_html(md, wiki, true, true, true),
             )),
@@ -412,7 +412,7 @@ impl Preview {
         render::preview_page(
             self.style.dark,
             self.style.theme,
-            self.style.width,
+            Some(self.style.width),
             self.style.web_images,
             &body,
         )
@@ -809,7 +809,7 @@ mod tests {
     const STYLE: Style = Style {
         dark: false,
         theme: Theme::Default,
-        width: TextWidth::Full,
+        width: TextWidth::Medium,
         web_images: false,
         links: 0,
     };
@@ -876,7 +876,13 @@ mod tests {
         let mut patches = 0;
         for (n, md) in texts.iter().enumerate() {
             let (next, update) = render(state.take(), md, STYLE, &wiki);
-            let whole = render::page(md, false, Theme::Default, false, &wiki);
+            let whole = render::preview_page(
+                false,
+                Theme::Default,
+                Some(STYLE.width),
+                false,
+                &render::body_html(md, &wiki, true, true, true),
+            );
             match update {
                 Update::Page(page) => {
                     assert_eq!(page, whole, "page {n}");

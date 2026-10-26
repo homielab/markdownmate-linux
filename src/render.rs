@@ -909,19 +909,19 @@ pub fn page(
     preview_page(
         dark,
         theme,
-        TextWidth::Full,
+        None,
         web_images,
         &body_html(md, wiki, true, true, true),
     )
 }
 
 /// `page` around a body `body_html` (or `incremental`) made, its text at most `width` wide
-/// (Full Width: the page's own reading width, as exports). Without `web_images`, a page
+/// (Full Width: no limit; `None`: the page's own reading width, as exports and print). Without `web_images`, a page
 /// showing a web image says on screen (not in print) why it is missing.
 pub(crate) fn preview_page(
     dark: bool,
     theme: Theme,
-    width: TextWidth,
+    width: Option<TextWidth>,
     web_images: bool,
     body: &str,
 ) -> String {
@@ -957,15 +957,18 @@ img[src^=\"https:\" i])::before { content: \"Web images are not loaded \\2014  P
 Load Images from the Web\"; display: block; margin-bottom: 1em; font-size: 0.8em; \
 opacity: 0.6; } }</style>";
 
-/// The `<style>` that sets the preview's text width; empty for Full Width. Placed before the
-/// page's CSS, so it is more specific than its `body` rule; print keeps the whole page.
-fn width_css(width: TextWidth) -> String {
-    match width.pixels() {
-        Some(px) => {
-            format!("<style>@media screen {{ html body {{ max-width: {px}px; }} }}</style>")
-        }
-        None => String::new(),
-    }
+/// The `<style>` that sets the preview's text width: the pixels of Narrow / Medium / Wide, no
+/// limit for Full Width (the padding stays); empty for `None`. Placed before the page's CSS,
+/// so it is more specific than its `body` rule; print keeps the whole page.
+fn width_css(width: Option<TextWidth>) -> String {
+    let Some(width) = width else {
+        return String::new();
+    };
+    let max = match width.pixels() {
+        Some(px) => format!("{px}px"),
+        None => "none".to_string(),
+    };
+    format!("<style>@media screen {{ html body {{ max-width: {max}; }} }}</style>")
 }
 
 /// Standalone HTML file of a note (Export as HTML): the preview's CSS in light mode, code
@@ -1798,13 +1801,17 @@ mod tests {
 
     #[test]
     fn preview_text_width() {
-        let narrow = preview_page(false, Theme::Default, TextWidth::Narrow, false, "<p>a</p>");
+        let page = |w| preview_page(false, Theme::Default, w, false, "<p>a</p>");
+        let narrow = page(Some(TextWidth::Narrow));
         assert!(
             narrow.contains("<style>@media screen { html body { max-width: 680px; } }</style>")
         );
-        // Full Width: the page's own reading width, as before.
-        let full = preview_page(false, Theme::Default, TextWidth::Full, false, "<p>a</p>");
-        assert!(!full.contains("html body") && full.contains("max-width: 46em"));
+        // Full Width: no limit, so it is wider than Wide; the page's own CSS keeps its padding.
+        let full = page(Some(TextWidth::Full));
+        assert!(full.contains("<style>@media screen { html body { max-width: none; } }</style>"));
+        // No width (print, exports): the page's own reading width.
+        let own = page(None);
+        assert!(!own.contains("html body") && own.contains("max-width: 46em"));
     }
 
     #[test]

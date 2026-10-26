@@ -14,7 +14,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 - Typing or opening a note no longer logs "Trying to snapshot GtkGizmo … without a current allocation" (the editor's scrollbar).
 - Less memory: the preview's web page is set up the first time you open Preview or Side by side instead of at launch, so a session spent in Edit starts no WebKit process (about 55 MB less); the hidden page used by Print, Export as PDF and Export as HTML is released once done instead of staying until the next print; WebKit keeps only small caches.
 - Instant Backlinks in large folders: the links of every note are read once when the folder opens and kept up to date as notes are saved, changed on disk, renamed, moved, created or deleted, so with 10,000 notes the panel fills in a few milliseconds instead of about 0.3 s, and refreshes when another note changes on disk.
-- Preferences ▸ Editor ▸ Line Spacing (1 to 2) and Text Width (Narrow, Medium, Wide or Full Width), as in the macOS app: on a wide screen the editor's text and the preview's page stay centred at a readable width. Defaults keep today's look; print and exports are unchanged.
+- Preferences ▸ Editor ▸ Line Spacing (1 to 2) and Text Width (Narrow, Medium, Wide or Full Width), as in the macOS app: on a wide screen the editor's text and the preview's page stay centred at a readable width (Medium by default; Full Width fills the window edge to edge in the editor and the preview, with the usual padding). Print and exports are unchanged.
 
 ## 0.5.0
 

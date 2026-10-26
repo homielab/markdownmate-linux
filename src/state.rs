@@ -111,14 +111,14 @@ impl Theme {
 }
 
 /// How wide the text runs (Preferences ▸ Text Width): the editor's text and the preview's
-/// page are centred at most this wide. Full Width = the whole editor, the preview its own
-/// reading width (exports always keep that).
+/// page are centred at most this wide. Full Width = the whole editor and the whole preview
+/// (the padding stays); print and exports always keep the page's own reading width.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub enum TextWidth {
     Narrow,
+    #[default]
     Medium,
     Wide,
-    #[default]
     Full,
 }
 
@@ -243,7 +243,7 @@ impl Default for Prefs {
             focus_mode: false,
             daily_folder: crate::daily::DEFAULT_FOLDER.to_string(),
             line_spacing: 100,
-            text_width: TextWidth::Full,
+            text_width: TextWidth::Medium,
             sidebar_sort: crate::notes::SortOrder::Name,
             web_images: false,
         }
@@ -801,7 +801,7 @@ mod tests {
             focus_mode: true,
             daily_folder: " Journal/2026 ".into(),
             line_spacing: 115,
-            text_width: TextWidth::Medium,
+            text_width: TextWidth::Wide,
             sidebar_sort: crate::notes::SortOrder::Modified,
             web_images: true,
         };
@@ -818,7 +818,7 @@ mod tests {
         assert!(!old.prefs.typewriter && !old.prefs.format_bar && !old.prefs.focus_mode);
         assert_eq!(old.prefs.daily_folder, "Daily");
         assert_eq!(old.prefs.line_spacing, 100);
-        assert_eq!(old.prefs.text_width, TextWidth::Full);
+        assert_eq!(old.prefs.text_width, TextWidth::Medium);
         assert_eq!(old.prefs.sidebar_sort, crate::notes::SortOrder::Name);
         assert!(!old.prefs.web_images);
         // An empty daily notes folder (the open folder) stays empty.
@@ -865,7 +865,7 @@ mod tests {
         assert_eq!(TextWidth::Full.pixels(), None);
         assert_eq!(TextWidth::Medium.pixels(), Some(820));
         let serialized = State::default().serialize();
-        assert!(serialized.contains("\nline_spacing=1\ntext_width=full\n"));
+        assert!(serialized.contains("\nline_spacing=1\ntext_width=medium\n"));
     }
 
     #[test]

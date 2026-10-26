@@ -120,7 +120,7 @@ fn large_notes() {
         let style = Style {
             dark: false,
             theme: Theme::Default,
-            width: crate::state::TextWidth::Full,
+            width: crate::state::TextWidth::Medium,
             web_images: false,
             links: 0,
         };
