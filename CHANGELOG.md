@@ -6,6 +6,8 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+## 0.6.0
+
 - App Center shows a new screenshot: math and diagrams in the preview.
 - Preferences ▸ Privacy ▸ Load Images from the Web (off by default): turn it on to show `http(s)` images in Preview, Side by side, Print and Export as PDF / HTML, as in the macOS app; scripts and other web content stay blocked. Off, nothing is downloaded — now also while Export as HTML draws formulas or diagrams — and the preview says why a web image is missing.
 - The sidebar appears with the window: the last folder is read while the window opens, so with 10,000 notes the sidebar is filled about 0.13 s after launch instead of 0.2–0.6 s, already in the first frame.

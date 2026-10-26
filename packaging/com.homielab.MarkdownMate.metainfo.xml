@@ -106,6 +106,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.6.0" date="2026-10-26">
+      <description>
+        <p>Focus Mode (Shift+Ctrl+J), sorting the sidebar by name, date modified or date created, Line Spacing and Text Width preferences, an option to load images from the web in the preview, instant Backlinks and a faster sidebar in large folders, less memory, and a fix for a crash on Intel graphics.</p>
+      </description>
+    </release>
     <release version="0.5.0" date="2026-10-25">
       <description>
         <p>KaTeX math in the preview, Today's Note (Ctrl+D), Copy as Rich Text, Export as Plain Text and as RTF, pasting spreadsheet cells as a table, completion of code block languages and wiki link headings, TypeScript highlighting, creating a note by clicking a missing wiki link, a Default App setting, much faster Backlinks in large folders and a faster preview while typing in large notes.</p>
