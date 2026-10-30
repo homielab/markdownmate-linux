@@ -8,7 +8,7 @@ use gtk::glib::{self, clone};
 
 use crate::editor::Editor;
 use crate::file_name;
-use crate::{find, goto, naming, quick, state};
+use crate::{find, goto, naming, quick, render, state};
 
 /// Desktop id of `packaging/com.homielab.MarkdownMate.desktop`.
 const DESKTOP_ID: &str = "com.homielab.MarkdownMate.desktop";
@@ -216,6 +216,28 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
             update(&|p| p.style = s);
         }
     ));
+    let line_breaks = adw::ComboRow::builder()
+        .title("Line Breaks")
+        .subtitle(
+            "Every New Line: each newline starts a new line in the preview, print and exports",
+        )
+        .model(&gtk::StringList::new(&[
+            "Markdown Standard",
+            "Every New Line",
+        ]))
+        .selected(u32::from(prefs.hard_breaks))
+        .build();
+    line_breaks.connect_selected_notify(clone!(
+        #[strong]
+        editor,
+        move |r| {
+            let on = r.selected() == 1;
+            editor.prefs.borrow_mut().hard_breaks = on;
+            render::set_hard_breaks(on);
+            editor.remember();
+            editor.refresh_preview();
+        }
+    ));
     let sync = adw::SwitchRow::builder()
         .title("Sync Scrolling")
         .subtitle("Side by side: the preview follows the editor")
@@ -234,6 +256,7 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
     look.add(&style);
     look.add(&theme);
     look.add(&sync);
+    look.add(&line_breaks);
     // Tags change what is a tag: re-colour the editor, re-render, re-list (or hide) the panel.
     let tags_update = {
         let editor = editor.clone();

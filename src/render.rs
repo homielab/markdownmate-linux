@@ -404,8 +404,27 @@ fn mathml(latex: &str, display: bool, delim: &str) -> String {
 }
 
 /// Markdown options shared by rendering and `code_block_at`.
+/// Preferences ▸ Line breaks ▸ Every New Line: a single newline inside a paragraph renders
+/// as `<br>`. Process-wide because every renderer (preview, exports, print, copy) builds its
+/// options here; set at launch and when the preference changes.
+static HARD_BREAKS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn set_hard_breaks(on: bool) {
+    HARD_BREAKS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn hard_breaks() -> bool {
+    HARD_BREAKS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub(crate) fn options() -> comrak::Options<'static> {
+    options_with(hard_breaks())
+}
+
+/// The comrak options of every render; `hard_breaks`: see `HARD_BREAKS`.
+fn options_with(hard_breaks: bool) -> comrak::Options<'static> {
     let mut options = comrak::Options::default();
+    options.render.hardbreaks = hard_breaks;
     let ext = &mut options.extension;
     ext.table = true;
     ext.tasklist = true;
@@ -1812,6 +1831,23 @@ mod tests {
         // No width (print, exports): the page's own reading width.
         let own = page(None);
         assert!(!own.contains("html body") && own.contains("max-width: 46em"));
+    }
+
+    #[test]
+    fn hard_breaks_only_when_asked() {
+        let html = |md: &str, on: bool| comrak::markdown_to_html(md, &options_with(on));
+        let note = "TITLE\nURL\n\nTEXT\n";
+        assert_eq!(html(note, false), "<p>TITLE\nURL</p>\n<p>TEXT</p>\n");
+        assert_eq!(html(note, true), "<p>TITLE<br />\nURL</p>\n<p>TEXT</p>\n");
+        // Hard breaks, code, tables and HTML blocks are the same either way.
+        for md in [
+            "a  \nb\\\nc\n",
+            "```\nx\ny\n```\n",
+            "| a |\n|---|\n| b |\n",
+            "<div>\nx\ny\n</div>\n",
+        ] {
+            assert_eq!(html(md, false), html(md, true), "{md}");
+        }
     }
 
     #[test]

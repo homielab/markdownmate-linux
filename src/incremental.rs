@@ -31,13 +31,14 @@ use crate::state::{TextWidth, Theme};
 pub(crate) type Wiki<'a> = dyn Fn(&str) -> Option<PathBuf> + Sync + 'a;
 
 /// What a rendered chunk depends on besides its text: light/dark, the theme, the text width,
-/// whether web images load (the page's CSP), and the notes wiki links resolve against (a fingerprint of the list, root and current note).
+/// whether web images load (the page's CSP), whether every newline is a line break, and the notes wiki links resolve against (a fingerprint of the list, root and current note).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Style {
     pub dark: bool,
     pub theme: Theme,
     pub width: TextWidth,
     pub web_images: bool,
+    pub hard_breaks: bool,
     pub links: u64,
 }
 
@@ -811,6 +812,7 @@ mod tests {
         theme: Theme::Default,
         width: TextWidth::Medium,
         web_images: false,
+        hard_breaks: false,
         links: 0,
     };
 

@@ -122,6 +122,7 @@ fn large_notes() {
             theme: Theme::Default,
             width: crate::state::TextWidth::Medium,
             web_images: false,
+            hard_breaks: false,
             links: 0,
         };
         let (blocks, _) = best(runs, cold, || incremental::render(None, &md, style, &wiki));

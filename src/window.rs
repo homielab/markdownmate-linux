@@ -31,6 +31,7 @@ use crate::{links, render, sidebar, state, title};
 pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     // Reopen last session; anything gone since is skipped silently.
     let mut session = state::load(&state_file()).usable();
+    render::set_hard_breaks(session.prefs.hard_breaks);
     // The folder to show is scanned on its own thread while the window is built.
     let scan = match &target {
         Some(target) => folder_of(target),

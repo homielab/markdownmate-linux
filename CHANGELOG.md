@@ -6,6 +6,8 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Preferences ▸ Appearance ▸ Line Breaks: choose *Every New Line* to show each newline in a paragraph as a line break (no two spaces or `\` needed) in the preview, print and HTML / PDF / rich-text exports, as in the macOS app. *Markdown Standard* stays the default.
+
 ## 0.6.0
 
 - App Center shows a new screenshot: math and diagrams in the preview.

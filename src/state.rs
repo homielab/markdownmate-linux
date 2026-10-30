@@ -211,6 +211,8 @@ pub struct Prefs {
     pub sidebar_sort: crate::notes::SortOrder,
     /// Preview, Print and Export load `http(s)` images; off = no request leaves the machine.
     pub web_images: bool,
+    /// Preferences ▸ Line breaks ▸ Every New Line (`render::set_hard_breaks`).
+    pub hard_breaks: bool,
 }
 
 pub const ZOOM_MIN: u32 = 50;
@@ -246,6 +248,7 @@ impl Default for Prefs {
             text_width: TextWidth::Medium,
             sidebar_sort: crate::notes::SortOrder::Name,
             web_images: false,
+            hard_breaks: false,
         }
     }
 }
@@ -333,6 +336,9 @@ impl State {
                 Some(("web_images", v)) => {
                     state.prefs.web_images = v.parse().unwrap_or(state.prefs.web_images)
                 }
+                Some(("hard_breaks", v)) => {
+                    state.prefs.hard_breaks = v.parse().unwrap_or(state.prefs.hard_breaks)
+                }
                 // Kept as typed (an empty value is a choice: the open folder).
                 Some(("daily_folder", v)) => state.prefs.daily_folder = v.to_string(),
                 Some(("indent", v @ ("2" | "4"))) => state.prefs.indent = v.parse().unwrap_or(4),
@@ -386,7 +392,7 @@ impl State {
             out += &format!("font={font}\n");
         }
         out += &format!(
-            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\n",
+            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\n",
             p.line_numbers,
             p.wrap,
             p.indent,
@@ -403,7 +409,8 @@ impl State {
             line_spacing_name(p.line_spacing),
             p.text_width.name(),
             p.sidebar_sort.name(),
-            p.web_images
+            p.web_images,
+            p.hard_breaks
         );
         out
     }
@@ -643,7 +650,7 @@ mod tests {
         };
         let text = state.serialize();
         assert!(text.is_ascii());
-        assert_eq!(text.lines().count(), 20);
+        assert_eq!(text.lines().count(), 21);
         assert_eq!(State::parse(&text), state);
     }
 
@@ -804,6 +811,7 @@ mod tests {
             text_width: TextWidth::Wide,
             sidebar_sort: crate::notes::SortOrder::Modified,
             web_images: true,
+            hard_breaks: true,
         };
         let state = State {
             prefs: prefs.clone(),
@@ -820,12 +828,12 @@ mod tests {
         assert_eq!(old.prefs.line_spacing, 100);
         assert_eq!(old.prefs.text_width, TextWidth::Medium);
         assert_eq!(old.prefs.sidebar_sort, crate::notes::SortOrder::Name);
-        assert!(!old.prefs.web_images);
+        assert!(!old.prefs.web_images && !old.prefs.hard_breaks);
         // An empty daily notes folder (the open folder) stays empty.
         assert_eq!(State::parse("daily_folder=\n").prefs.daily_folder, "");
         // Broken values keep the default.
         let bad = State::parse(
-            "font= \nline_numbers=yes\nwrap=1\nindent=3\nindent=x\ntheme=neon\nstyle=dim\nsync_scroll=no\ntags=0\nignore_colours=off\ntypewriter=on\nformat_bar=yes\nfocus_mode=1\nline_spacing=1.2\nline_spacing=x\ntext_width=huge\nsidebar_sort=size\nweb_images=yes\n",
+            "font= \nline_numbers=yes\nwrap=1\nindent=3\nindent=x\ntheme=neon\nstyle=dim\nsync_scroll=no\ntags=0\nignore_colours=off\ntypewriter=on\nformat_bar=yes\nfocus_mode=1\nline_spacing=1.2\nline_spacing=x\ntext_width=huge\nsidebar_sort=size\nweb_images=yes\nhard_breaks=on\n",
         );
         assert_eq!(bad.prefs, Prefs::default());
         for t in Theme::ALL {
