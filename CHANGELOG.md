@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Copy Wiki Link in a note's right-click menu in the sidebar: puts `[[Name]]` on the clipboard, or `[[Folder/Name]]` when another note in the folder has the same name.
 - Spell check in the editor (Preferences ▸ Editor ▸ Check Spelling, on by default): misspelled words are underlined as you type, in your system's language, and a right-click offers corrections, Add to Dictionary and Ignore. Inline code, ``` code blocks and link URLs are skipped.
 - Today's Note (Ctrl+D) starts from a Template.md in the daily notes folder when present, replacing {{date}} and {{title}} with the date.
 

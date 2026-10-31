@@ -13,7 +13,7 @@ use std::time::SystemTime;
 use adw::prelude::*;
 use gtk::{gio, glib};
 
-use crate::{Editor, UNTITLED, file_name, notes};
+use crate::{Editor, UNTITLED, complete, file_name, notes};
 
 /// One sidebar entry; `children` (the folder's entries) is None for a note. `date`: the one
 /// the order sorts by (`notes::Node::Note`).
@@ -274,7 +274,8 @@ pub fn sidebar(editor: &Rc<Editor>, tree: &[notes::Node], root: &Path) -> gtk::S
 }
 
 /// Right-click menu of a sidebar entry: New Note, New Folder… (folders), Rename…, Show in
-/// Files, Copy Path, Move to Trash, then Sort By (the current order checked).
+/// Files, Copy Path, Copy Wiki Link (notes), Move to Trash, then Sort By (the current order
+/// checked).
 /// The entry is read at click time: list rows are recycled for other entries.
 fn context_menu(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
     let gesture = gtk::GestureClick::builder()
@@ -370,6 +371,18 @@ fn context_menu(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
                 e.toast("Path copied");
             }),
         );
+        if is_note {
+            let (e, p) = (Rc::clone(&editor), path.clone());
+            item(
+                "Copy Wiki Link",
+                Box::new(move || {
+                    let root = e.root.borrow().clone().unwrap_or_default();
+                    let name = complete::link_name(&p, &e.note_list.borrow(), &root);
+                    e.window.clipboard().set_text(&format!("[[{name}]]"));
+                    e.toast("Link copied");
+                }),
+            );
+        }
         let (e, p) = (Rc::clone(&editor), path.clone());
         item("Move to Trash", Box::new(move || e.trash(&p)));
         menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));

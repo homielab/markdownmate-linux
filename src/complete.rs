@@ -21,7 +21,8 @@ pub fn query<'a>(above: &str, line: &'a str) -> Option<&'a str> {
 }
 
 /// Link name for `path`: file name without `.md`, or `Folder/Name` (relative to `root`) when
-/// another note has the same name.
+/// another note has the same name (any case, `.md` or `.markdown`). Used by `[[` completion,
+/// Outline ▸ Copy Link and the sidebar's Copy Wiki Link.
 pub fn link_name(path: &Path, notes: &[PathBuf], root: &Path) -> String {
     let stem = |p: &Path| p.file_stem().map(|s| s.to_string_lossy().to_lowercase());
     let dup = notes.iter().any(|n| n != path && stem(n) == stem(path));
@@ -267,13 +268,24 @@ mod tests {
     #[test]
     fn names_notes() {
         let root = Path::new("/n");
-        let notes: Vec<PathBuf> = ["a/Plan.md", "b/plan.md", "Idea.md"]
-            .iter()
-            .map(|p| root.join(p))
-            .collect();
+        let notes: Vec<PathBuf> = [
+            "a/Plan.md",
+            "b/plan.md",
+            "Idea.md",
+            "x/Sub/Page.md",
+            "Page.markdown",
+            "c/d/Deep.md",
+        ]
+        .iter()
+        .map(|p| root.join(p))
+        .collect();
         assert_eq!(link_name(&notes[2], &notes, root), "Idea");
         assert_eq!(link_name(&notes[0], &notes, root), "a/Plan");
         assert_eq!(link_name(&notes[1], &notes, root), "b/plan");
+        // Any extension of a note, folders from the root; a top-level note has none to add.
+        assert_eq!(link_name(&notes[3], &notes, root), "x/Sub/Page");
+        assert_eq!(link_name(&notes[4], &notes, root), "Page");
+        assert_eq!(link_name(&notes[5], &notes, root), "Deep");
     }
 
     #[test]
