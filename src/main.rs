@@ -29,6 +29,7 @@ mod previewfind;
 mod quick;
 mod relink;
 mod render;
+mod retag;
 mod rtf;
 mod save;
 mod search;

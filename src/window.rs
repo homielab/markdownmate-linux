@@ -384,6 +384,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         &editor.font_css,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+    sidebar::tags_menu(&tags_list, &Rc::downgrade(&editor));
     tags_list.connect_row_activated(clone!(
         #[weak]
         editor,

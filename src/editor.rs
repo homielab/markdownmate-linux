@@ -19,7 +19,7 @@ use crate::{
 };
 use crate::{
     backlinks, complete, images, links, lists, mentions, naming, notes, outline, quick, relink,
-    render, save, sidebar, state, stats, tags, timing, title, url,
+    render, retag, save, sidebar, state, stats, tags, timing, title, url,
 };
 
 /// The window's widgets and the open note. Shared (Rc) by sidebar buttons, the auto-save
@@ -1725,16 +1725,7 @@ impl Editor {
         for f in found {
             if open.as_ref() == Some(&f.path) {
                 let text = self.text();
-                let edits = plan.edits(&text, &f.path);
-                self.buffer.begin_user_action();
-                for edit in edits.iter().rev() {
-                    let at = |byte: usize| text[..byte].chars().count() as i32;
-                    let mut start = self.buffer.iter_at_offset(at(edit.range.start));
-                    let mut end = self.buffer.iter_at_offset(at(edit.range.end));
-                    self.buffer.delete(&mut start, &mut end);
-                    self.buffer.insert(&mut start, &edit.text);
-                }
-                self.buffer.end_user_action();
+                self.edit_buffer(&text, &plan.edits(&text, &f.path));
                 done += 1;
             } else {
                 closed.push(f.clone());
@@ -1761,6 +1752,161 @@ impl Editor {
                 format!("Updated links in {done} of {total} notes; the others changed meanwhile")
             });
             editor.refresh_backlinks();
+        });
+    }
+
+    /// Makes `edits` (in order, not overlapping; byte ranges of `text`, the buffer's text) in
+    /// the editor as one undo step.
+    fn edit_buffer(&self, text: &str, edits: &[relink::Edit]) {
+        self.buffer.begin_user_action();
+        for edit in edits.iter().rev() {
+            let at = |byte: usize| text[..byte].chars().count() as i32;
+            let mut start = self.buffer.iter_at_offset(at(edit.range.start));
+            let mut end = self.buffer.iter_at_offset(at(edit.range.end));
+            self.buffer.delete(&mut start, &mut end);
+            self.buffer.insert(&mut start, &edit.text);
+        }
+        self.buffer.end_user_action();
+    }
+
+    /// Sidebar Tags ▸ Rename Tag…: asks for the new name of `#old` (checked as it is typed),
+    /// then `offer_tag_rename`.
+    pub(crate) fn rename_tag(self: &Rc<Self>, old: &str) {
+        let entry = gtk::Entry::builder()
+            .text(old)
+            .activates_default(true)
+            .build();
+        let dialog = adw::AlertDialog::builder()
+            .heading(format!("Rename #{old}"))
+            .body(format!(
+                "The new name for #{old} in every note of the folder. Nested tags such as \
+#{old}/… move with it."
+            ))
+            .extra_child(&entry)
+            .default_response("rename")
+            .close_response("cancel")
+            .build();
+        dialog.add_responses(&[("cancel", "Cancel"), ("rename", "Rename")]);
+        dialog.set_response_appearance("rename", adw::ResponseAppearance::Suggested);
+        let name = move |entry: &gtk::Entry, old: &str| {
+            retag::valid_name(&entry.text()).filter(|new| new != old)
+        };
+        let check = {
+            let (dialog, old) = (dialog.downgrade(), old.to_string());
+            move |entry: &gtk::Entry| {
+                let ok = name(entry, &old).is_some();
+                if let Some(dialog) = dialog.upgrade() {
+                    dialog.set_response_enabled("rename", ok);
+                }
+                let typed = entry.text().trim().trim_start_matches('#').to_string();
+                if ok || typed == old {
+                    entry.remove_css_class("error");
+                } else {
+                    entry.add_css_class("error");
+                }
+            }
+        };
+        check(&entry);
+        entry.connect_changed(check);
+        let (weak, old) = (Rc::downgrade(self), old.to_string());
+        dialog.connect_response(Some("rename"), move |_, _| {
+            if let (Some(editor), Some(new)) = (weak.upgrade(), name(&entry, &old)) {
+                editor.offer_tag_rename(old.clone(), new);
+            }
+        });
+        dialog.present(Some(&self.window));
+    }
+
+    /// Counts the notes of the open folder that use `#old` (on a background thread) and asks
+    /// "Rename #old to #new in N notes?" (saying when `#new` already exists: the notes join
+    /// it). Rename edits the open note in the editor (one undo step, saved at once) and writes
+    /// the others unless they changed meanwhile, then lists the tags again.
+    fn offer_tag_rename(self: &Rc<Self>, old: String, new: String) {
+        let Some(root) = self.root.borrow().clone() else {
+            return;
+        };
+        let notes = self.note_list.borrow().to_vec();
+        let open = self.path.borrow().clone().map(|p| (p, self.text()));
+        let joins = self.tag_index.borrow().iter().any(|(tag, _)| {
+            tag.to_lowercase() == new.to_lowercase() && retag::under(tag, &old).is_none()
+        });
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let (o, n) = (old.clone(), new.clone());
+            let Ok(found) =
+                gio::spawn_blocking(move || retag::find(&notes, &root, &o, &n, open.as_ref()))
+                    .await
+            else {
+                return;
+            };
+            let Some(editor) = weak.upgrade() else { return };
+            if found.is_empty() {
+                editor.toast(&format!("No notes use #{old}"));
+                return;
+            }
+            let n = found.len();
+            let notes = format!("{n} note{}", if n == 1 { "" } else { "s" });
+            let body = if joins {
+                format!("#{new} already exists: these notes join it.")
+            } else {
+                format!("Nested tags such as #{old}/… become #{new}/….")
+            };
+            let dialog = adw::AlertDialog::builder()
+                .heading(format!("Rename #{old} to #{new} in {notes}?"))
+                .body(body)
+                .default_response("cancel")
+                .close_response("cancel")
+                .build();
+            dialog.add_responses(&[("cancel", "Cancel"), ("rename", "Rename")]);
+            dialog.set_response_appearance("rename", adw::ResponseAppearance::Suggested);
+            let weak = Rc::downgrade(&editor);
+            dialog.connect_response(Some("rename"), move |_, _| {
+                if let Some(editor) = weak.upgrade() {
+                    editor.retag(&old, &new, &found);
+                }
+            });
+            dialog.present(Some(&editor.window));
+        });
+    }
+
+    /// Renames `#old` to `#new` in `found` (see `offer_tag_rename`); a toast tells how many
+    /// notes were updated.
+    fn retag(self: &Rc<Self>, old: &str, new: &str, found: &[retag::Found]) {
+        let open = self.path.borrow().clone();
+        let mut done = 0;
+        let mut closed = Vec::new();
+        for f in found {
+            if open.as_ref() == Some(&f.path) {
+                let text = self.text();
+                self.edit_buffer(&text, &retag::edits(&text, old, new));
+                // Saved now, so the Tags tree below reads the renamed tag.
+                if self.save() {
+                    done += 1;
+                }
+            } else {
+                closed.push(f.clone());
+            }
+        }
+        let (old, new, total) = (old.to_string(), new.to_string(), found.len());
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let (o, n) = (old.clone(), new.clone());
+            let written = gio::spawn_blocking(move || retag::write(&closed, &o, &n))
+                .await
+                .unwrap_or(0);
+            let Some(editor) = weak.upgrade() else { return };
+            let done = done + written;
+            editor.toast(&if done == total {
+                format!(
+                    "Renamed #{old} to #{new} in {done} note{}",
+                    if done == 1 { "" } else { "s" }
+                )
+            } else {
+                format!(
+                    "Renamed #{old} to #{new} in {done} of {total} notes; the others changed meanwhile"
+                )
+            });
+            editor.load_tags();
         });
     }
 

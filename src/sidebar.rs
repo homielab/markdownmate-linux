@@ -739,6 +739,53 @@ pub fn fill_tags(list: &gtk::ListBox, panel: &gtk::Box, index: &[(String, Vec<Pa
     panel.set_visible(!index.is_empty());
 }
 
+/// Right-click menu of a row of the Tags list: Rename Tag… (`Editor::rename_tag`). The tag
+/// is read at click time from `Editor::tag_index` (row i = tag i).
+pub fn tags_menu(list: &gtk::ListBox, editor: &Weak<Editor>) {
+    let gesture = gtk::GestureClick::builder()
+        .button(gtk::gdk::BUTTON_SECONDARY)
+        .build();
+    let (weak, list_weak) = (editor.clone(), list.downgrade());
+    gesture.connect_pressed(move |gesture, _, x, y| {
+        let (Some(editor), Some(list)) = (weak.upgrade(), list_weak.upgrade()) else {
+            return;
+        };
+        let Some(row) = list.row_at_y(y as i32) else {
+            return;
+        };
+        let tag = usize::try_from(row.index())
+            .ok()
+            .and_then(|i| editor.tag_index.borrow().get(i).map(|(tag, _)| tag.clone()));
+        let Some(tag) = tag else {
+            return;
+        };
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        list.select_row(Some(&row));
+        let button = gtk::Button::builder()
+            .label("Rename Tag…")
+            .has_frame(false)
+            .build();
+        let popover = gtk::Popover::builder()
+            .child(&button)
+            .has_arrow(false)
+            .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+            .build();
+        popover.set_parent(&list);
+        popover.connect_closed(|p| {
+            // Unparent after the button's click handler has run.
+            let p = p.clone();
+            glib::idle_add_local_once(move || p.unparent());
+        });
+        let p = popover.clone();
+        button.connect_clicked(move |_| {
+            p.popdown();
+            editor.rename_tag(&tag);
+        });
+        popover.popup();
+    });
+    list.add_controller(gesture);
+}
+
 /// The notes tagged `#tag`: a dialog listing them (name and path in the folder); activating
 /// one opens it.
 pub fn tag_notes(editor: &Rc<Editor>, tag: &str, notes: &[PathBuf]) {
