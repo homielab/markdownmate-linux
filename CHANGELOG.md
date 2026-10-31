@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- GitHub-style alerts: a quote starting with a `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]` or `[!CAUTION]` line shows as a coloured callout in the preview, print and HTML / PDF / rich-text exports, instead of a plain quote with a literal `[!NOTE]`.
 - The package now installs a spell-check dictionary (US English, or any Hunspell one already there), so underlines show on a clean install.
 - Focus Mode: dimmed paragraphs keep their colours (headings, links, code), faded, instead of turning one flat grey.
 - Copy Wiki Link in a note's right-click menu in the sidebar: puts `[[Name]]` on the clipboard, or `[[Folder/Name]]` when another note in the folder has the same name.

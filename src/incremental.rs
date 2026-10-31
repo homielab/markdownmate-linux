@@ -963,6 +963,29 @@ mod tests {
         assert!(check(&[md, edited]) == 1);
     }
 
+    #[test]
+    fn editing_inside_an_alert() {
+        let md = "# A\n\ntext\n\n> [!NOTE]\n> one\n>\n> two\n\nend\n";
+        let texts: Vec<String> = [
+            md,
+            "# A\n\ntext\n\n> [!NOTE]\n> one more\n>\n> two\n\nend\n",
+            "# A\n\ntext\n\n> [!NOTE]\n> one more\n>\n> - two\n> - three\n\nend\n",
+            "# A\n\ntext\n\n> [!WARNING]\n> one more\n>\n> - two\n> - three\n\nend\n",
+            "# A\n\ntext\n\n> [!WARNING] x\n> one more\n>\n> - two\n> - three\n\nend\n",
+            "# A\n\nnew\n\ntext\n\n> [!TIP]\n> one more\n\nend\n",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert!(check(&texts) >= 4);
+        let (state, _) = render(None, texts[0].as_str(), STYLE, &wiki);
+        let (_, update) = render(state, &texts[1], STYLE, &wiki);
+        let Update::Patch(patch) = update else {
+            panic!("not a patch");
+        };
+        assert_eq!(patch.edits.len(), 1);
+        assert!(patch.edits[0].html.contains("alert alert-note"));
+    }
+
     /// A small deterministic generator (no dependency for tests).
     struct Random(u64);
 

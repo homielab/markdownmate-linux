@@ -119,6 +119,12 @@ pub(crate) fn render_body(
             }
         }
     }
+    let quotes: Vec<_> = root
+        .descendants()
+        .filter(|n| matches!(n.data().value, comrak::nodes::NodeValue::BlockQuote))
+        .collect();
+    // Every quote is tried (`count`, not `any`).
+    let alerts = quotes.into_iter().filter(|quote| make_alert(quote)).count() > 0;
     let mut task_items = Vec::new();
     let mut code_lines = Vec::new();
     let mut front_matter = None;
@@ -244,7 +250,21 @@ pub(crate) fn render_body(
         rest = &rest[end + anchor_end.len()..];
     }
     out.push_str(rest);
-    let html = out
+    // comrak's alert classes → ours (`make_alert`). The note's text is escaped, so these
+    // tags only come from alerts.
+    let html = if alerts {
+        out.replace(
+            "<div class=\"markdown-alert markdown-alert-",
+            "<div class=\"alert alert-",
+        )
+        .replace(
+            "<p class=\"markdown-alert-title\">",
+            "<p class=\"alert-title\">",
+        )
+    } else {
+        out
+    };
+    let html = html
         .replace(TAG_OPEN, "<span class=\"tag\">")
         .replace(TAG_CLOSE, "</span>");
     // Each pass below copies the HTML once (no per-item replace/insert: a large note has
@@ -346,6 +366,63 @@ pub(crate) fn render_body(
         html.insert_str(0, &format!("{pre}</pre>\n"));
     }
     Some(Rendered { html, headings })
+}
+
+/// GitHub's alerts: a block quote whose first line is exactly `[!NOTE]`, `[!TIP]`,
+/// `[!IMPORTANT]`, `[!WARNING]` or `[!CAUTION]` (any case, plain text) becomes comrak's alert
+/// node without that line, rendered as `<div class="alert alert-note"><p
+/// class="alert-title">Note</p>…</div>` (`render_body` renames comrak's classes). Comrak's
+/// own `alerts` extension stays off: it also takes `[!NOTE] Title` and `>>>` fences, which
+/// stay quotes here as on GitHub. True if `quote` became an alert.
+fn make_alert<'a>(quote: &'a comrak::nodes::AstNode<'a>) -> bool {
+    use comrak::nodes::{AlertType, NodeAlert, NodeValue};
+    let Some(paragraph) = quote
+        .first_child()
+        .filter(|p| matches!(p.data().value, NodeValue::Paragraph))
+    else {
+        return false;
+    };
+    // The inlines of the first line, up to and with the break that ends it. comrak may split
+    // `[!NOTE]` at the brackets: the pieces are joined.
+    let mut line = String::new();
+    let mut marker = Vec::new();
+    for child in paragraph.children() {
+        marker.push(child);
+        match &child.data().value {
+            NodeValue::SoftBreak | NodeValue::LineBreak => break,
+            NodeValue::Text(text) => line.push_str(text),
+            _ => return false,
+        }
+    }
+    let kind = line
+        .trim()
+        .strip_prefix("[!")
+        .and_then(|l| l.strip_suffix(']'))
+        .map(str::to_ascii_lowercase);
+    let alert_type = match kind.as_deref() {
+        Some("note") => AlertType::Note,
+        Some("tip") => AlertType::Tip,
+        Some("important") => AlertType::Important,
+        Some("warning") => AlertType::Warning,
+        Some("caution") => AlertType::Caution,
+        _ => return false,
+    };
+    for node in marker {
+        node.detach();
+    }
+    match paragraph.first_child() {
+        // The rest of the paragraph starts on the line after the marker.
+        Some(first) => paragraph.data_mut().sourcepos.start = first.data().sourcepos.start,
+        None => paragraph.detach(),
+    }
+    quote.data_mut().value = NodeValue::Alert(Box::new(NodeAlert {
+        alert_type,
+        title: None,
+        multiline: false,
+        fence_length: 0,
+        fence_offset: 0,
+    }));
+    true
 }
 
 /// Whether a code fence's info string (` ```mermaid `) asks for a Mermaid diagram.
@@ -1038,7 +1115,8 @@ pub fn rich_text_page(
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><style>\
 table {{ border-collapse: collapse; }} th, td {{ border: 1px solid #999; padding: 2px 6px; }} \
-pre, code {{ font-family: monospace; }}</style></head><body>{body}</body></html>"
+pre, code {{ font-family: monospace; }} .alert {{ border-left: 4px solid #999; padding-left: 8px; }} \
+.alert-title {{ font-weight: bold; }}</style></head><body>{body}</body></html>"
     )
 }
 
@@ -1320,6 +1398,12 @@ a[href^='mm-missing:'] { color: var(--missing); text-decoration-style: dashed; }
 code, pre { font-family: monospace; font-size: 0.9em; background: var(--code-bg); border-radius: 4px; }
 code { padding: .1em .3em; } pre { padding: 12px; overflow-x: auto; } pre code { background: none; padding: 0; }
 blockquote { margin: 0; padding-left: 1em; border-left: 4px solid rgba(127,127,127,.4); opacity: .85; }
+.alert { --alert: #0969da; margin: 0 0 1em; padding: .5em 1em; border-left: .25em solid var(--alert); }
+.alert > :last-child { margin-bottom: 0; }
+.alert-title { margin: 0 0 .25em; font-weight: 600; line-height: 1; color: var(--alert); }
+.alert-tip { --alert: #1a7f37; } .alert-important { --alert: #8250df; } .alert-warning { --alert: #9a6700; } .alert-caution { --alert: #d1242f; }
+html.dark .alert-note { --alert: #4493f8; } html.dark .alert-tip { --alert: #3fb950; } html.dark .alert-important { --alert: #ab7df8; }
+html.dark .alert-warning { --alert: #d29922; } html.dark .alert-caution { --alert: #f85149; }
 table { border-collapse: collapse; } th, td { border: 1px solid rgba(127,127,127,.4); padding: 4px 10px; }
 img { max-width: 100%; }
 ul:has(> li > input[type=checkbox]), ul:has(> li > a.task) { list-style: none; padding-left: 1.2em; }
@@ -1344,7 +1428,7 @@ div.mermaid .diagram svg { max-width: 100%; height: auto; }
 p.mermaid-error { margin: .3em 0 0; font-size: .85em; color: var(--missing); white-space: pre-wrap; }
 code.math-error { color: var(--missing); }
 .katex-display { overflow-x: auto; overflow-y: hidden; }
-@media print { html { background: none; } body { max-width: none; padding: 0; } pre, table, img, blockquote, div.mermaid, .katex-display { break-inside: avoid; } a.copy, pre.front-matter { display: none; } }
+@media print { html { background: none; } body { max-width: none; padding: 0; } pre, table, img, blockquote, .alert, div.mermaid, .katex-display { break-inside: avoid; } a.copy, pre.front-matter { display: none; } }
 ";
 
 /// What the preview does with a navigation to `uri`.
@@ -1581,6 +1665,88 @@ mod tests {
             assert!(!out.contains("mm-copy:") && !out.contains("class=\"code\""));
             assert!(!out.contains("data-sourcepos"));
         }
+    }
+
+    #[test]
+    fn alerts() {
+        for (marker, kind, title) in [
+            ("[!NOTE]", "note", "Note"),
+            ("[!TIP]", "tip", "Tip"),
+            ("[!IMPORTANT]", "important", "Important"),
+            ("[!WARNING]", "warning", "Warning"),
+            ("[!CAUTION]", "caution", "Caution"),
+            ("[!note]  ", "note", "Note"),
+            ("[!Warning]", "warning", "Warning"),
+        ] {
+            let md = format!("> {marker}\n> Read *this*.\n>\n> - item\n");
+            let html = to_html(&md, &|_| None);
+            assert_eq!(
+                html,
+                format!(
+                    "<div class=\"alert alert-{kind}\">\n<p class=\"alert-title\">{title}</p>\n\
+<p>Read <em>this</em>.</p>\n<ul>\n<li>item</li>\n</ul>\n</div>\n"
+                ),
+                "{md:?}"
+            );
+        }
+        // The marker alone, a hard break after it, inside a list.
+        let html = to_html("> [!TIP]\n", &|_| None);
+        assert_eq!(
+            html,
+            "<div class=\"alert alert-tip\">\n<p class=\"alert-title\">Tip</p>\n</div>\n"
+        );
+        let html = to_html("> [!TIP]\\\n> text\n", &|_| None);
+        assert!(html.contains("Tip</p>\n<p>text</p>"), "{html}");
+        let html = to_html("- > [!CAUTION]\n  > hot\n", &|_| None);
+        assert!(
+            html.contains("<li>\n<div class=\"alert alert-caution\">"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn alert_lines() {
+        let md = "# A\n\n> [!NOTE]\n> one\n> two\n\n> [!TIP]\n>\n> three\n";
+        let html = body_html(md, &|_| None, true, true, true);
+        assert!(
+            html.contains(
+                "<div class=\"alert alert-note\" data-sourcepos=\"3:1-5:5\">\n\
+<p class=\"alert-title\">Note</p>\n<p data-sourcepos=\"4:3-5:5\">one\ntwo</p>"
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains("Tip</p>\n<p data-sourcepos=\"9:3-9:7\">three</p>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn quotes_that_are_not_alerts() {
+        for md in [
+            "> [!NOTE] more text\n> body\n",
+            "> [!FOO]\n> body\n",
+            "> [!NOTE\n> body\n",
+            "> text\n> [!NOTE]\n",
+            "> *[!NOTE]*\n> body\n",
+            "> # [!NOTE]\n> body\n",
+            "[!NOTE]\ntext\n",
+        ] {
+            let html = to_html(md, &|_| None);
+            assert!(!html.contains("alert"), "{md:?}: {html}");
+            assert!(html.contains("[!"), "{md:?}: {html}");
+        }
+        for md in ["```\n> [!NOTE]\n> x\n```\n", "    > [!NOTE]\n    > x\n"] {
+            let html = to_html(md, &|_| None);
+            assert!(!html.contains("alert"), "{md:?}: {html}");
+            assert!(html.contains("&gt; [!NOTE]\n&gt; x"), "{md:?}: {html}");
+        }
+        // Raw HTML is escaped, so a note can't fake one.
+        let html = to_html(
+            "<div class=\"markdown-alert markdown-alert-note\">\n",
+            &|_| None,
+        );
+        assert!(!html.contains("<div"), "{html}");
     }
 
     #[test]
