@@ -22,7 +22,8 @@ use crate::preview::{
     copy_as_html, copy_as_rich_text, export_html, export_pdf, export_rtf, export_text, print_note,
 };
 use crate::{
-    APP_ID, MATH_STYLE, SCRIPT_WORLD, SYNC_DELAY, TABLE_STYLE, TAG_STYLE, UNTITLED, state_file,
+    APP_ID, MARK_MARKER_STYLE, MARK_STYLE, MATH_STYLE, SCRIPT_WORLD, SYNC_DELAY, TABLE_STYLE,
+    TAG_STYLE, UNTITLED, state_file,
 };
 use crate::{choose_file, choose_folder, folder_of};
 use crate::{links, render, sidebar, state, title};
@@ -97,6 +98,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
                 (
                     "Format",
                     &[
+                        ("Highlight", "win.format-highlight", "<Shift><Control>h"),
                         ("Toggle Task", "win.toggle-task", "<Control>Return"),
                         ("Footnote", "win.footnote", ""),
                     ],
@@ -203,6 +205,9 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     buffer.create_tag(Some(TABLE_STYLE), &[("family", &"monospace")]);
     // Mid-tone purple, readable on light and dark schemes like the tag blue.
     buffer.create_tag(Some(MATH_STYLE), &[("foreground", &"#9141ac")]);
+    // Colours set per theme by `Editor::apply_scheme`.
+    buffer.create_tag(Some(MARK_STYLE), &[]);
+    buffer.create_tag(Some(MARK_MARKER_STYLE), &[]);
     let style = adw::StyleManager::default();
     // A GtkSourceView that draws Focus Mode's veil.
     let focus_view = crate::focus::View::new(&buffer);
@@ -1442,6 +1447,7 @@ fn shortcuts_window() -> gtk::ShortcutsWindow {
                         ("<Control>b", "Bold"),
                         ("<Control>i", "Italic"),
                         ("<Control>k", "Link"),
+                        ("<Shift><Control>h", "Highlight"),
                         ("<Control>Return", "Toggle task"),
                         ("<Shift><Control>m", "Format bar"),
                     ],

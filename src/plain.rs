@@ -1,8 +1,8 @@
 //! Export as Plain Text: the note without Markdown syntax, built from the comrak AST. Words;
 //! headings as their text; bullets as `• ` (numbers kept, to-dos as `[ ]` / `[x]`); links as
 //! `text (url)`; images as `alt (url)`; code kept as written; formulas as their TeX between the
-//! `$` / `$$` delimiters; tables as tab-separated rows; quotes with `> `; front matter and raw
-//! HTML left out. Pure; `preview::export_text` runs it and writes the file.
+//! `$` / `$$` delimiters; `==highlights==` with their `==`; tables as tab-separated rows; quotes
+//! with `> `; front matter and raw HTML left out. Pure; `preview::export_text` runs it and writes the file.
 
 use comrak::nodes::{AstNode, ListType, NodeValue};
 
@@ -107,6 +107,8 @@ fn span<'a>(node: &'a AstNode<'a>) -> String {
             format!("{d}{}{d}", math.literal)
         }
         NodeValue::FootnoteReference(r) => format!("[{}]", r.name),
+        // Plain text has no highlight: the `==` stay, as written.
+        NodeValue::Highlight => format!("=={}==", inline(node)),
         NodeValue::Link(link) | NodeValue::Image(link) => {
             let text = inline(node);
             let url = link.url.as_str();
@@ -124,6 +126,14 @@ fn span<'a>(node: &'a AstNode<'a>) -> String {
 #[cfg(test)]
 mod tests {
     use super::plain_text as p;
+
+    #[test]
+    fn highlights_keep_their_marks() {
+        assert_eq!(
+            p("A ==marked **bold**== word, a == b, `==code==`."),
+            "A ==marked bold== word, a == b, ==code==.\n"
+        );
+    }
 
     #[test]
     fn words_headings_emphasis_code() {

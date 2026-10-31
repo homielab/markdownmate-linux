@@ -125,6 +125,7 @@ pub(crate) fn render_body(
     // escaping; the note's own copies are dropped so it cannot open/close a span.
     let md = md.replace(is_marker, "");
     let root = comrak::parse_document(&arena, &md, &options);
+    unmark_multiline(&arena, root);
     if next {
         let lines = md.lines().count();
         let last = root.last_child()?;
@@ -622,6 +623,41 @@ pub(crate) fn make_alert<'a>(quote: &'a comrak::nodes::AstNode<'a>) -> bool {
     true
 }
 
+/// `==` highlights stay on one line, as in the macOS app and the editor: a pair comrak's
+/// `highlight` made across a soft or hard line break goes back to text (its two `==` and its
+/// children in place). The `==` in between may still pair on their own line.
+pub(crate) fn unmark_multiline<'a>(
+    arena: &'a comrak::Arena<'a>,
+    root: &'a comrak::nodes::AstNode<'a>,
+) {
+    use comrak::nodes::NodeValue;
+    let spanning: Vec<_> = root
+        .descendants()
+        .filter(|n| matches!(n.data().value, NodeValue::Highlight))
+        .filter(|n| {
+            n.descendants()
+                .any(|d| matches!(d.data().value, NodeValue::SoftBreak | NodeValue::LineBreak))
+        })
+        .collect();
+    for mark in spanning {
+        let pos = mark.data().sourcepos;
+        let equals = |line: usize, column: usize| {
+            let text = NodeValue::Text("==".into());
+            let at = (line, column, line, column + 1).into();
+            arena.alloc(comrak::nodes::Ast::new_with_sourcepos(text, at).into())
+        };
+        mark.insert_before(equals(pos.start.line, pos.start.column));
+        while let Some(child) = mark.first_child() {
+            mark.insert_before(child);
+        }
+        mark.insert_before(equals(
+            pos.end.line,
+            pos.end.column.saturating_sub(1).max(1),
+        ));
+        mark.detach();
+    }
+}
+
 /// Whether a code fence's info string (` ```mermaid `) asks for a Mermaid diagram.
 fn is_diagram(info: &str) -> bool {
     info.split_whitespace()
@@ -703,6 +739,9 @@ fn options_with(hard_breaks: bool) -> comrak::Options<'static> {
     ext.table = true;
     ext.tasklist = true;
     ext.strikethrough = true;
+    // `==text==` → `<mark>` (Obsidian, Typora): exactly two `=`, flanking like `~~`, so
+    // `a == b`, `== x==` and `===` stay text; see `unmark_multiline` for line breaks.
+    ext.highlight = true;
     ext.autolink = true;
     ext.footnotes = true;
     // `$…$` / `$$…$$` (comrak's rules: `$5 and $10` stays text), see `math_html`.
@@ -826,32 +865,49 @@ pub fn code_block_at(md: &str, line: usize) -> Option<String> {
         })
 }
 
-/// The formulas of `md` the preview renders as math (`$…$`, `$$…$$`, ```math blocks; by
-/// comrak's rules, so `$5 và $10` and code are not), for the editor's colour: 0-based
-/// (line, byte) start and exclusive end, markers included.
-pub fn math_spans(md: &str) -> Vec<((usize, usize), (usize, usize))> {
-    // Most notes have no formula: skip the parse.
-    if !md.contains('$') && !md.contains("math") {
-        return vec![];
+/// A span of the editor's text: 0-based (line, byte) start and exclusive end.
+pub type Span = ((usize, usize), (usize, usize));
+
+/// What the editor colours in `md`, by comrak's rules as the preview (so code is never
+/// styled), markers included.
+#[derive(Debug, Default, PartialEq)]
+pub struct EditorSpans {
+    /// The formulas the preview renders as math: `$…$`, `$$…$$`, ```math blocks (`$5 và $10`
+    /// is not one).
+    pub math: Vec<Span>,
+    /// `==highlights==`, each on one line, both `==` included.
+    pub highlights: Vec<Span>,
+}
+
+/// `EditorSpans` of `md`.
+pub fn editor_spans(md: &str) -> EditorSpans {
+    // Most notes have no formula or highlight: skip the parse.
+    if !md.contains('$') && !md.contains("math") && !md.contains("==") {
+        return EditorSpans::default();
     }
+    use comrak::nodes::NodeValue;
     let arena = comrak::Arena::new();
     let root = comrak::parse_document(&arena, md, &options());
-    root.descendants()
-        .filter(|node| match &node.data().value {
-            comrak::nodes::NodeValue::Math(_) => true,
-            comrak::nodes::NodeValue::CodeBlock(b) => {
-                b.info.split_whitespace().next() == Some("math")
+    unmark_multiline(&arena, root);
+    let span = |node: &comrak::nodes::AstNode| {
+        let p = node.data().sourcepos;
+        (
+            (p.start.line - 1, p.start.column - 1),
+            (p.end.line - 1, p.end.column),
+        )
+    };
+    let mut spans = EditorSpans::default();
+    for node in root.descendants() {
+        match &node.data().value {
+            NodeValue::Math(_) => spans.math.push(span(node)),
+            NodeValue::CodeBlock(b) if b.info.split_whitespace().next() == Some("math") => {
+                spans.math.push(span(node))
             }
-            _ => false,
-        })
-        .map(|node| {
-            let p = node.data().sourcepos;
-            (
-                (p.start.line - 1, p.start.column - 1),
-                (p.end.line - 1, p.end.column),
-            )
-        })
-        .collect()
+            NodeValue::Highlight => spans.highlights.push(span(node)),
+            _ => {}
+        }
+    }
+    spans
 }
 
 /// Highlighted HTML of code blocks by language token, then code.
@@ -1310,6 +1366,9 @@ pub(crate) const ALERT_COLOURS: [(&str, &str, &str); 5] = [
     ("caution", "Caution", "#d1242f"),
 ];
 
+/// `==highlight==` in Copy as Rich Text and RTF: the preview's light yellow.
+pub(crate) const MARK_COLOUR: &str = "#fff1a8";
+
 /// Copy as Rich Text: the note's (or selection's) HTML as a whole document for word
 /// processors and mail (LibreOffice, Thunderbird, web mail), which paste it formatted. The body
 /// is Copy as HTML's (links, MathML, diagrams as code; `[TOC]` kept as written) plus a small style sheet (table borders,
@@ -1336,11 +1395,16 @@ pub fn rich_text_page(
                 &format!("<p class=\"alert-title\" style=\"color: {colour};\">{title}</p>"),
             );
     }
+    // Highlights inline too, solid yellow: pasted documents are usually light.
+    let body = body.replace(
+        "<mark>",
+        &format!("<mark style=\"background-color: {MARK_COLOUR};\">"),
+    );
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><style>\
 table {{ border-collapse: collapse; }} th, td {{ border: 1px solid #999; padding: 2px 6px; }} \
 pre, code {{ font-family: monospace; }} .alert {{ border-left: 4px solid #999; padding-left: 8px; }} \
-.alert-title {{ font-weight: bold; }}</style></head><body>{body}</body></html>"
+.alert-title {{ font-weight: bold; }} mark {{ background-color: {MARK_COLOUR}; }}</style></head><body>{body}</body></html>"
     )
 }
 
@@ -1453,7 +1517,7 @@ fn relative(from: &Path, to: &Path) -> PathBuf {
 }
 
 /// Biến CSS mỗi theme phải đặt (`theme_vars`), `CSS` dùng chúng.
-const VARS: [&str; 14] = [
+const VARS: [&str; 15] = [
     "bg",
     "fg",
     "link",
@@ -1468,10 +1532,11 @@ const VARS: [&str; 14] = [
     "hl-function",
     "hl-type",
     "hl-tag",
+    "mark-bg",
 ];
 
 /// Giá trị của `VARS` (cùng thứ tự) cho một theme ở chế độ sáng hoặc tối.
-fn theme_values(theme: Theme, dark: bool) -> [&'static str; 14] {
+fn theme_values(theme: Theme, dark: bool) -> [&'static str; 15] {
     match (theme, dark) {
         (Theme::Default, false) => [
             "#fff",
@@ -1488,6 +1553,7 @@ fn theme_values(theme: Theme, dark: bool) -> [&'static str; 14] {
             "#8250df",
             "#953800",
             "#116329",
+            "#fff1a8",
         ],
         (Theme::Default, true) => [
             "#1e1e1e",
@@ -1504,6 +1570,7 @@ fn theme_values(theme: Theme, dark: bool) -> [&'static str; 14] {
             "#d2a8ff",
             "#ffa657",
             "#7ee787",
+            "rgba(210,153,34,.4)",
         ],
         (Theme::Paper, false) => [
             "#f8f4e8",
@@ -1520,6 +1587,7 @@ fn theme_values(theme: Theme, dark: bool) -> [&'static str; 14] {
             "#2f5f8a",
             "#8a5a00",
             "#3f6f4f",
+            "#f5e3a3",
         ],
         (Theme::Paper, true) => [
             "#2a2620",
@@ -1536,6 +1604,7 @@ fn theme_values(theme: Theme, dark: bool) -> [&'static str; 14] {
             "#8ec0e0",
             "#e5b567",
             "#9cc29a",
+            "#574719",
         ],
         (Theme::Graphite, false) => [
             "#f2f2f2",
@@ -1552,6 +1621,7 @@ fn theme_values(theme: Theme, dark: bool) -> [&'static str; 14] {
             "#3d5a78",
             "#6a5a4a",
             "#4a6a5a",
+            "#f5e7a8",
         ],
         (Theme::Graphite, true) => [
             "#232323",
@@ -1568,6 +1638,7 @@ fn theme_values(theme: Theme, dark: bool) -> [&'static str; 14] {
             "#a0b8d0",
             "#d0c0a8",
             "#a0c8b8",
+            "#51461f",
         ],
         (Theme::Solarized, false) => [
             "#fdf6e3",
@@ -1584,6 +1655,7 @@ fn theme_values(theme: Theme, dark: bool) -> [&'static str; 14] {
             "#268bd2",
             "#b58900",
             "#cb4b16",
+            "#ffec9c",
         ],
         (Theme::Solarized, true) => [
             "#002b36",
@@ -1600,8 +1672,21 @@ fn theme_values(theme: Theme, dark: bool) -> [&'static str; 14] {
             "#268bd2",
             "#b58900",
             "#cb4b16",
+            "#3a360a",
         ],
     }
+}
+
+/// The editor's `==highlight==` colours in a theme: the background (the preview's `--mark-bg`,
+/// solid where that one is see-through) and the dimmed `==` (`--hl-comment`).
+pub fn editor_mark_colours(theme: Theme, dark: bool) -> (&'static str, &'static str) {
+    let values = theme_values(theme, dark);
+    let fill = match (theme, dark) {
+        // The page's 40 % amber over the Default dark background.
+        (Theme::Default, true) => "#664f20",
+        _ => values[14],
+    };
+    (fill, values[7])
 }
 
 /// `:root { --bg: …; … }` của một theme ở chế độ sáng hoặc tối.
@@ -1635,6 +1720,7 @@ ul:has(> li > input[type=checkbox]), ul:has(> li > a.task) { list-style: none; p
 a.task { cursor: pointer; }
 a.task input { pointer-events: none; appearance: none; width: 1em; height: 1em; margin: 0 .2em 0 0; vertical-align: -.15em; border: 1.5px solid var(--link); border-radius: 3px; background: var(--bg); }
 a.task input:checked { background: var(--link) url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.5l3 3 6-7' fill='none' stroke='white' stroke-width='2.2'/%3E%3C/svg%3E\") center / 85% no-repeat; }
+mark { padding: 0 .1em; border-radius: 2px; color: inherit; background: var(--mark-bg); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 .tag { color: var(--tag); background: var(--tag-bg); border-radius: 1em; padding: 0 .45em; white-space: nowrap; }
 .hl-comment { color: var(--hl-comment); font-style: italic; } .hl-string { color: var(--hl-string); }
 .hl-constant { color: var(--hl-constant); } .hl-keyword, .hl-storage { color: var(--hl-keyword); }
@@ -2121,7 +2207,7 @@ mod tests {
     #[test]
     fn math_spans() {
         let md = "---\nt: 1\n---\nGiá $5 và $10.\n\nCode `$x$` và $a^2$.\n\n> $$\n> \\frac{a}{b}\n> $$\n\n```math\nx\n```\n\n```\n$y$\n```\n";
-        let spans = super::math_spans(md);
+        let spans = super::editor_spans(md).math;
         let lines: Vec<&str> = md.lines().collect();
         let text = |((l1, c1), (l2, c2)): ((usize, usize), (usize, usize))| {
             if l1 == l2 {
@@ -2132,7 +2218,7 @@ mod tests {
         };
         let got: Vec<String> = spans.into_iter().map(text).collect();
         assert_eq!(got, ["$a^2$", "$$…> $$", "```math…```"]);
-        assert!(super::math_spans("Giá $5 và $10").is_empty());
+        assert!(super::editor_spans("Giá $5 và $10").math.is_empty());
     }
 
     #[test]
@@ -2456,6 +2542,95 @@ mod tests {
             p.contains("<p class=\"alert-title\" style=\"color: #1a7f37;\">Tip</p>"),
             "{p}"
         );
+    }
+
+    #[test]
+    fn highlight_marks() {
+        let html = |md: &str| to_html(md, &|_| None);
+        assert_eq!(html("==text=="), "<p><mark>text</mark></p>\n");
+        assert_eq!(
+            html("A ==marked **bold**== word"),
+            "<p>A <mark>marked <strong>bold</strong></mark> word</p>\n"
+        );
+        assert_eq!(html("foo==bar==baz"), "<p>foo<mark>bar</mark>baz</p>\n");
+        // Next to a space, not exactly two `=`, in code: as written.
+        for md in [
+            "a == b",
+            "== text==",
+            "==text ==",
+            "===x===",
+            "=x=",
+            "a ==== b",
+        ] {
+            assert_eq!(html(md), format!("<p>{md}</p>\n"), "{md}");
+        }
+        assert_eq!(html("`==x==`"), "<p><code>==x==</code></p>\n");
+        assert!(html("```\n==x==\n```\n").contains("<code>==x==\n</code>"));
+        assert!(html("    ==x==\n").contains("<code>==x==\n</code>"));
+        // No line break inside; the `==` of another line still pair.
+        assert_eq!(html("==two\nlines=="), "<p>==two\nlines==</p>\n");
+        assert_eq!(html("==a\n==b=="), "<p>==a\n<mark>b</mark></p>\n");
+        assert_eq!(html("==a  \nb=="), "<p>==a<br />\nb==</p>\n");
+        // Links keep their URL; a bare URL's `==` are part of it.
+        assert_eq!(
+            html("[==a==](https://x.y/?q==b==)"),
+            "<p><a href=\"https://x.y/?q==b==\"><mark>a</mark></a></p>\n"
+        );
+        let bare = html("see https://x.y/?a==b==c ok");
+        assert!(!bare.contains("<mark>"), "{bare}");
+        assert!(bare.contains("href=\"https://x.y/?a==b==c\""), "{bare}");
+        // Front matter is not Markdown.
+        let page = html("---\ntitle: ==x==\n---\n\n# ==Key== idea\n");
+        assert!(page.contains("title: ==x=="), "{page}");
+        assert!(
+            page.contains("<h1 id=\"key-idea\"><mark>Key</mark> idea</h1>"),
+            "{page}"
+        );
+        // Styled in every theme, light and dark, and printed.
+        assert!(CSS.contains("mark { padding: 0 .1em; border-radius: 2px; color: inherit; background: var(--mark-bg);"));
+        assert!(CSS.contains("print-color-adjust: exact;"));
+        for theme in Theme::ALL {
+            assert!(theme_vars(theme, false).contains("--mark-bg: #"));
+            assert!(theme_vars(theme, true).contains("--mark-bg: "));
+            for dark in [false, true] {
+                let (fill, marker) = editor_mark_colours(theme, dark);
+                assert!(fill.starts_with('#') && marker.starts_with('#'));
+            }
+        }
+        // Copy as HTML: a bare `<mark>`.
+        assert_eq!(
+            html_fragment("==x==", Path::new("/r"), &|_| None),
+            "<meta charset=\"utf-8\"><p><mark>x</mark></p>\n"
+        );
+    }
+
+    #[test]
+    fn editor_highlight_spans() {
+        let md = "A ==b== c, Ý ==đ==\n\n- ==x== and `==y==`\n\n==two\nlines==\n\n> ==q *e*==\n";
+        let lines: Vec<&str> = md.lines().collect();
+        let got: Vec<&str> = super::editor_spans(md)
+            .highlights
+            .into_iter()
+            .map(|((l1, c1), (l2, c2))| {
+                assert_eq!(l1, l2);
+                &lines[l1][c1..c2]
+            })
+            .collect();
+        assert_eq!(got, ["==b==", "==đ==", "==x==", "==q *e*=="]);
+        assert_eq!(
+            super::editor_spans("a == b\n\nTitle\n===\n"),
+            Default::default()
+        );
+    }
+
+    #[test]
+    fn rich_text_highlights() {
+        let p = rich_text_page("==x==", Path::new("/r"), &|_| None, &|_| None);
+        assert!(
+            p.contains("<mark style=\"background-color: #fff1a8;\">x</mark>"),
+            "{p}"
+        );
+        assert!(p.contains("mark { background-color: #fff1a8; }"), "{p}");
     }
 
     #[test]

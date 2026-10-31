@@ -1,7 +1,7 @@
 //! Export as RTF: the note as Rich Text Format, built from the comrak AST (as `plain.rs`).
-//! Headings bold and larger; bold, italic, strikethrough; inline code and code blocks in a
-//! monospace font; links as `HYPERLINK` fields; bullet, numbered and to-do lists indented per
-//! level; quotes indented; tables as `\trowd` rows with borders; images as `alt (path)` text;
+//! Headings bold and larger; bold, italic, strikethrough; `==highlights==` on yellow; inline
+//! code and code blocks in a monospace font; links as `HYPERLINK` fields; bullet, numbered and
+//! to-do lists indented per level; quotes indented; tables as `\trowd` rows with borders; images as `alt (path)` text;
 //! formulas as their TeX; front matter and raw HTML left out. Non-ASCII text is written as
 //! `\uN?` (UTF-16 units), so the file is plain ASCII. Pure; `preview::export_rtf` runs it.
 
@@ -11,11 +11,14 @@ use comrak::nodes::{AlertType, AstNode, ListType, NodeValue};
 const STEP: i32 = 360;
 /// Width of a table, in twips.
 const TABLE_WIDTH: i32 = 9000;
+/// Colour table index of `==highlight==`'s background (`render::MARK_COLOUR`).
+const HIGHLIGHT: usize = 8;
 
 /// `md` as an RTF document.
 pub fn rtf(md: &str) -> String {
     let arena = comrak::Arena::new();
     let root = comrak::parse_document(&arena, md, &crate::render::options());
+    crate::render::unmark_multiline(&arena, root);
     let quotes: Vec<_> = root
         .descendants()
         .filter(|n| matches!(n.data().value, NodeValue::BlockQuote))
@@ -23,9 +26,11 @@ pub fn rtf(md: &str) -> String {
     for quote in quotes {
         crate::render::make_alert(quote);
     }
-    // Colours: 1 link, 2 code shading, then one per alert kind (`ALERT_COLOURS` order).
+    // Colours: 1 link, 2 code shading, 3–7 one per alert kind (`ALERT_COLOURS` order), then
+    // `HIGHLIGHT`.
     let mut colours = String::from("\\red0\\green82\\blue204;\\red240\\green240\\blue240;");
-    for (_, _, hex) in crate::render::ALERT_COLOURS {
+    let alerts = crate::render::ALERT_COLOURS.map(|(_, _, hex)| hex);
+    for hex in alerts.into_iter().chain([crate::render::MARK_COLOUR]) {
         let rgb = u32::from_str_radix(&hex[1..], 16).unwrap_or(0);
         colours.push_str(&format!(
             "\\red{}\\green{}\\blue{};",
@@ -256,6 +261,11 @@ fn span<'a>(node: &'a AstNode<'a>) -> String {
         NodeValue::Strong => group("\\b", inline(node)),
         NodeValue::Emph => group("\\i", inline(node)),
         NodeValue::Strikethrough => group("\\strike", inline(node)),
+        // Word and LibreOffice read `\highlight` / `\chcbpat`, Apple's apps `\cb`.
+        NodeValue::Highlight => group(
+            &format!("\\highlight{HIGHLIGHT}\\chcbpat{HIGHLIGHT}\\cb{HIGHLIGHT}"),
+            inline(node),
+        ),
         NodeValue::Underline => group("\\ul", inline(node)),
         NodeValue::Superscript => group("\\super", inline(node)),
         NodeValue::Subscript => group("\\sub", inline(node)),
@@ -381,6 +391,17 @@ mod tests {
         assert!(out.contains("\\li720\\sa120 Mind the gap"));
         assert!(!out.contains("[!WARNING]"));
         assert!(out.contains("\\li720\\sa120 plain quote"));
+    }
+
+    #[test]
+    fn highlights_on_yellow() {
+        let out = rtf("A ==marked **bold**== word, a == b, ==two\nlines==.");
+        // Colour 8 = `render::MARK_COLOUR`, #fff1a8.
+        let table = out.split("\\colortbl;").nth(1).unwrap();
+        assert_eq!(table.split(';').nth(7), Some("\\red255\\green241\\blue168"));
+        assert!(out.contains("{\\highlight8\\chcbpat8\\cb8 marked {\\b bold}}"));
+        assert!(out.contains("a == b, ==two\\line lines==."));
+        assert_eq!(out.matches("\\highlight").count(), 1);
     }
 
     #[test]

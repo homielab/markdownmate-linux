@@ -14,8 +14,8 @@ use sourceview5::prelude::*;
 use webkit6::prelude::*;
 
 use crate::{
-    MATH_STYLE, OUTLINE_DELAY, RESCAN_DELAY, SAVE_DELAY, STATUS_DELAY, TABLE_STYLE, TAG_STYLE,
-    UNTITLED, file_name, state_file,
+    MARK_MARKER_STYLE, MARK_STYLE, MATH_STYLE, OUTLINE_DELAY, RESCAN_DELAY, SAVE_DELAY,
+    STATUS_DELAY, TABLE_STYLE, TAG_STYLE, UNTITLED, file_name, state_file,
 };
 use crate::{
     backlinks, complete, find, images, links, lists, mentions, naming, notes, outline, quick,
@@ -209,6 +209,14 @@ impl Editor {
         });
         self.buffer.set_style_scheme(scheme.as_ref());
         self.focus.set_colours(scheme.as_ref(), dark);
+        let (fill, marker) = render::editor_mark_colours(self.prefs.borrow().theme, dark);
+        let tags = self.buffer.tag_table();
+        if let Some(tag) = tags.lookup(MARK_STYLE) {
+            tag.set_background(Some(fill));
+        }
+        if let Some(tag) = tags.lookup(MARK_MARKER_STYLE) {
+            tag.set_foreground(Some(marker));
+        }
     }
 
     /// Applies `prefs` to the app style (light/dark) and the editor view (font, line numbers,
@@ -341,7 +349,7 @@ impl Editor {
         self.outline_timer.replace(Some(id));
     }
 
-    /// Re-colours the `#tags` and formulas of the editor and sets table lines in monospace (so
+    /// Re-colours the `#tags`, formulas and `==highlights==` of the editor and sets table lines in monospace (so
     /// columns aligned by `table` line up whatever the editor font) after OUTLINE_DELAY of quiet.
     pub(crate) fn schedule_tags(self: &Rc<Self>) {
         if let Some(id) = self.tag_timer.take() {
@@ -371,14 +379,26 @@ impl Editor {
                     buffer.apply_tag_by_name(TABLE_STYLE, &a, &b);
                 }
             }
-            buffer.remove_tag_by_name(MATH_STYLE, &start, &end);
-            for ((l1, c1), (l2, c2)) in crate::render::math_spans(&text) {
+            for name in [MATH_STYLE, MARK_STYLE, MARK_MARKER_STYLE] {
+                buffer.remove_tag_by_name(name, &start, &end);
+            }
+            let spans = render::editor_spans(&text);
+            let apply = |name: &str, ((l1, c1), (l2, c2)): render::Span| {
                 if let (Some(a), Some(b)) = (
                     buffer.iter_at_line_index(l1 as i32, c1 as i32),
                     buffer.iter_at_line_index(l2 as i32, c2 as i32),
                 ) {
-                    buffer.apply_tag_by_name(MATH_STYLE, &a, &b);
+                    buffer.apply_tag_by_name(name, &a, &b);
                 }
+            };
+            for span in spans.math {
+                apply(MATH_STYLE, span);
+            }
+            // One line each: the text between the `==` gets the background, the `==` dimmed.
+            for ((line, a), (_, b)) in spans.highlights {
+                apply(MARK_STYLE, ((line, a + 2), (line, b - 2)));
+                apply(MARK_MARKER_STYLE, ((line, a), (line, a + 2)));
+                apply(MARK_MARKER_STYLE, ((line, b - 2), (line, b)));
             }
         });
         self.tag_timer.replace(Some(id));

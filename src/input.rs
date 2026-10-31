@@ -382,6 +382,10 @@ pub(crate) fn smart_lists(view: &sourceview5::View, completer: &Rc<Completer>) {
                 Key::k => format_selection(&buffer, format::link),
                 _ => false,
             },
+            // Highlight: Ctrl+H is Find and Replace, so Shift+Ctrl+H (Typora's key).
+            _ if mods == M::SHIFT_MASK | M::CONTROL_MASK && key.to_lower() == Key::h => {
+                format_selection(&buffer, |t, s| format::toggle(t, s, "=="))
+            }
             _ if (mods.is_empty() || mods == M::SHIFT_MASK)
                 && !preedit.get()
                 && key.to_unicode().is_some_and(|c| wrap_selection(&buffer, c)) =>

@@ -71,6 +71,14 @@ const ITEMS: &[Item] = &[
         run: Some(Run::Inline(|t, s| format::toggle(t, s, "~~"))),
     },
     Item {
+        action: "format-highlight",
+        label: "Highlight",
+        // No highlighter icon in Adwaita: the Markdown, like Inline Code's `</>`.
+        face: Face::Text("=="),
+        accel: "<Shift><Control>h",
+        run: Some(Run::Inline(|t, s| format::toggle(t, s, "=="))),
+    },
+    Item {
         action: "format-inline-code",
         label: "Inline Code",
         face: Face::Text("</>"),
@@ -129,7 +137,7 @@ const ITEMS: &[Item] = &[
 ];
 
 /// Where each button group starts in `ITEMS`: heading, inline styles, link, blocks, table.
-const GROUPS: [usize; 5] = [0, 1, 5, 6, 11];
+const GROUPS: [usize; 5] = [0, 1, 6, 7, 12];
 
 /// Registers the `win.format-*` actions. Like the menu's line commands they do nothing
 /// without an open note, switch Preview to Edit, put the focus back in the editor and ring

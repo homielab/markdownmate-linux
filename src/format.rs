@@ -66,7 +66,7 @@ pub fn emphasis(text: &str, sel: (usize, usize), style: Style) -> Edit {
     }
 }
 
-/// Strikethrough (`~~`) and Inline Code (`` ` ``) on the format bar: wraps the selection, or
+/// Strikethrough (`~~`), Highlight (`==`) and Inline Code (`` ` ``): wraps the selection, or
 /// the word at the cursor, in `mark`; removes it when the text is already wrapped (the marks
 /// selected with it or just outside it). No selection and no word: `mark mark` with the
 /// cursor between them.
@@ -299,6 +299,21 @@ mod tests {
         assert_eq!(toggle("a  b", (2, 2), "`").select, (3, 3));
         assert_eq!(code("a `` b", (3, 3)).0, "a  b");
         assert_eq!(strike("đ", (1, 0)), ("~~đ~~".into(), "đ".into()));
+        // Highlight: `==` like `~~`.
+        let mark = |t: &str, s| apply(t, s, |t, s| toggle(t, s, "=="));
+        assert_eq!(
+            mark("a chữ b", (3, 3)),
+            ("a ==chữ== b".into(), "chữ".into())
+        );
+        assert_eq!(
+            mark("a ==chữ== b", (4, 7)),
+            ("a chữ b".into(), "chữ".into())
+        );
+        assert_eq!(
+            mark("a ==chữ== b", (2, 9)),
+            ("a chữ b".into(), "chữ".into())
+        );
+        assert_eq!(mark("a  b", (2, 2)), ("a ==== b".into(), String::new()));
     }
 
     #[test]

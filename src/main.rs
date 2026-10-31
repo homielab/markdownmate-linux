@@ -71,8 +71,13 @@ const PREVIEW_DELAY: Duration = Duration::from_millis(300);
 const TAG_STYLE: &str = "mm-tag";
 /// TextTag of GFM table lines: monospace so aligned columns line up (#104).
 const TABLE_STYLE: &str = "mm-table";
-/// TextTag colouring the editor's formulas (`render::math_spans`).
+/// TextTag colouring the editor's formulas (`render::editor_spans`).
 const MATH_STYLE: &str = "mm-math";
+/// TextTag behind the text of the editor's `==highlights==` (`render::editor_spans`); its
+/// colour follows the theme (`Editor::apply_scheme`).
+const MARK_STYLE: &str = "mm-mark";
+/// TextTag dimming the `==` around a highlight.
+const MARK_MARKER_STYLE: &str = "mm-mark-marker";
 const OUTLINE_DELAY: Duration = Duration::from_millis(300);
 /// Script world for the app's scroll scripts, apart from the page.
 const SCRIPT_WORLD: &str = "markdownmate";
@@ -82,7 +87,7 @@ const SYNC_DELAY: Duration = Duration::from_millis(50);
 /// interpolating within / between block elements' `data-sourcepos` (render::page).
 /// Inline elements are skipped: they would cut a paragraph into uneven pieces.
 const SYNC_JS: &str = "(function(l){var b=null,bp,n=null,np;\
-for(var e of document.querySelectorAll('[data-sourcepos]:not(a,em,strong,code,del,span,img,sup)')){\
+for(var e of document.querySelectorAll('[data-sourcepos]:not(a,em,strong,code,del,mark,span,img,sup)')){\
 var p=e.dataset.sourcepos.split(/[:-]/).map(Number);\
 if(p[0]<=l){if(!b||p[0]>=bp[0]){b=e;bp=p}}else if(!n||p[0]<np[0]){n=e;np=p}}\
 var y=0;if(b){var q=b.getBoundingClientRect(),end=bp[2]+1;\
@@ -93,7 +98,7 @@ else y=q.bottom;y+=window.scrollY}window.scrollTo(0,y)})";
 /// source line at the top of the page; 0 at the page's top, -1 at its end.
 const PREVIEW_LINE_JS: &str = "(function(){var y=scrollY,b=null,bp,br,n=null,np,nr;\
 if(y<=0)return y+' 0';if(y+innerHeight>=document.documentElement.scrollHeight-1)return y+' -1';\
-for(var e of document.querySelectorAll('[data-sourcepos]:not(a,em,strong,code,del,span,img,sup)')){\
+for(var e of document.querySelectorAll('[data-sourcepos]:not(a,em,strong,code,del,mark,span,img,sup)')){\
 var r=e.getBoundingClientRect(),p=e.dataset.sourcepos.split(/[:-]/).map(Number);\
 if(r.top<=0){if(!b||p[0]>=bp[0]){b=e;bp=p;br=r}}else if(!n||p[0]<np[0]){n=e;np=p;nr=r}}\
 var l=1;if(b){var end=bp[2]+1;\

@@ -1098,7 +1098,7 @@ mod tests {
 
     #[test]
     fn random_edits_patch_to_the_whole_render() {
-        const SNIPPETS: [&str; 35] = [
+        const SNIPPETS: [&str; 37] = [
             "* ",
             "+ ",
             "  - ",
@@ -1134,6 +1134,8 @@ mod tests {
             "<!--\n",
             "\n[TOC]\n",
             "[toc]",
+            "==",
+            "==mark==",
         ];
         // `SEED=<n> cargo test random_edits` tries other edits.
         let seed = std::env::var("SEED").ok().and_then(|s| s.parse().ok());
