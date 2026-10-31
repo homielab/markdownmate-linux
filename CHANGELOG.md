@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Unlinked Mentions: each entry has a Link button that turns that mention into a wiki link to the current note, `[[Name]]`, or `[[Name|mention]]` when the wording differs from the name. Ctrl+Z undoes it in the open note; a note changed since the list was made is left alone, with a message. Same as the macOS app.
 - Table of contents: a line with only `[TOC]` shows the note's headings as nested links in the preview, print and HTML / PDF exports, and updates as you edit a heading. Same as the macOS app.
 - Find in Folder can replace: type the new text and click Replace All to replace every listed match in all result notes, after confirming how many matches and notes change. Ctrl+Z undoes it in the open note; notes changed on disk since the search are left alone and named.
 - Rename Tag… in the right-click menu of the sidebar's Tags list: renames `#old` to `#new` in every note of the folder (nested tags such as `#old/project` too), after showing how many notes change. Ctrl+Z undoes it in the open note.

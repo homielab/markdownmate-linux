@@ -142,7 +142,7 @@ pub fn compare_names(a: &str, b: &str) -> Ordering {
 }
 
 /// `name` lower-cased without accents (decomposed, combining marks dropped).
-fn folded(name: &str) -> impl Iterator<Item = char> + '_ {
+pub(crate) fn folded(name: &str) -> impl Iterator<Item = char> + '_ {
     name.nfd()
         .filter(|c| !is_combining_mark(*c))
         .flat_map(char::to_lowercase)

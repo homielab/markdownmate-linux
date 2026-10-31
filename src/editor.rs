@@ -18,8 +18,8 @@ use crate::{
     UNTITLED, file_name, state_file,
 };
 use crate::{
-    backlinks, complete, images, links, lists, mentions, naming, notes, outline, quick, relink,
-    render, retag, save, sidebar, state, stats, tags, timing, title, url,
+    backlinks, complete, find, images, links, lists, mentions, naming, notes, outline, quick,
+    relink, render, retag, save, sidebar, state, stats, tags, timing, title, url,
 };
 
 /// The window's widgets and the open note. Shared (Rc) by sidebar buttons, the auto-save
@@ -553,7 +553,7 @@ impl Editor {
 
     fn fill_backlinks(&self, found: Vec<backlinks::Backlink>) {
         let rows = found.into_iter().map(|b| (b.path, b.line, b.snippet));
-        let targets = fill_note_rows(&self.backlinks, rows.collect(), "No backlinks");
+        let targets = fill_note_rows(&self.backlinks, rows.collect(), "No backlinks", None);
         self.backlink_targets.replace(targets);
     }
 
@@ -565,7 +565,7 @@ impl Editor {
         let generation = self.mentions_gen.fetch_add(1, Ordering::SeqCst) + 1;
         let (Some(target), Some(_)) = (self.path.borrow().clone(), self.root.borrow().as_ref())
         else {
-            return self.fill_mentions(Vec::new());
+            return self.fill_mentions(PathBuf::new(), Vec::new());
         };
         if !self.outline_panel.is_visible() || !self.mentions_expander.is_expanded() {
             return;
@@ -573,9 +573,10 @@ impl Editor {
         let notes = self.note_list.borrow().to_vec(); // the Rc cannot cross threads
         let current = self.mentions_gen.clone();
         let weak = Rc::downgrade(self);
+        let searched = target.clone();
         glib::spawn_future_local(async move {
             let Ok(Some(found)) = gio::spawn_blocking(move || {
-                mentions::find(&notes, &target, &|| {
+                mentions::find(&notes, &searched, &|| {
                     current.load(Ordering::SeqCst) != generation
                 })
             })
@@ -586,15 +587,95 @@ impl Editor {
             if let Some(editor) = weak.upgrade()
                 && editor.mentions_gen.load(Ordering::SeqCst) == generation
             {
-                editor.fill_mentions(found);
+                editor.fill_mentions(target, found);
             }
         });
     }
 
-    fn fill_mentions(&self, found: Vec<mentions::Mention>) {
-        let rows = found.into_iter().map(|m| (m.path, m.line, m.snippet));
-        let targets = fill_note_rows(&self.mentions, rows.collect(), "No unlinked mentions");
+    /// Unlinked Mentions rows of `target`, each with a Link button (`link_mention`).
+    fn fill_mentions(self: &Rc<Self>, target: PathBuf, found: Vec<mentions::Mention>) {
+        let rows = found
+            .iter()
+            .map(|m| (m.path.clone(), m.spot.line, m.spot.snippet.clone()))
+            .collect();
+        let weak = Rc::downgrade(self);
+        let button = move |i: usize| {
+            let button = gtk::Button::builder()
+                .label("Link")
+                .tooltip_text("Make this mention a wiki link to this note")
+                .valign(gtk::Align::Center)
+                .build();
+            button.add_css_class("flat");
+            let (weak, target, mention) = (weak.clone(), target.clone(), found[i].clone());
+            button.connect_clicked(move |button| {
+                if let Some(editor) = weak.upgrade() {
+                    // One click per row: the list is searched again afterwards.
+                    button.set_sensitive(false);
+                    editor.link_mention(&target, mention.clone());
+                }
+            });
+            button
+        };
+        let targets = fill_note_rows(&self.mentions, rows, "No unlinked mentions", Some(&button));
         self.mention_targets.replace(targets);
+    }
+
+    /// Link on an Unlinked Mentions row: the mention becomes a wiki link to `target`
+    /// (`mentions::link_text`), without asking. The open note is edited in the editor (one undo
+    /// step, then saved); a closed one is written on a background thread, only if its text is
+    /// still the one searched. When the mention isn't where it was found, nothing is written
+    /// and a toast says so. Then Backlinks and Unlinked Mentions are listed again.
+    pub(crate) fn link_mention(self: &Rc<Self>, target: &Path, mention: mentions::Mention) {
+        let root = self.root.borrow().clone().unwrap_or_default();
+        let link = mentions::link_text(&mention.spot.text, target, &self.note_list.borrow(), &root);
+        let spot = mention.spot;
+        if self.path.borrow().as_ref() == Some(&mention.path) {
+            // The editor's text now, which may differ from the file searched.
+            let text = self.text();
+            let result = match mentions::link_edit(&text, spot.line, spot.column, &spot.text, &link)
+            {
+                Some(edit) => {
+                    self.edit_buffer(&text, &[edit]);
+                    // A failed save toasts itself and keeps the edit in the editor.
+                    self.save();
+                    Ok(())
+                }
+                None => Err(find::Skipped::Changed),
+            };
+            return self.mention_linked(&mention.path, result);
+        }
+        let weak = Rc::downgrade(self);
+        let path = mention.path;
+        glib::spawn_future_local(async move {
+            let job = {
+                let path = path.clone();
+                move || mentions::link_in_file(&path, mention.version, &spot, &link)
+            };
+            let result = gio::spawn_blocking(job)
+                .await
+                .unwrap_or(Err(find::Skipped::NotWritten));
+            if let Some(editor) = weak.upgrade() {
+                if result.is_ok() {
+                    // Written through a temp file the folder watcher ignores.
+                    editor.note_changed(path.clone());
+                }
+                editor.mention_linked(&path, result);
+            }
+        });
+    }
+
+    fn mention_linked(self: &Rc<Self>, path: &Path, result: Result<(), find::Skipped>) {
+        match result {
+            Ok(()) => self.refresh_backlinks(),
+            Err(find::Skipped::Changed) => self.toast(&format!(
+                "“{}” changed since this mention was found, so it wasn’t linked. Try again once the list updates.",
+                path.file_stem().unwrap_or_default().to_string_lossy()
+            )),
+            Err(find::Skipped::NotWritten) => {
+                self.toast(&format!("Could not save {}", file_name(path)))
+            }
+        }
+        self.refresh_mentions();
     }
 
     /// Highlights the outline row of the section holding the cursor, without activating it
@@ -2210,12 +2291,13 @@ fn fragment(uri: &str) -> Option<String> {
 }
 
 /// Fills a Backlinks-style list: per (note, 1-based line, snippet) a row with the note name
-/// and the snippet; `empty` as a dimmed, inert row when there are none. Returns the (note,
-/// line) of each row, in order.
+/// and the snippet, and `button(i)` (when given) at the right of row `i`; `empty` as a dimmed,
+/// inert row when there are none. Returns the (note, line) of each row, in order.
 fn fill_note_rows(
     list: &gtk::ListBox,
     rows: Vec<(PathBuf, usize, String)>,
     empty: &str,
+    button: Option<&dyn Fn(usize) -> gtk::Button>,
 ) -> Vec<(PathBuf, usize)> {
     while let Some(row) = list.first_child() {
         list.remove(&row);
@@ -2234,13 +2316,15 @@ fn fill_note_rows(
             row.set_selectable(false);
         }
     }
-    for (path, line, snippet) in &rows {
+    for (i, (path, line, snippet)) in rows.iter().enumerate() {
         let name = file_name(path);
-        let row = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         row.set_margin_start(6);
         row.set_margin_end(6);
         row.set_margin_top(4);
         row.set_margin_bottom(4);
+        let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        labels.set_hexpand(true);
         for (text, class) in [(name.as_str(), "heading"), (snippet.as_str(), "caption")] {
             let label = gtk::Label::builder()
                 .label(text)
@@ -2248,9 +2332,13 @@ fn fill_note_rows(
                 .ellipsize(gtk::pango::EllipsizeMode::End)
                 .build();
             label.add_css_class(class);
-            row.append(&label);
+            labels.append(&label);
         }
-        row.set_tooltip_text(Some(&format!("{name}:{line}\n{snippet}")));
+        labels.set_tooltip_text(Some(&format!("{name}:{line}\n{snippet}")));
+        row.append(&labels);
+        if let Some(button) = button {
+            row.append(&button(i));
+        }
         list.append(&row);
     }
     rows.into_iter().map(|(p, l, _)| (p, l)).collect()
