@@ -9,6 +9,7 @@ mod focus;
 mod format;
 mod formatbar;
 mod goto;
+mod history;
 mod images;
 mod incremental;
 mod input;

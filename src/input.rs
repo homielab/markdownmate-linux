@@ -295,8 +295,9 @@ impl Completer {
 /// (`format.rs`); Alt+Ctrl+Enter / Backspace (with or without Shift) run the table commands;
 /// Ctrl+Enter, Alt+Ctrl+Up / Down (or Alt+Up / Down, taking over GtkSourceView's
 /// own move-lines keys so a move is one undo step) and Shift+Ctrl+D run the line commands
-/// (`lines.rs`); the `[[` suggestion keys go first. Capture phase so it runs before the
-/// view inserts the newline / tab itself. On the view, so only while the editor has focus.
+/// (`lines.rs`); Alt+Left / Right are Back / Forward, not GtkSourceView's move-words; the
+/// `[[` suggestion keys go first. Capture phase so it runs before the view inserts the newline
+/// / tab itself. On the view, so only while the editor has focus.
 pub(crate) fn smart_lists(view: &sourceview5::View, completer: &Rc<Completer>) {
     // Enter while an input method is composing must commit the text, not touch the list.
     let preedit = Rc::new(Cell::new(false));
@@ -343,6 +344,18 @@ pub(crate) fn smart_lists(view: &sourceview5::View, completer: &Rc<Completer>) {
                     && !preedit.get() =>
             {
                 line_key(keys, LineCommand::Move { up: key == Key::Up })
+            }
+            // Back / Forward (window actions): GtkSourceView would move the word instead.
+            Key::Left | Key::Right if mods == M::ALT_MASK && !preedit.get() => {
+                let name = if key == Key::Left {
+                    "win.go-back"
+                } else {
+                    "win.go-forward"
+                };
+                if let Some(view) = keys.widget() {
+                    let _ = view.activate_action(name, None);
+                }
+                true
             }
             _ if mods == M::SHIFT_MASK | M::CONTROL_MASK && key.to_lower() == Key::d => {
                 line_key(keys, LineCommand::Duplicate)

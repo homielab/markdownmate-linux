@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Back and Forward (Alt+Left / Alt+Right, or the main menu): return to the note you came from after following a link, a backlink or Open Quickly, then forward again, like a browser. Each window has its own history of up to 50 notes; notes deleted since are skipped. Same as the macOS app.
 - Highlights: write `==text==` and it shows with a soft yellow background in the preview (light and dark), print, HTML / PDF export and Copy as HTML; Copy as Rich Text and Export as RTF give it a yellow background, and the editor shows it on a light background with dimmed `==`. Format ▸ Highlight (Shift+Ctrl+H, or `==` on the format bar) adds or removes it around the selection or the word at the cursor. Same as the macOS app.
 - Alerts keep their colour when copied or exported: Copy as Rich Text pastes each kind (Note, Tip, Important, Warning, Caution) with its coloured border and title instead of grey, and Export as RTF shows a bold title in the kind's colour above the indented text.
 - New from Template in the main menu: lists the notes of a `Templates` folder in the open folder and creates an Untitled note from the one you pick, filling `{{date}}` with today's date and `{{title}}` with the note's name, then opens it with the cursor at the end. The folder is set in Preferences ▸ Notes ▸ Templates Folder. Same as the macOS app.

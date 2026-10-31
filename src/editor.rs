@@ -13,6 +13,7 @@ use gtk::glib::{self};
 use sourceview5::prelude::*;
 use webkit6::prelude::*;
 
+use crate::history::{self, Direction};
 use crate::{
     MARK_MARKER_STYLE, MARK_STYLE, MATH_STYLE, OUTLINE_DELAY, RESCAN_DELAY, SAVE_DELAY,
     STATUS_DELAY, TABLE_STYLE, TAG_STYLE, UNTITLED, file_name, state_file,
@@ -133,6 +134,10 @@ pub(crate) struct Editor {
     pub(crate) recent: RefCell<Vec<PathBuf>>,
     /// Vị trí con trỏ theo note, mới nhất trước (`state::push_position`).
     pub(crate) positions: RefCell<Vec<state::Position>>,
+    /// Back / Forward: the notes this window showed (each window has its own).
+    pub(crate) history: RefCell<history::History>,
+    /// The history entry a Back / Forward is opening (`open` moves there instead of adding one).
+    pub(crate) history_target: Cell<Option<usize>>,
     pub(crate) find_match_case: Cell<bool>,
     pub(crate) find_whole_word: Cell<bool>,
     /// Editor preferences (Ctrl+,) and the CSS that sets the chosen font.
@@ -789,6 +794,10 @@ impl Editor {
                     // Keep editing the copy so later saves don't make more copies.
                     self.update_note_list(None, Some(&copy));
                     self.show_path(&copy);
+                    // Back / Forward lead to the copy, the version this window edits.
+                    self.history
+                        .borrow_mut()
+                        .retarget(|p| (p == path).then(|| copy.clone()));
                     // The copy arrives by renaming our own temp file, which the folder
                     // watcher ignores.
                     self.schedule_rescan();
@@ -852,11 +861,67 @@ impl Editor {
         if self.note_box.parent().is_none() {
             self.split.set_content(Some(&self.note_box));
         }
+        self.record_shown(path);
         self.refresh_preview();
         self.remember();
         self.refresh_backlinks();
         self.refresh_mentions();
         timing::mark(|| format!("note opened {}", file_name(path)));
+    }
+
+    /// Adds the note `open` just showed to the history; a Back / Forward moves to its entry
+    /// instead.
+    fn record_shown(&self, path: &Path) {
+        let mut history = self.history.borrow_mut();
+        match self.history_target.take() {
+            Some(i) if history.entries().get(i).map(PathBuf::as_path) == Some(path) => {
+                history.move_to(i)
+            }
+            _ => history.visit(path),
+        }
+        drop(history);
+        self.update_history_actions();
+    }
+
+    /// Back (Alt+Left) / Forward (Alt+Right): opens the nearest note in the window's history
+    /// that still exists, with its folder if it is outside the open one. Nothing to go to: bell.
+    pub(crate) fn go(self: &Rc<Self>, direction: Direction) {
+        let target = self.history.borrow().target(direction, Path::is_file);
+        let Some(i) = target else {
+            self.window.error_bell();
+            return self.update_history_actions();
+        };
+        let path = self.history.borrow().entries()[i].clone();
+        self.history_target.set(Some(i));
+        self.open(&path);
+        self.history_target.set(None);
+        let outside = !self
+            .root
+            .borrow()
+            .as_deref()
+            .is_some_and(|root| path.starts_with(root));
+        if outside
+            && self.path.borrow().as_deref() == Some(path.as_path())
+            && let Some(dir) = path.parent()
+        {
+            self.load_folder(dir);
+        }
+        self.update_history_actions();
+    }
+
+    /// Greys out Back / Forward when there is no note to go to.
+    pub(crate) fn update_history_actions(&self) {
+        let history = self.history.borrow();
+        for (name, direction) in [
+            ("go-back", Direction::Back),
+            ("go-forward", Direction::Forward),
+        ] {
+            if let Some(a) = self.window.lookup_action(name)
+                && let Ok(a) = a.downcast::<gio::SimpleAction>()
+            {
+                a.set_enabled(history.target(direction, Path::is_file).is_some());
+            }
+        }
     }
 
     /// Đặt con trỏ ở vị trí đã nhớ của `path` (kẹp nếu file ngắn đi; chưa nhớ: đầu note) và
@@ -1332,6 +1397,8 @@ impl Editor {
             self.expanded.borrow_mut().retain(|d| d.starts_with(dir));
         }
         self.root.replace(Some(dir.to_path_buf()));
+        // Rescans follow changes on disk: a deleted note may leave nothing to go back to.
+        self.update_history_actions();
         for name in [
             "new-note",
             "new-folder",
@@ -1857,6 +1924,8 @@ impl Editor {
                 if let Some(new) = open.as_deref().and_then(|p| moved(p, from, &to)) {
                     self.show_path(&new);
                 }
+                self.history.borrow_mut().retarget(|p| moved(p, from, &to));
+                self.update_history_actions();
                 let mut expanded = self.expanded.borrow_mut();
                 *expanded = expanded
                     .drain()
@@ -2193,6 +2262,7 @@ impl Editor {
                     self.close_note();
                 }
                 self.update_note_list(Some(target), None);
+                self.update_history_actions();
                 self.schedule_rescan();
             }
             Err(e) => {

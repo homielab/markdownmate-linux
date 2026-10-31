@@ -55,6 +55,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             ("Open File…", "win.open-file"),
             ("Open Folder…", "win.open-folder"),
         ],
+        &[("Back", "win.go-back"), ("Forward", "win.go-forward")],
         &[
             ("Export as PDF…", "win.export-pdf"),
             ("Export as HTML…", "win.export-html"),
@@ -384,6 +385,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         bookmarks: RefCell::default(),
         recent: RefCell::default(),
         positions: RefCell::default(),
+        history: RefCell::default(),
+        history_target: Cell::new(None),
         find_match_case: Cell::new(false),
         find_whole_word: Cell::new(false),
         prefs: RefCell::default(),
@@ -981,6 +984,28 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         app.set_accels_for_action(&format!("win.open-bookmark::{n}"), &[&format!("<Alt>{n}")]);
     }
 
+    // Back / Forward through the notes this window showed (`history.rs`). Alt+Left / Right are
+    // the GNOME keys for it; GtkSourceView's own move-words binding on them is taken over in
+    // the editor (`input.rs`). Greyed out until there is a note to go to.
+    for (name, direction, accel) in [
+        ("go-back", crate::history::Direction::Back, "<Alt>Left"),
+        (
+            "go-forward",
+            crate::history::Direction::Forward,
+            "<Alt>Right",
+        ),
+    ] {
+        let action = gio::SimpleAction::new(name, None);
+        action.set_enabled(false);
+        action.connect_activate(clone!(
+            #[strong]
+            editor,
+            move |_, _| editor.go(direction)
+        ));
+        window.add_action(&action);
+        app.set_accels_for_action(&format!("win.{name}"), &[accel]);
+    }
+
     // Ctrl+, is the GNOME convention for Preferences; GTK/GtkSourceView don't bind it.
     let prefs_action = gio::SimpleAction::new("preferences", None);
     prefs_action.connect_activate(clone!(
@@ -1422,6 +1447,8 @@ fn shortcuts_window() -> gtk::ShortcutsWindow {
                         ("<Control>s", "Save"),
                         ("<Control>r", "Reload from disk"),
                         ("<Alt>1...<Alt>9", "Open bookmark 1–9"),
+                        ("<Alt>Left", "Back"),
+                        ("<Alt>Right", "Forward"),
                         ("<Control>l", "Go to line"),
                     ],
                 ),
