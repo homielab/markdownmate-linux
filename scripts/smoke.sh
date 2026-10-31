@@ -701,12 +701,17 @@ act_open_file() {
     sleep 3
 }
 
-# About and Keyboard Shortcuts (main menu) open without warnings.
+# About, What's New and Keyboard Shortcuts (main menu) open without warnings.
 act_about() {
     timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
     action about
     sleep 2
     scrot -o "$OUT/about-dialog.png"
+    xdotool key Escape
+    sleep 1
+    action whats-new
+    sleep 2
+    scrot -o "$OUT/about-whats-new.png"
     xdotool key Escape
     sleep 1
     action show-help-overlay

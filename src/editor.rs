@@ -192,6 +192,8 @@ impl Editor {
         self.keep_position();
         let mut expanded: Vec<PathBuf> = self.expanded.borrow().iter().cloned().collect();
         expanded.sort();
+        // Kept as the state file has them: other windows change them too.
+        let saved = state::load(&state_file());
         let state = state::State {
             folder: self.root.borrow().clone(),
             note: self.path.borrow().clone(),
@@ -205,7 +207,7 @@ impl Editor {
             find_whole_word: self.find_whole_word.get(),
             find_regex: self.find_regex.get(),
             favorites: {
-                let mut all = state::load(&state_file()).favorites;
+                let mut all = saved.favorites;
                 if let Some((root, list)) = favorites {
                     all.remove(root);
                     if !list.is_empty() {
@@ -214,6 +216,7 @@ impl Editor {
                 }
                 all
             },
+            last_seen_whats_new: saved.last_seen_whats_new,
         };
         if let Err(e) = state::store(&state_file(), &state) {
             eprintln!("markdownmate: cannot save session state: {e}");

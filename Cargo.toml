@@ -28,6 +28,9 @@ unicode-normalization = "0.1"
 # Regex search and `$1` replacement in Find in Folder; its helper crates (regex-automata,
 # regex-syntax, aho-corasick, memchr) are already in the tree via syntect's fancy-regex.
 regex = "1"
+# Parses the bundled What's New notes (`resources/whats-new.toml`); already in the tree via
+# system-deps (gtk's build scripts), so the vendored source package gains no crate.
+toml = { version = "1", default-features = false, features = ["std", "parse", "serde"] }
 
 # Smaller dev build output (the Docker target volume): line tables keep file:line in backtraces
 # and panics for our code; dependencies carry no debug info.

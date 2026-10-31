@@ -683,6 +683,7 @@ dependencies = [
  "regex",
  "sourceview5",
  "syntect",
+ "toml",
  "unicode-normalization",
  "webkit6",
 ]

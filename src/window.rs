@@ -32,6 +32,8 @@ use crate::{links, render, sidebar, state, title};
 pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     // Reopen last session; anything gone since is skipped silently.
     let mut session = state::load(&state_file()).usable();
+    // Before the menu is built: its What's New badge starts from this.
+    crate::about::start();
     render::set_hard_breaks(session.prefs.hard_breaks);
     // The folder to show is scanned on its own thread while the window is built.
     let scan = match &target {
@@ -67,6 +69,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         ],
         &[
             ("Keyboard Shortcuts", "win.show-help-overlay"),
+            ("What's New", "win.whats-new"),
             ("About MarkdownMate", "win.about"),
         ],
     ] {
@@ -79,6 +82,9 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
                 item.set_attribute_value("action", Some(&"win.templates".to_variant()));
                 section.append_item(&item);
             }
+        }
+        if items.iter().any(|(_, action)| *action == "win.whats-new") {
+            crate::about::badge_menu(&section);
         }
         if items[0].1 == "win.open-file" {
             section.append_submenu(Some("Open Recent"), &recent_menu);
@@ -155,11 +161,12 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     // Smoke tests activate the actions, not this menu (an open GtkPopover logs Gdk-CRITICAL
     // under Xvfb). F10 opens it (`primary`).
     let menu_button = gtk::MenuButton::builder()
-        .icon_name("open-menu-symbolic")
         .tooltip_text("Main Menu")
         .menu_model(&menu)
         .primary(true)
         .build();
+    // Its icon, with a dot while What's New has unseen notes.
+    crate::about::badge_menu_button(&menu_button);
     header.pack_start(&menu_button);
     header.pack_start(
         &gtk::Button::builder()
@@ -908,6 +915,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     // No shortcut, as on macOS: none free fits next to Copy as HTML's.
     simple("copy-rich-text", copy_as_rich_text);
     simple("about", about_dialog);
+    simple("whats-new", crate::about::whats_new_dialog);
     // Disabled until a folder is open (load_folder enables it).
     simple("new-folder", |editor| {
         let Some(dir) = editor.current_dir() else {
@@ -1398,11 +1406,17 @@ fn about_dialog(editor: &Rc<Editor>) {
         .comments("Write notes as plain Markdown files in your own folders.")
         .developer_name("HomieLab")
         .website("https://markdownmate.homielab.com/")
+        .support_url(crate::about::feedback_uri())
         .copyright("© 2026 HomieLab")
         .license_type(gtk::License::Custom)
         .license("All rights reserved.")
         .build();
-    dialog.add_link("Donate", "https://ko-fi.com/homielab");
+    // The newest bundled What's New notes (`about.rs`).
+    if let Some((version, notes)) = crate::about::release_notes() {
+        dialog.set_release_notes_version(&version);
+        dialog.set_release_notes(&notes);
+    }
+    dialog.add_link("Donate", crate::about::DONATE_URL);
     // Bundled in the binary for the preview's diagrams (`diagrams.rs`).
     dialog.add_legal_section(
         "Mermaid",

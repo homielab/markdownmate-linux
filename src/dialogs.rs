@@ -364,7 +364,10 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
         .build();
     notes_group.add(&daily);
     notes_group.add(&templates);
-    let page = adw::PreferencesPage::new();
+    let page = adw::PreferencesPage::builder()
+        .title("General")
+        .icon_name("preferences-system-symbolic")
+        .build();
     page.add(&group);
     page.add(&look);
     page.add(&tag_group);
@@ -374,6 +377,7 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
     let dialog = adw::PreferencesDialog::new();
     dialog.set_search_enabled(true);
     dialog.add(&page);
+    dialog.add(&crate::about::about_page(editor, &dialog));
     dialog.present(Some(&editor.window));
 }
 

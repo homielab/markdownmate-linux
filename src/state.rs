@@ -277,6 +277,8 @@ pub struct State {
     pub find_regex: bool,
     /// Favorites of every folder (`favorites.rs`).
     pub favorites: crate::favorites::All,
+    /// The app version whose What's New was last seen (`about.rs`); None: not written yet.
+    pub last_seen_whats_new: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -395,6 +397,9 @@ impl State {
                     state.find_whole_word = v.parse().unwrap_or(false);
                 }
                 Some(("find_regex", v)) => state.find_regex = v.parse().unwrap_or(false),
+                Some(("last_seen_whats_new", v)) if !v.is_empty() => {
+                    state.last_seen_whats_new = Some(v.to_string())
+                }
                 // Written before side by side existed.
                 Some(("preview", "true")) => state.mode = Mode::Preview,
                 _ => {}
@@ -459,6 +464,9 @@ impl State {
             "find_match_case={}\nfind_whole_word={}\nfind_regex={}\n",
             self.find_match_case, self.find_whole_word, self.find_regex
         );
+        if let Some(v) = &self.last_seen_whats_new {
+            out += &format!("last_seen_whats_new={}\n", v.replace('\n', " "));
+        }
         out
     }
 
@@ -500,6 +508,7 @@ impl State {
             find_regex: self.find_regex,
             // Kept even for folders gone now, like bookmarks; a missing favourite shows dimmed.
             favorites: self.favorites,
+            last_seen_whats_new: self.last_seen_whats_new,
         }
     }
 }
@@ -703,10 +712,11 @@ mod tests {
             find_whole_word: false,
             find_regex: false,
             favorites: Default::default(),
+            last_seen_whats_new: Some("0.8.0".into()),
         };
         let text = state.serialize();
         assert!(text.is_ascii());
-        assert_eq!(text.lines().count(), 26);
+        assert_eq!(text.lines().count(), 27);
         assert_eq!(State::parse(&text), state);
     }
 
