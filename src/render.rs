@@ -1980,6 +1980,10 @@ mod tests {
         // Mọi biến mà CSS trang dùng đều được theme đặt.
         for used in CSS.split("var(--").skip(1) {
             let name = &used[..used.find(')').unwrap()];
+            // `--alert` is set per alert kind in the page CSS, not by a theme.
+            if name == "alert" {
+                continue;
+            }
             assert!(VARS.contains(&name), "{name}");
         }
     }
