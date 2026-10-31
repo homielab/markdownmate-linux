@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- The package now installs a spell-check dictionary (US English, or any Hunspell one already there), so underlines show on a clean install.
 - Focus Mode: dimmed paragraphs keep their colours (headings, links, code), faded, instead of turning one flat grey.
 - Copy Wiki Link in a note's right-click menu in the sidebar: puts `[[Name]]` on the clipboard, or `[[Folder/Name]]` when another note in the folder has the same name.
 - Spell check in the editor (Preferences ▸ Editor ▸ Check Spelling, on by default): misspelled words are underlined as you type, in your system's language, and a right-click offers corrections, Add to Dictionary and Ignore. Inline code, ``` code blocks and link URLs are skipped.

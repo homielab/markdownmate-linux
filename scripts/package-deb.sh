@@ -40,6 +40,8 @@ strip "$root/usr/bin/markdownmate"
 mkdir -p "$work/debian"
 printf 'Source: markdownmate\n\nPackage: markdownmate\nArchitecture: any\n' > "$work/debian/control"
 depends=$(cd "$work" && dpkg-shlibdeps --warnings=0 -O "pkg/usr/bin/markdownmate" | sed -n 's/^shlibs:Depends=//p')
+# Same extra Depends as debian/control.
+depends="$depends, hunspell-en-us | hunspell-dictionary"
 
 mkdir -p "$root/DEBIAN"
 install -m755 debian/markdownmate.postinst "$root/DEBIAN/postinst"
