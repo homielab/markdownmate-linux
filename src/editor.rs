@@ -1436,8 +1436,9 @@ impl Editor {
     }
 
     /// Today's Note (Ctrl+D): opens `<open folder>/<daily notes folder>/YYYY-MM-DD.md` for the
-    /// local date (`daily`); a missing one is created (with its folders) as `# YYYY-MM-DD` and
-    /// a blank line and opens with the cursor at its end. Nothing without an open folder.
+    /// local date (`daily`); a missing one is created (with its folders) from `Template.md`
+    /// (or `# YYYY-MM-DD` and a blank line) and opens with the cursor at its end. Nothing
+    /// without an open folder.
     pub(crate) fn todays_note(self: &Rc<Self>) {
         let Some(root) = self.root.borrow().clone() else {
             return;
@@ -1455,14 +1456,15 @@ impl Editor {
         if !self.save() {
             return;
         }
-        let created =
-            match crate::daily::create_if_missing(&path, &crate::daily::initial_text(&date)) {
-                Ok(created) => created,
-                Err(e) => {
-                    self.toast(&format!("Cannot create today's note: {e}"));
-                    return;
-                }
-            };
+        let daily_folder = crate::daily::folder(&root, &self.prefs.borrow().daily_folder);
+        let text = crate::daily::initial_text(&daily_folder, &date);
+        let created = match crate::daily::create_if_missing(&path, &text) {
+            Ok(created) => created,
+            Err(e) => {
+                self.toast(&format!("Cannot create today's note: {e}"));
+                return;
+            }
+        };
         if let Some(dir) = path.parent() {
             self.expand_to(dir);
         }

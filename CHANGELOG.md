@@ -6,6 +6,8 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Today's Note (Ctrl+D) starts from a Template.md in the daily notes folder when present, replacing {{date}} and {{title}} with the date.
+
 ## 0.7.0
 
 - A new app icon: the same M↓ mark as on the Mac, now with bolder, solid black strokes.
