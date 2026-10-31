@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Find in Folder can replace: type the new text and click Replace All to replace every listed match in all result notes, after confirming how many matches and notes change. Ctrl+Z undoes it in the open note; notes changed on disk since the search are left alone and named.
 - Rename Tag… in the right-click menu of the sidebar's Tags list: renames `#old` to `#new` in every note of the folder (nested tags such as `#old/project` too), after showing how many notes change. Ctrl+Z undoes it in the open note.
 - GitHub-style alerts: a quote starting with a `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]` or `[!CAUTION]` line shows as a coloured callout in the preview, print and HTML / PDF / rich-text exports, instead of a plain quote with a literal `[!NOTE]`.
 - The package now installs a spell-check dictionary (US English, or any Hunspell one already there), so underlines show on a clean install.

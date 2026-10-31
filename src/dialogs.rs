@@ -812,7 +812,8 @@ pub(crate) fn highlight(text: &str, ranges: &[std::ops::Range<usize>]) -> String
 /// Shift+Ctrl+F: full-text search over the notes of the open folder (the last scan's list,
 /// read from disk: unsaved edits of the open note are not searched). Runs on a background
 /// thread, 250 ms after typing stops; a newer query cancels the older one. Activating a
-/// matching line opens the note at that line. Esc closes.
+/// matching line opens the note at that line. Replace All replaces the listed matches after a
+/// confirmation (`replace_all`). Esc closes.
 pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -822,12 +823,12 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
     };
     let notes: Arc<Vec<PathBuf>> = Arc::new(editor.note_list.borrow().to_vec());
     // The open note is searched as in the buffer (unsaved edits); the dialog is modal, so a
-    // snapshot taken now stays current.
-    let open_note: Arc<Option<(PathBuf, String)>> =
-        Arc::new(editor.path.borrow().clone().map(|p| {
-            let (start, end) = editor.buffer.bounds();
-            (p, editor.buffer.text(&start, &end, true).to_string())
-        }));
+    // snapshot taken now stays current until Replace All edits it.
+    let snapshot = {
+        let editor = editor.clone();
+        Rc::new(move || Arc::new(editor.path.borrow().clone().map(|p| (p, editor.text()))))
+    };
+    let open_note = Rc::new(RefCell::new(snapshot()));
 
     let entry = gtk::SearchEntry::builder()
         .placeholder_text("Text in notes")
@@ -852,7 +853,19 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
         .margin_start(12)
         .margin_end(12)
         .build();
+    let replacement = gtk::Entry::builder()
+        .placeholder_text("Replace with")
+        .hexpand(true)
+        .build();
+    let replace = gtk::Button::builder()
+        .label("Replace All")
+        .sensitive(false)
+        .build();
+    let replace_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    replace_row.append(&replacement);
+    replace_row.append(&replace);
     content.append(&entry);
+    content.append(&replace_row);
     content.append(&status);
     content.append(&scroll);
     let dialog = adw::Dialog::builder()
@@ -864,12 +877,31 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
 
     // Row index → (note, line).
     let targets: Rc<RefCell<Vec<(PathBuf, usize)>>> = Rc::default();
+    // What Replace All replaces: the results shown; None while a search runs.
+    let listed: Rc<RefCell<Option<Listed>>> = Rc::default();
     // Bumped by every query and on close; a search whose number is stale stops / is dropped.
     let generation = Arc::new(AtomicU64::new(0));
 
     let show = {
         let (list, status, targets, root) = (list.clone(), status.clone(), targets.clone(), root);
+        let (listed, replace) = (listed.clone(), replace.clone());
         move |found: find::Found, query: &str| {
+            let matches: usize = found
+                .files
+                .iter()
+                .flat_map(|f| &f.lines)
+                .map(|h| h.count)
+                .sum();
+            let files = found.files.iter().map(|f| {
+                let lines = f.lines.iter().map(|h| h.line).collect();
+                (f.path.clone(), f.version, lines)
+            });
+            replace.set_sensitive(matches > 0);
+            listed.replace((matches > 0).then(|| Listed {
+                query: query.trim().to_string(),
+                matches,
+                files: files.collect(),
+            }));
             while let Some(row) = list.first_child() {
                 list.remove(&row);
             }
@@ -934,15 +966,14 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
     };
     let show = Rc::new(show);
 
-    entry.connect_search_changed(clone!(
-        #[strong]
-        generation,
-        #[strong]
-        show,
-        move |e| {
-            let query = e.text().to_string();
+    let run = {
+        let (generation, open_note) = (generation.clone(), open_note.clone());
+        let (listed, replace) = (listed.clone(), replace.clone());
+        move |query: String| {
+            listed.replace(None);
+            replace.set_sensitive(false);
             let mine = generation.fetch_add(1, Ordering::SeqCst) + 1;
-            let (notes, open_note) = (notes.clone(), open_note.clone());
+            let (notes, open_note) = (notes.clone(), open_note.borrow().clone());
             let (generation, show) = (generation.clone(), show.clone());
             glib::spawn_future_local(async move {
                 let g = generation.clone();
@@ -959,6 +990,50 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
                     show(found, &query);
                 }
             });
+        }
+    };
+    let run = Rc::new(run);
+    entry.connect_search_changed(clone!(
+        #[strong]
+        run,
+        move |e| run(e.text().to_string())
+    ));
+    replace.connect_clicked(clone!(
+        #[strong]
+        editor,
+        #[weak]
+        dialog,
+        #[weak]
+        entry,
+        #[weak]
+        replacement,
+        move |button| {
+            let Some(found) = listed.borrow().clone() else {
+                return;
+            };
+            // Afterwards the search runs again, over the new texts.
+            let rerun: Rc<dyn Fn()> = Rc::new(clone!(
+                #[strong]
+                run,
+                #[strong]
+                open_note,
+                #[strong]
+                snapshot,
+                #[weak]
+                entry,
+                move || {
+                    open_note.replace(snapshot());
+                    run(entry.text().to_string());
+                }
+            ));
+            confirm_replace(
+                &editor,
+                &dialog,
+                button,
+                found,
+                replacement.text().into(),
+                rerun,
+            );
         }
     ));
     dialog.connect_closed(clone!(
@@ -1013,6 +1088,156 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
 
     dialog.present(Some(&editor.window));
     entry.grab_focus();
+}
+
+/// The results Find in Folder shows, as Replace All needs them.
+#[derive(Clone)]
+struct Listed {
+    /// As typed (trimmed).
+    query: String,
+    /// All matches of the listed lines.
+    matches: usize,
+    /// (note, `find::version` of the text searched, listed line numbers).
+    files: Vec<(PathBuf, u64, Vec<usize>)>,
+}
+
+fn count(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// "Replace N matches in M notes?"; Replace All then runs `replace_all`.
+fn confirm_replace(
+    editor: &Rc<Editor>,
+    parent: &adw::Dialog,
+    button: &gtk::Button,
+    found: Listed,
+    with: String,
+    rerun: Rc<dyn Fn()>,
+) {
+    let heading = format!(
+        "Replace {} in {}?",
+        count(found.matches, "match", "matches"),
+        count(found.files.len(), "note", "notes")
+    );
+    let body = if with.is_empty() {
+        format!("Every listed match of “{}” is deleted.", found.query)
+    } else {
+        format!("Every listed match of “{}” becomes “{with}”.", found.query)
+    };
+    let confirm = adw::AlertDialog::new(Some(&heading), Some(&body));
+    confirm.add_responses(&[("cancel", "Cancel"), ("replace", "Replace All")]);
+    confirm.set_response_appearance("replace", adw::ResponseAppearance::Destructive);
+    confirm.set_default_response(Some("cancel"));
+    confirm.set_close_response("cancel");
+    let (editor, parent_ref, button) = (editor.clone(), parent.downgrade(), button.downgrade());
+    confirm.connect_response(None, move |_, response| {
+        if response == "replace" {
+            // Off until the search ran again.
+            if let Some(button) = button.upgrade() {
+                button.set_sensitive(false);
+            }
+            replace_all(&editor, &parent_ref, found.clone(), &with, rerun.clone());
+        }
+    });
+    confirm.present(Some(parent));
+}
+
+/// Replace All: the open note in its buffer (one undo step, then saved), the others written on
+/// a background thread; each only if its text is still the one searched. Then a toast, one
+/// message naming the notes skipped, and the search again.
+fn replace_all(
+    editor: &Rc<Editor>,
+    parent: &glib::WeakRef<adw::Dialog>,
+    found: Listed,
+    with: &str,
+    rerun: Rc<dyn Fn()>,
+) {
+    const CHANGED: &str = "changed after the search";
+    let query = find::fold(&found.query);
+    let open = editor.path.borrow().clone();
+    let (mut replaced, mut notes) = (0, 0);
+    let mut skipped: Vec<(PathBuf, &str)> = Vec::new();
+    let mut closed = Vec::new();
+    for (path, version, lines) in found.files {
+        if open.as_ref() != Some(&path) {
+            closed.push((path, version, lines));
+            continue;
+        }
+        let text = editor.text();
+        if find::version(&text) != version {
+            skipped.push((path, CHANGED));
+            continue;
+        }
+        let edits = find::replace_edits(&text, &query, &lines, with);
+        if !edits.is_empty() {
+            editor.edit_buffer(&text, &edits);
+            editor.save();
+            (replaced, notes) = (replaced + edits.len(), notes + 1);
+        }
+    }
+    let (weak, parent, with) = (Rc::downgrade(editor), parent.clone(), with.to_string());
+    glib::spawn_future_local(async move {
+        let paths: Vec<PathBuf> = closed.iter().map(|(path, ..)| path.clone()).collect();
+        let results = gio::spawn_blocking(move || {
+            let replace = |(path, version, lines): &(PathBuf, u64, Vec<usize>)| {
+                find::replace_in_file(path, *version, &query, lines, &with)
+            };
+            closed.iter().map(replace).collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_else(|_| {
+            paths
+                .iter()
+                .map(|_| Err(find::Skipped::NotWritten))
+                .collect()
+        });
+        let Some(editor) = weak.upgrade() else { return };
+        for (path, result) in paths.into_iter().zip(results) {
+            match result {
+                Ok(0) => {}
+                Ok(n) => {
+                    (replaced, notes) = (replaced + n, notes + 1);
+                    editor.note_changed(path);
+                }
+                Err(find::Skipped::Changed) => skipped.push((path, CHANGED)),
+                Err(find::Skipped::NotWritten) => skipped.push((path, "could not be saved")),
+            }
+        }
+        if notes > 0 {
+            editor.schedule_tags_index();
+        }
+        editor.toast(&format!(
+            "Replaced {} in {}",
+            count(replaced, "match", "matches"),
+            count(notes, "note", "notes")
+        ));
+        let parent = parent.upgrade();
+        if !skipped.is_empty() {
+            let mut lines: Vec<String> = skipped
+                .iter()
+                .take(10)
+                .map(|(path, why)| format!("{}: {why}", file_name(path)))
+                .collect();
+            if skipped.len() > 10 {
+                lines.push(format!("and {} more", skipped.len() - 10));
+            }
+            let alert = adw::AlertDialog::new(
+                Some(&format!(
+                    "{} left as they were",
+                    count(skipped.len(), "note", "notes")
+                )),
+                Some(&lines.join("\n")),
+            );
+            alert.add_response("ok", "OK");
+            match &parent {
+                Some(parent) => alert.present(Some(parent)),
+                None => alert.present(Some(&editor.window)),
+            }
+        }
+        if parent.is_some() {
+            rerun();
+        }
+    });
 }
 
 #[cfg(test)]

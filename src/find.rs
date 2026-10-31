@@ -5,9 +5,17 @@
 //! same way). Lowercasing can change byte lengths (e.g. 'İ' → "i̇"), so match positions are
 //! mapped back to whole characters of the original text: a `Range` always lies on char
 //! boundaries of the snippet.
+//!
+//! Replace All (`replace_edits`, `replace_in_file`) replaces exactly the listed matches: every
+//! match of each listed line, the replacement inserted as typed, only in a note whose text is
+//! still the one searched (`version`). Bytes outside the matches (line endings, a BOM) stay.
 
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+
+use crate::relink::{Edit, apply};
+use crate::save;
 
 /// Most matching lines returned over all files.
 pub const LIMIT: usize = 500;
@@ -25,12 +33,16 @@ pub struct LineHit {
     pub snippet: String,
     /// Byte ranges of the matches within `snippet`.
     pub ranges: Vec<Range<usize>>,
+    /// How many matches the whole line has (a cut snippet may show fewer).
+    pub count: usize,
 }
 
 #[derive(Debug)]
 pub struct FileHits {
     pub path: PathBuf,
     pub lines: Vec<LineHit>,
+    /// `version` of the text searched.
+    pub version: u64,
 }
 
 #[derive(Debug, Default)]
@@ -112,11 +124,13 @@ pub fn find_in_text(text: &str, query: &str, limit: usize) -> (Vec<LineHit>, boo
         if hits.len() == limit {
             return (hits, true);
         }
+        let count = ranges.len();
         let (snippet, ranges) = snippet(line, ranges);
         hits.push(LineHit {
             line: n + 1,
             snippet,
             ranges,
+            count,
         });
     }
     (hits, false)
@@ -154,6 +168,7 @@ pub fn search(
             found.files.push(FileHits {
                 path: path.clone(),
                 lines,
+                version: version(&text),
             });
         }
         if more {
@@ -166,6 +181,67 @@ pub fn search(
 
 pub fn read_utf8(path: &Path) -> Option<String> {
     String::from_utf8(std::fs::read(path).ok()?).ok()
+}
+
+/// A fingerprint of a note's text: equal versions = the text the search saw.
+pub fn version(text: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The edits replacing every match of `query` (already `fold`ed, non-empty) on the 1-based
+/// `lines` of `text` (ascending, as listed) with `replacement`, in order.
+pub fn replace_edits(text: &str, query: &str, lines: &[usize], replacement: &str) -> Vec<Edit> {
+    let mut edits = Vec::new();
+    let mut wanted = lines.iter().copied().peekable();
+    let mut start = 0;
+    for (n, line) in text.split('\n').enumerate() {
+        let number = n + 1;
+        while wanted.next_if(|&l| l < number).is_some() {}
+        if wanted.peek().is_none() {
+            break;
+        }
+        if wanted.next_if_eq(&number).is_some() {
+            // As `str::lines`: a line's `\r` before the `\n` is not part of it.
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            edits.extend(matches(line, query).into_iter().map(|r| Edit {
+                range: start + r.start..start + r.end,
+                text: replacement.to_string(),
+            }));
+        }
+        start += line.len() + 1;
+    }
+    edits
+}
+
+/// Why `replace_in_file` left a note alone.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Skipped {
+    /// Unreadable, or its text is no longer the one searched.
+    Changed,
+    /// Writing failed.
+    NotWritten,
+}
+
+/// Replace All in a closed note: `replace_edits` made and written atomically, only if the note
+/// on disk is still the text searched (`version`). Returns how many matches were replaced.
+pub fn replace_in_file(
+    path: &Path,
+    version: u64,
+    query: &str,
+    lines: &[usize],
+    replacement: &str,
+) -> Result<usize, Skipped> {
+    let text = read_utf8(path)
+        .filter(|text| self::version(text) == version)
+        .ok_or(Skipped::Changed)?;
+    let edits = replace_edits(&text, query, lines, replacement);
+    if edits.is_empty() {
+        return Ok(0);
+    }
+    save::write_atomic(path, &apply(&text, &edits)).map_err(|_| Skipped::NotWritten)?;
+    Ok(edits.len())
 }
 
 #[cfg(test)]
@@ -230,6 +306,71 @@ mod tests {
         assert_eq!((hits.len(), more), (3, true));
         let (hits, more) = find_in_text(&text, "hit", 10);
         assert_eq!((hits.len(), more), (10, false));
+    }
+
+    fn replace(text: &str, query: &str, lines: &[usize], with: &str) -> String {
+        apply(text, &replace_edits(text, &fold(query), lines, with))
+    }
+
+    #[test]
+    fn replaces_the_listed_lines_only() {
+        let text = "\u{feff}Apple apple\r\nno\r\nAPPLE pie\r\napple\n";
+        assert_eq!(
+            replace(text, "apple", &[1, 3], "Pear"),
+            "\u{feff}Pear Pear\r\nno\r\nPear pie\r\napple\n"
+        );
+        assert_eq!(
+            replace(text, "apple", &[4], ""),
+            text.replace("\r\napple\n", "\r\n\n")
+        );
+        assert_eq!(replace(text, "apple", &[], "x"), text);
+        // Accents and case fold as in the search; the replacement is inserted as typed.
+        assert_eq!(
+            replace("Tiếng VIỆT và việt\nxİy", "việt", &[1], "Việt Nam"),
+            "Tiếng Việt Nam và Việt Nam\nxİy"
+        );
+        assert_eq!(replace("xİy", "i", &[1], "I"), "xIy");
+        // The counts the search lists are the matches replaced.
+        let (hits, _) = find_in_text(text, &fold("apple"), LIMIT);
+        let lines: Vec<usize> = hits.iter().map(|h| h.line).collect();
+        let listed: usize = hits.iter().map(|h| h.count).sum();
+        assert_eq!(replace_edits(text, "apple", &lines, "x").len(), listed);
+        assert_eq!(listed, 4);
+    }
+
+    #[test]
+    fn replace_in_file_only_if_unchanged() {
+        let dir = std::env::temp_dir().join(format!("mm-replace-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(dir.clone());
+        let (a, b) = (dir.join("a.md"), dir.join("b.md"));
+        std::fs::write(&a, "old one\r\nold two\n").unwrap();
+        std::fs::write(&b, "old\n").unwrap();
+        let found = search(&[a.clone(), b.clone()], None, "OLD", &|| false).unwrap();
+        let lines = |f: &FileHits| f.lines.iter().map(|h| h.line).collect::<Vec<_>>();
+        let (fa, fb) = (&found.files[0], &found.files[1]);
+        // b changed after the search: left alone.
+        std::fs::write(&b, "old and new\n").unwrap();
+        assert_eq!(
+            replace_in_file(&a, fa.version, "old", &lines(fa), "new"),
+            Ok(2)
+        );
+        assert_eq!(
+            replace_in_file(&b, fb.version, "old", &lines(fb), "new"),
+            Err(Skipped::Changed)
+        );
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "new one\r\nnew two\n");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "old and new\n");
+        assert_eq!(
+            replace_in_file(&dir.join("gone.md"), 0, "old", &[1], "new"),
+            Err(Skipped::Changed)
+        );
     }
 
     #[test]

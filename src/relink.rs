@@ -214,10 +214,15 @@ impl Plan {
 
 /// `text` with `edits` (in order, not overlapping) made.
 pub fn apply(text: &str, edits: &[Edit]) -> String {
-    let mut out = text.to_string();
-    for edit in edits.iter().rev() {
-        out.replace_range(edit.range.clone(), &edit.text);
+    // One pass: a large note can have thousands of edits.
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for edit in edits {
+        out.push_str(&text[at..edit.range.start]);
+        out.push_str(&edit.text);
+        at = edit.range.end;
     }
+    out.push_str(&text[at..]);
     out
 }
 

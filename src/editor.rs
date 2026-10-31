@@ -150,7 +150,7 @@ impl Editor {
     }
 
     /// The editor's whole text.
-    fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         let (start, end) = self.buffer.bounds();
         self.buffer.text(&start, &end, true).to_string()
     }
@@ -1757,14 +1757,56 @@ impl Editor {
 
     /// Makes `edits` (in order, not overlapping; byte ranges of `text`, the buffer's text) in
     /// the editor as one undo step.
-    fn edit_buffer(&self, text: &str, edits: &[relink::Edit]) {
+    pub(crate) fn edit_buffer(&self, text: &str, edits: &[relink::Edit]) {
+        let (Some(first), Some(last)) = (edits.first(), edits.last()) else {
+            return;
+        };
         self.buffer.begin_user_action();
-        for edit in edits.iter().rev() {
-            let at = |byte: usize| text[..byte].chars().count() as i32;
-            let mut start = self.buffer.iter_at_offset(at(edit.range.start));
-            let mut end = self.buffer.iter_at_offset(at(edit.range.end));
+        if edits.len() <= 100 {
+            // Char offsets counted once, front to back; edited back to front.
+            let (mut byte, mut chars) = (0, 0);
+            let mut offsets = Vec::with_capacity(edits.len());
+            for edit in edits {
+                chars += text[byte..edit.range.start].chars().count();
+                let start = chars;
+                chars += text[edit.range.clone()].chars().count();
+                byte = edit.range.end;
+                offsets.push((start as i32, chars as i32));
+            }
+            for (edit, &(start, end)) in edits.iter().zip(&offsets).rev() {
+                let mut start = self.buffer.iter_at_offset(start);
+                let mut end = self.buffer.iter_at_offset(end);
+                self.buffer.delete(&mut start, &mut end);
+                self.buffer.insert(&mut start, &edit.text);
+            }
+        } else {
+            // Many edits (a large note): the span from the first to the last replaced at once,
+            // so the buffer changes twice instead of thousands of times; the cursor keeps its
+            // place.
+            let span = first.range.start..last.range.end;
+            let local: Vec<relink::Edit> = edits
+                .iter()
+                .map(|e| relink::Edit {
+                    range: e.range.start - span.start..e.range.end - span.start,
+                    text: e.text.clone(),
+                })
+                .collect();
+            let new = relink::apply(&text[span.clone()], &local);
+            let from = text[..span.start].chars().count() as i32;
+            let old_len = text[span].chars().count() as i32;
+            let new_len = new.chars().count() as i32;
+            let cursor = self.buffer.iter_at_mark(&self.buffer.get_insert()).offset();
+            let mut start = self.buffer.iter_at_offset(from);
+            let mut end = self.buffer.iter_at_offset(from + old_len);
             self.buffer.delete(&mut start, &mut end);
-            self.buffer.insert(&mut start, &edit.text);
+            self.buffer.insert(&mut start, &new);
+            let cursor = if cursor >= from + old_len {
+                cursor - old_len + new_len
+            } else {
+                cursor.min(from + new_len)
+            };
+            self.buffer
+                .place_cursor(&self.buffer.iter_at_offset(cursor));
         }
         self.buffer.end_user_action();
     }
