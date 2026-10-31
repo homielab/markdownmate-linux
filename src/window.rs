@@ -377,6 +377,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         font_css: gtk::CssProvider::new(),
         focus: crate::focus::Focus::attach(&focus_view),
         spelling: crate::spell::attach(&view),
+        spell_held: Cell::new(false),
     });
     // Window-wide so the rule (class `mm-editor`) beats the theme's `.monospace` font.
     gtk::style_context_add_provider_for_display(
@@ -400,11 +401,17 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
 
     image_input(&view, &editor);
     // The right-click menu's own Check Spelling item: remembered like the Preferences switch.
+    // On a held large note it turns spell check on for that note; holding it off is not saved.
     editor.spelling.connect_enabled_notify(clone!(
         #[weak]
         editor,
         move |a| {
             let on = a.is_enabled();
+            if on && editor.spell_held.replace(false) {
+                editor.show_status();
+            } else if !on && editor.spell_held.get() {
+                return;
+            }
             if editor.prefs.borrow().spell_check != on {
                 editor.prefs.borrow_mut().spell_check = on;
                 editor.remember();

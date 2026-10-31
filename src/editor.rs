@@ -140,8 +140,12 @@ pub(crate) struct Editor {
     pub(crate) recent_menu: gio::Menu,
     /// Focus Mode (Shift+Ctrl+J): the editor dims all but the cursor's paragraph.
     pub(crate) focus: Rc<crate::focus::Focus>,
-    /// Spell check (Preferences ▸ Editor ▸ Check Spelling), on while `prefs.spell_check`.
+    /// Spell check (Preferences ▸ Editor ▸ Check Spelling), on while `prefs.spell_check` and
+    /// not `spell_held`.
     pub(crate) spelling: libspelling::TextBufferAdapter,
+    /// The open note is over `spell::LARGE_NOTE`: spell check stays off for it until the
+    /// right-click menu's Check Spelling turns it on (which clears this).
+    pub(crate) spell_held: Cell<bool>,
 }
 
 impl Editor {
@@ -221,9 +225,9 @@ impl Editor {
         });
         // Read back by the Tab / Shift+Tab list handler.
         self.view.set_indent_width(p.indent as i32);
-        if self.spelling.is_enabled() != p.spell_check {
-            self.spelling.set_enabled(p.spell_check);
-        }
+        drop(p);
+        self.apply_spelling();
+        let p = self.prefs.borrow();
         let css = match &p.font {
             Some(font) => {
                 let d = gtk::pango::FontDescription::from_string(font);
@@ -617,11 +621,29 @@ impl Editor {
     pub(crate) fn show_status(&self) {
         let cursor = self.buffer.iter_at_mark(&self.buffer.get_insert());
         let (line, col) = (cursor.line() + 1, cursor.line_offset() + 1);
-        self.status.set_text(&stats::status_text(
-            line as usize,
-            col as usize,
-            self.counts.get(),
-        ));
+        let mut text = stats::status_text(line as usize, col as usize, self.counts.get());
+        if self.spell_held.get() && self.prefs.borrow().spell_check {
+            text.push_str(" · ");
+            text.push_str(crate::spell::HELD_HINT);
+        }
+        self.status.set_text(&text);
+    }
+
+    /// Turns the spell checker on or off to match the preference, off while the open note is
+    /// held (`spell_held`), and refreshes the status bar's hint.
+    pub(crate) fn apply_spelling(&self) {
+        let on = self.prefs.borrow().spell_check && !self.spell_held.get();
+        if self.spelling.is_enabled() != on {
+            self.spelling.set_enabled(on);
+        }
+        self.show_status();
+    }
+
+    /// Holds spell check off for a note of `bytes` over `spell::LARGE_NOTE`, or releases it.
+    /// Called before the note's text goes into the buffer, so a held note is never queued.
+    fn fit_spelling(&self, bytes: usize) {
+        self.spell_held.set(crate::spell::too_large(bytes));
+        self.apply_spelling();
     }
 
     /// Restarts the auto-save countdown (debounce).
@@ -711,6 +733,7 @@ impl Editor {
         };
         self.show_path(path);
         self.saved.replace(text.clone());
+        self.fit_spelling(text.len());
         // Irreversible: Ctrl+Z must not bring the previous note's text into this one.
         self.buffer.begin_irreversible_action();
         self.buffer.set_text(&text);
@@ -845,6 +868,12 @@ impl Editor {
     /// line. Irreversible: reloading clears the undo history.
     fn load_text(self: &Rc<Self>, disk: String) {
         let line = self.buffer.iter_at_mark(&self.buffer.get_insert()).line();
+        // Same note: keep its spell check (held, or turned on from the menu) unless it crossed
+        // the size limit.
+        if crate::spell::too_large(disk.len()) != crate::spell::too_large(self.saved.borrow().len())
+        {
+            self.fit_spelling(disk.len());
+        }
         // Baseline for save_checked: auto-save neither rewrites it nor makes a conflict copy.
         self.saved.replace(disk.clone());
         self.buffer.begin_irreversible_action();
@@ -1979,6 +2008,7 @@ impl Editor {
     pub(crate) fn close_note(&self) {
         self.path.replace(None);
         self.saved.replace(String::new());
+        self.fit_spelling(0);
         self.buffer.begin_irreversible_action();
         self.buffer.set_text("");
         self.buffer.end_irreversible_action();

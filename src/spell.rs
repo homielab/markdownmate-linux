@@ -7,12 +7,28 @@
 //! libspelling checks the whole note in the background in slices of a few milliseconds between
 //! frames, then only the words that change, so typing in a large note costs no more.
 //! Ubuntu 24.04 ships libspelling 0.2: only calls that exist there are used.
+//!
+//! That first check goes from the top down at about 3 minutes per MB, and libspelling 0.2 has no
+//! way to check the visible part first: a note over [`LARGE_NOTE`] is not checked (the status
+//! bar says so, [`HELD_HINT`]) unless the right-click menu's Check Spelling turns it on for it.
 
 use std::cell::Cell;
 use std::rc::Rc;
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
+
+/// Notes larger than this (bytes, as on disk) are not spell-checked when opened: the background
+/// check of a 1 MB note takes about 3 minutes of slices between frames (`docs/PERFORMANCE.md`).
+pub(crate) const LARGE_NOTE: usize = 1_000_000;
+
+/// The status bar's note while spell check is held off for a large note.
+pub(crate) const HELD_HINT: &str = "Spell check is off for notes over 1 MB";
+
+/// Whether a note of `bytes` is too large to spell-check when opened.
+pub(crate) fn too_large(bytes: usize) -> bool {
+    bytes > LARGE_NOTE
+}
 
 /// Attaches the checker to `view`'s buffer, off until `set_enabled`: the underline tag, the
 /// suggestions, Add to Dictionary, Ignore, Check Spelling and Languages in the right-click
@@ -181,6 +197,14 @@ mod tests {
     use sourceview5::prelude::*;
 
     use super::*;
+
+    #[test]
+    fn large_notes_are_held_off() {
+        assert!(!too_large(0));
+        assert!(!too_large(LARGE_NOTE));
+        assert!(too_large(LARGE_NOTE + 1));
+        assert!(too_large(5_000_000));
+    }
 
     /// Needs a display and an en_US dictionary (the container has both); run with
     /// `cargo test spell -- --ignored` like `perf::large_notes`.

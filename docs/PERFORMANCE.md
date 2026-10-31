@@ -139,6 +139,20 @@ a few seconds for a typical note. Until it gets there, words far down a very lar
 underlined, typed ones included. Turning it off takes 36 ms (the underline removed from the
 whole note).
 
+libspelling 0.2 (Ubuntu 24.04) cannot check the visible part first, so the app does not
+spell-check a note over 1 MB (`spell::LARGE_NOTE`, bytes on disk) when it opens it: the status
+bar says *Spell check is off for notes over 1 MB*, the Preferences switch stays on, and
+right-click ▸ Check Spelling checks that note anyway. A note just under the limit takes about
+3 minutes. The app opening a 5 MB note of prose (debug build, Xvfb in the container, 2026-10-31), CPU used
+in the 20 s after it is shown (`spell_check=true`):
+
+| 5 MB note | background check | CPU in the 20 s after opening | typing |
+|---|---|---|---|
+| before (checked) | ~825 s (96 s of CPU) | 660 ms | the "on" rows above |
+| after (held off) | none | 30 ms | the "off" row above |
+
+A small note: 40 ms before, 20 ms after, underlines as before.
+
 ## A folder of 10,000 notes
 
 `scripts/measure-folder.sh` times launch, the sidebar, the Tags list and Backlinks with a large
