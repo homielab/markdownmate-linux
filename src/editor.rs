@@ -138,6 +138,8 @@ pub(crate) struct Editor {
     pub(crate) history: RefCell<history::History>,
     /// The history entry a Back / Forward is opening (`open` moves there instead of adding one).
     pub(crate) history_target: Cell<Option<usize>>,
+    /// An entry the next sidebar build scrolls to and focuses (`reveal_in_sidebar`).
+    pub(crate) sidebar_reveal: RefCell<Option<PathBuf>>,
     pub(crate) find_match_case: Cell<bool>,
     pub(crate) find_whole_word: Cell<bool>,
     /// Editor preferences (Ctrl+,) and the CSS that sets the chosen font.
@@ -266,7 +268,7 @@ impl Editor {
             None => state::zoom_css(p.zoom),
         };
         self.font_css
-            .load_from_data(&(css + &state::line_height_css(p.line_spacing)));
+            .load_from_string(&(css + &state::line_height_css(p.line_spacing)));
         // Only the on-screen preview: print and Export HTML use their own page at 100%.
         if let Some(preview) = self.preview_view.get() {
             preview.set_zoom_level(f64::from(p.zoom) / 100.0);
@@ -1883,34 +1885,51 @@ impl Editor {
         self.relocate(from, "rename", |from| naming::rename(from, &name));
     }
 
-    /// Moves a note or folder dropped on folder `dir` into it (sidebar drag and drop), only
-    /// inside the open folder; never replaces an existing entry. The open note follows.
-    pub(crate) fn move_into(self: &Rc<Self>, from: &Path, dir: &Path) {
-        let Some(root) = self.scan_dir.borrow().clone() else {
-            return;
-        };
+    /// Moves a note or folder dropped on folder `dir` into it (sidebar drag and drop, Move to
+    /// Folder…), only inside the open folder; never replaces an existing entry. The open note
+    /// follows. Returns the new path if it moved.
+    pub(crate) fn move_into(self: &Rc<Self>, from: &Path, dir: &Path) -> Option<PathBuf> {
+        let root = self.scan_dir.borrow().clone()?;
         match naming::move_target(from, dir, &root) {
             // `to` is under the folder's real path; keep the paths the sidebar lists.
             Ok(Some(to)) => {
                 let to = relink::rebase(&to, &root);
                 self.relocate(from, "move", |from| naming::move_to(from, &to))
             }
-            Ok(None) => {}
-            Err(msg) => self.toast(&format!("Cannot move {}: {msg}", file_name(from))),
+            Ok(None) => None,
+            Err(msg) => {
+                self.toast(&format!("Cannot move {}: {msg}", file_name(from)));
+                None
+            }
         }
+    }
+
+    /// Shows `path` in the sidebar once the rescan lists it: its folders open and its row
+    /// scrolled to and focused (`sidebar::sidebar`).
+    pub(crate) fn reveal_in_sidebar(&self, path: &Path) {
+        if let Some(root) = self.root.borrow().as_deref() {
+            let mut expanded = self.expanded.borrow_mut();
+            for dir in path.ancestors().skip(1) {
+                if !dir.starts_with(root) || dir == root {
+                    break;
+                }
+                expanded.insert(dir.to_path_buf());
+            }
+        }
+        self.sidebar_reveal.replace(Some(path.to_path_buf()));
     }
 
     /// Runs `op` (a rename/move of `from` returning the new path) with the open note saved
     /// first; the open note and the expanded folders follow the new path. Then offers to
-    /// update the links to it (`offer_link_updates`).
+    /// update the links to it (`offer_link_updates`). Returns the new path if `op` succeeded.
     fn relocate(
         self: &Rc<Self>,
         from: &Path,
         verb: &str,
         op: impl FnOnce(&Path) -> std::io::Result<PathBuf>,
-    ) {
+    ) -> Option<PathBuf> {
         let Ok(open) = self.release_note(from) else {
-            return;
+            return None;
         };
         match op(from) {
             Ok(to) => {
@@ -1935,14 +1954,16 @@ impl Editor {
                 self.remember();
                 self.schedule_rescan();
                 if to != from {
-                    self.offer_link_updates(vec![(from.to_path_buf(), to)], before);
+                    self.offer_link_updates(vec![(from.to_path_buf(), to.clone())], before);
                 }
+                Some(to)
             }
             Err(e) => {
                 if let Some(p) = &open {
                     self.show_path(p);
                 }
                 self.toast(&format!("Cannot {verb} {}: {e}", file_name(from)));
+                None
             }
         }
     }

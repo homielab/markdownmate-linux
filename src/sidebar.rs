@@ -1,7 +1,8 @@
 //! Sidebar: the folder tree as a `gtk::ListView` over a `gtk::TreeListModel`. Virtualized:
 //! only rows on screen get widgets, and a folder's rows are added when it is expanded, so a
 //! folder of thousands of notes stays fast. Right-click: New Note, New Folder…, Rename…, Move
-//! to Trash, Sort By. Drag an entry onto a folder (or empty space = the open folder) to move it.
+//! to Trash, Move to Folder…, Sort By. Drag an entry onto a folder (or empty space = the open
+//! folder) to move it.
 //! Entries are in the scan's order (`notes::SortOrder`); under a date order a note whose date
 //! changed moves in place (`resort_note`). Below it, the Tags panel (`tags_panel`).
 
@@ -200,6 +201,16 @@ pub fn sidebar(editor: &Rc<Editor>, tree: &[notes::Node], root: &Path) -> gtk::S
         }
     });
 
+    // After Move to Folder…: the moved entry's row (its folders were opened above).
+    let reveal = editor.sidebar_reveal.take().and_then(|path| {
+        (0..model.n_items()).find(|&i| {
+            model
+                .row(i)
+                .and_then(|r| r.item())
+                .is_some_and(|obj| item(&obj).path == path)
+        })
+    });
+
     let factory = gtk::SignalListItemFactory::new();
     let w = weak.clone();
     factory.connect_setup(move |_, obj| {
@@ -250,6 +261,11 @@ pub fn sidebar(editor: &Rc<Editor>, tree: &[notes::Node], root: &Path) -> gtk::S
     view.add_css_class("navigation-sidebar");
     view.add_css_class("sidebar-tree");
     drop_target(&view, &weak, root);
+    if let Some(i) = reveal {
+        let view = view.clone();
+        // Once the view is in the window.
+        glib::idle_add_local_once(move || view.scroll_to(i, gtk::ListScrollFlags::FOCUS, None));
+    }
     // Click: a folder opens/closes, a note opens in the editor.
     view.connect_activate(move |view, pos| {
         let Some(row) = view
@@ -274,8 +290,8 @@ pub fn sidebar(editor: &Rc<Editor>, tree: &[notes::Node], root: &Path) -> gtk::S
 }
 
 /// Right-click menu of a sidebar entry: New Note, New Folder… (folders), Rename…, Show in
-/// Files, Copy Path, Copy Wiki Link (notes), Move to Trash, then Sort By (the current order
-/// checked).
+/// Files, Copy Path, Copy Wiki Link (notes), Move to Trash, Move to Folder…, then Sort By (the
+/// current order checked).
 /// The entry is read at click time: list rows are recycled for other entries.
 fn context_menu(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
     let gesture = gtk::GestureClick::builder()
@@ -385,6 +401,8 @@ fn context_menu(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
         }
         let (e, p) = (Rc::clone(&editor), path.clone());
         item("Move to Trash", Box::new(move || e.trash(&p)));
+        let (e, p) = (Rc::clone(&editor), path.clone());
+        item("Move to Folder…", Box::new(move || move_to_folder(&e, &p)));
         menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         let heading = gtk::Label::builder()
             .label("Sort By")
@@ -661,6 +679,131 @@ pub(crate) async fn read_path(drop: &gtk::gdk::Drop) -> Option<PathBuf> {
     (!bytes.is_empty()).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(&bytes)))
 }
 
+/// The folders of sidebar `store` and below, in its order, each with its `depth` (1 for the
+/// open folder's own folders).
+fn folders(store: &gio::ListStore, depth: usize, out: &mut Vec<(PathBuf, usize)>) {
+    for obj in (0..store.n_items()).filter_map(|i| store.item(i)) {
+        let it = item(&obj);
+        if let Some(children) = &it.children {
+            out.push((it.path.clone(), depth));
+            folders(children, depth + 1, out);
+        }
+    }
+}
+
+/// Whether Move to Folder… can move `entry` into folder `dir`: not where it already is, not
+/// into itself or one of its own folders.
+fn can_move_into(entry: &Path, dir: &Path) -> bool {
+    entry.parent() != Some(dir) && !dir.starts_with(entry)
+}
+
+/// Move to Folder…: the open folder and its folders as an indented tree (sidebar order), the
+/// entry's own folder, the entry and its subfolders greyed out. Move (or Enter / a double-click
+/// on a row) moves it exactly like dropping it on that folder: same refusal of a taken name,
+/// same offer to update links; then the sidebar shows it. Cancel or Esc changes nothing.
+fn move_to_folder(editor: &Rc<Editor>, entry: &Path) {
+    let (Some(root), Some(store)) = (
+        editor.root.borrow().clone(),
+        editor.sidebar_store.borrow().clone(),
+    ) else {
+        return;
+    };
+    let mut choices = vec![(root.clone(), 0)];
+    folders(&store, 1, &mut choices);
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::Single)
+        // A click picks the folder; Move, Enter or a double-click moves.
+        .activate_on_single_click(false)
+        .css_classes(["navigation-sidebar"])
+        .build();
+    for (dir, depth) in &choices {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.set_margin_start(i32::try_from(depth * 18).unwrap_or(i32::MAX));
+        row.append(&gtk::Image::from_icon_name("folder-symbolic"));
+        row.append(
+            &gtk::Label::builder()
+                .label(file_name(dir))
+                .xalign(0.0)
+                .ellipsize(gtk::pango::EllipsizeMode::Middle)
+                .build(),
+        );
+        let row = gtk::ListBoxRow::builder().child(&row).build();
+        let allowed = can_move_into(entry, dir);
+        row.set_sensitive(allowed);
+        row.set_selectable(allowed);
+        row.set_activatable(allowed);
+        list.append(&row);
+    }
+    let cancel = gtk::Button::with_label("Cancel");
+    let move_button = gtk::Button::builder()
+        .label("Move")
+        .css_classes(["suggested-action"])
+        .sensitive(false)
+        .build();
+    let header = adw::HeaderBar::builder()
+        .show_start_title_buttons(false)
+        .show_end_title_buttons(false)
+        .build();
+    header.pack_start(&cancel);
+    header.pack_end(&move_button);
+    let content = adw::ToolbarView::new();
+    content.add_top_bar(&header);
+    content.set_content(Some(
+        &gtk::ScrolledWindow::builder()
+            .child(&list)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .build(),
+    ));
+    let dialog = adw::Dialog::builder()
+        .title(format!("Move “{}” to", file_name(entry)))
+        .content_width(380)
+        .content_height(420)
+        .child(&content)
+        .build();
+    let (weak, d) = (Rc::downgrade(editor), dialog.downgrade());
+    let (entry, choices) = (entry.to_path_buf(), Rc::new(choices));
+    let run = Rc::new(move |row: &gtk::ListBoxRow| {
+        let dir = usize::try_from(row.index())
+            .ok()
+            .and_then(|i| choices.get(i));
+        let (Some(editor), Some((dir, _))) = (weak.upgrade(), dir) else {
+            return;
+        };
+        if let Some(d) = d.upgrade() {
+            d.close();
+        }
+        if let Some(to) = editor.move_into(&entry, dir) {
+            editor.reveal_in_sidebar(&to);
+        }
+    });
+    let b = move_button.clone();
+    list.connect_row_selected(move |_, row| b.set_sensitive(row.is_some()));
+    let r = Rc::clone(&run);
+    list.connect_row_activated(move |_, row| r(row));
+    let l = list.clone();
+    move_button.connect_clicked(move |_| {
+        if let Some(row) = l.selected_row() {
+            run(&row);
+        }
+    });
+    let d = dialog.downgrade();
+    cancel.connect_clicked(move |_| {
+        if let Some(d) = d.upgrade() {
+            d.close();
+        }
+    });
+    dialog.present(Some(&editor.window));
+    let mut i = 0;
+    while let Some(row) = list.row_at_index(i) {
+        if row.is_sensitive() {
+            row.grab_focus();
+            break;
+        }
+        i += 1;
+    }
+}
+
 /// Asks for a name; `done` runs with the text when the user confirms.
 pub(crate) fn ask_name(
     editor: &Editor,
@@ -847,6 +990,46 @@ mod tests {
             .filter_map(|i| store.item(i))
             .map(|obj| item(&obj).name.clone())
             .collect()
+    }
+
+    #[test]
+    fn move_to_folder_lists_folders_as_a_tree() {
+        let note = |name: &str, dir: &str| notes::Node::Note {
+            name: name.into(),
+            path: PathBuf::from(format!("{dir}/{name}")),
+            date: None,
+        };
+        let dir = |name: &str, children| notes::Node::Dir {
+            name: name.into(),
+            children,
+        };
+        let tree = [
+            dir(
+                "b",
+                vec![dir("c", vec![note("n.md", "/r/b/c")]), note("m.md", "/r/b")],
+            ),
+            dir("a", vec![]),
+            note("top.md", "/r"),
+        ];
+        let mut out = Vec::new();
+        folders(&store(&tree, Path::new("/r")), 1, &mut out);
+        let p = PathBuf::from;
+        assert_eq!(out, [(p("/r/b"), 1), (p("/r/b/c"), 2), (p("/r/a"), 1)]);
+    }
+
+    #[test]
+    fn move_to_folder_greys_out_its_own_folder_and_itself() {
+        let p = Path::new;
+        // A note: anywhere but its own folder.
+        assert!(!can_move_into(p("/r/b/m.md"), p("/r/b")));
+        assert!(can_move_into(p("/r/b/m.md"), p("/r")));
+        assert!(can_move_into(p("/r/b/m.md"), p("/r/b/c")));
+        // A folder: not its parent, itself or below it; a sibling with a longer name is fine.
+        assert!(!can_move_into(p("/r/b"), p("/r")));
+        assert!(!can_move_into(p("/r/b"), p("/r/b")));
+        assert!(!can_move_into(p("/r/b"), p("/r/b/c")));
+        assert!(can_move_into(p("/r/b"), p("/r/bb")));
+        assert!(can_move_into(p("/r/b/c"), p("/r")));
     }
 
     #[test]

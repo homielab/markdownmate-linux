@@ -387,6 +387,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         positions: RefCell::default(),
         history: RefCell::default(),
         history_target: Cell::new(None),
+        sidebar_reveal: RefCell::new(None),
         find_match_case: Cell::new(false),
         find_whole_word: Cell::new(false),
         prefs: RefCell::default(),

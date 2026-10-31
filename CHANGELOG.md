@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Move to Folder… in the sidebar's right-click menu: pick the folder from a list of the open folder's folders to move a note or folder without dragging, also from the keyboard. It refuses a name that is already taken and offers to update links, like a drag, and the sidebar then shows the moved entry. Same as the macOS app.
 - Back and Forward (Alt+Left / Alt+Right, or the main menu): return to the note you came from after following a link, a backlink or Open Quickly, then forward again, like a browser. Each window has its own history of up to 50 notes; notes deleted since are skipped. Same as the macOS app.
 - Highlights: write `==text==` and it shows with a soft yellow background in the preview (light and dark), print, HTML / PDF export and Copy as HTML; Copy as Rich Text and Export as RTF give it a yellow background, and the editor shows it on a light background with dimmed `==`. Format ▸ Highlight (Shift+Ctrl+H, or `==` on the format bar) adds or removes it around the selection or the word at the cursor. Same as the macOS app.
 - Alerts keep their colour when copied or exported: Copy as Rich Text pastes each kind (Note, Tip, Important, Warning, Caution) with its coloured border and title instead of grey, and Export as RTF shows a bold title in the kind's colour above the indented text.

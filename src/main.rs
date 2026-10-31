@@ -167,7 +167,7 @@ fn main() -> gtk::glib::ExitCode {
         let css = gtk::CssProvider::new();
         // Kéo thả trong sidebar: GTK tô cả list (:drop(active)); thay bằng tô đúng thư mục đích
         // (class drop-target do sidebar::drop_target đặt), cùng kiểu viền accent của Adwaita.
-        css.load_from_data(
+        css.load_from_string(
             ".find-results > row { min-height: 0; }
              .sidebar-tree:drop(active) { box-shadow: none; }
              .sidebar-tree.drop-target, .sidebar-tree > row.drop-target {
