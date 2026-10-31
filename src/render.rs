@@ -571,7 +571,7 @@ pub(crate) fn fill_toc(html: &str, list: &str) -> String {
 /// class="alert-title">Note</p>…</div>` (`render_body` renames comrak's classes). Comrak's
 /// own `alerts` extension stays off: it also takes `[!NOTE] Title` and `>>>` fences, which
 /// stay quotes here as on GitHub. True if `quote` became an alert.
-fn make_alert<'a>(quote: &'a comrak::nodes::AstNode<'a>) -> bool {
+pub(crate) fn make_alert<'a>(quote: &'a comrak::nodes::AstNode<'a>) -> bool {
     use comrak::nodes::{AlertType, NodeAlert, NodeValue};
     let Some(paragraph) = quote
         .first_child()
@@ -1300,6 +1300,16 @@ pub fn html_fragment(md: &str, note_dir: &Path, wiki: &dyn Fn(&str) -> Option<Pa
     )
 }
 
+/// Alert kinds with their title and light-mode colour (as the preview's CSS), for exports
+/// that can't use the page style sheet: Copy as Rich Text and RTF.
+pub(crate) const ALERT_COLOURS: [(&str, &str, &str); 5] = [
+    ("note", "Note", "#0969da"),
+    ("tip", "Tip", "#1a7f37"),
+    ("important", "Important", "#8250df"),
+    ("warning", "Warning", "#9a6700"),
+    ("caution", "Caution", "#d1242f"),
+];
+
 /// Copy as Rich Text: the note's (or selection's) HTML as a whole document for word
 /// processors and mail (LibreOffice, Thunderbird, web mail), which paste it formatted. The body
 /// is Copy as HTML's (links, MathML, diagrams as code; `[TOC]` kept as written) plus a small style sheet (table borders,
@@ -1310,7 +1320,22 @@ pub fn rich_text_page(
     wiki: &dyn Fn(&str) -> Option<PathBuf>,
     image: &dyn Fn(&str) -> Option<String>,
 ) -> String {
-    let body = inline_images(&portable_body(md, note_dir, wiki, false, false), image);
+    let mut body = inline_images(&portable_body(md, note_dir, wiki, false, false), image);
+    // Inline colours per alert kind: mail apps drop class rules. The note's text is escaped, so
+    // these tags only come from alerts.
+    for (kind, title, colour) in ALERT_COLOURS {
+        body = body
+            .replace(
+                &format!("<div class=\"alert alert-{kind}\""),
+                &format!(
+                    "<div class=\"alert alert-{kind}\" style=\"border-left: 4px solid {colour}; padding-left: 8px;\""
+                ),
+            )
+            .replace(
+                &format!("<p class=\"alert-title\">{title}</p>"),
+                &format!("<p class=\"alert-title\" style=\"color: {colour};\">{title}</p>"),
+            );
+    }
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><style>\
 table {{ border-collapse: collapse; }} th, td {{ border: 1px solid #999; padding: 2px 6px; }} \
@@ -2416,6 +2441,21 @@ mod tests {
         ] {
             assert!(!f.contains(bad), "{bad} in {f}");
         }
+    }
+
+    #[test]
+    fn rich_text_alert_colours() {
+        let p = rich_text_page("> [!TIP]\n> Try it\n", Path::new("/r"), &|_| None, &|_| {
+            None
+        });
+        assert!(
+            p.contains("<div class=\"alert alert-tip\" style=\"border-left: 4px solid #1a7f37;"),
+            "{p}"
+        );
+        assert!(
+            p.contains("<p class=\"alert-title\" style=\"color: #1a7f37;\">Tip</p>"),
+            "{p}"
+        );
     }
 
     #[test]

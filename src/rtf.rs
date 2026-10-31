@@ -5,7 +5,7 @@
 //! formulas as their TeX; front matter and raw HTML left out. Non-ASCII text is written as
 //! `\uN?` (UTF-16 units), so the file is plain ASCII. Pure; `preview::export_rtf` runs it.
 
-use comrak::nodes::{AstNode, ListType, NodeValue};
+use comrak::nodes::{AlertType, AstNode, ListType, NodeValue};
 
 /// Twips per indent step (a quarter inch).
 const STEP: i32 = 360;
@@ -16,10 +16,28 @@ const TABLE_WIDTH: i32 = 9000;
 pub fn rtf(md: &str) -> String {
     let arena = comrak::Arena::new();
     let root = comrak::parse_document(&arena, md, &crate::render::options());
-    let mut out = String::from(
-        "{\\rtf1\\ansi\\ansicpg1252\\uc1\\deff0\n\
-         {\\fonttbl{\\f0\\fswiss Arial;}{\\f1\\fmodern Courier New;}}\n\
-         {\\colortbl;\\red0\\green82\\blue204;\\red240\\green240\\blue240;}\n\
+    let quotes: Vec<_> = root
+        .descendants()
+        .filter(|n| matches!(n.data().value, NodeValue::BlockQuote))
+        .collect();
+    for quote in quotes {
+        crate::render::make_alert(quote);
+    }
+    // Colours: 1 link, 2 code shading, then one per alert kind (`ALERT_COLOURS` order).
+    let mut colours = String::from("\\red0\\green82\\blue204;\\red240\\green240\\blue240;");
+    for (_, _, hex) in crate::render::ALERT_COLOURS {
+        let rgb = u32::from_str_radix(&hex[1..], 16).unwrap_or(0);
+        colours.push_str(&format!(
+            "\\red{}\\green{}\\blue{};",
+            rgb >> 16,
+            (rgb >> 8) & 0xff,
+            rgb & 0xff
+        ));
+    }
+    let mut out = format!(
+        "{{\\rtf1\\ansi\\ansicpg1252\\uc1\\deff0\n\
+         {{\\fonttbl{{\\f0\\fswiss Arial;}}{{\\f1\\fmodern Courier New;}}}}\n\
+         {{\\colortbl;{colours}}}\n\
          \\f0\\fs24\n",
     );
     blocks(root, 0, &mut None, &mut out);
@@ -116,7 +134,24 @@ fn block<'a>(node: &'a AstNode<'a>, indent: i32, marker: &mut Option<String>, ou
                 out,
             );
         }
-        NodeValue::BlockQuote | NodeValue::MultilineBlockQuote(_) | NodeValue::Alert(_) => {
+        NodeValue::Alert(alert) => {
+            flush_marker(indent, marker, out);
+            let kind = match alert.alert_type {
+                AlertType::Note => 0,
+                AlertType::Tip => 1,
+                AlertType::Important => 2,
+                AlertType::Warning => 3,
+                AlertType::Caution => 4,
+            };
+            let (_, title, _) = crate::render::ALERT_COLOURS[kind];
+            paragraph(
+                &format!("\\li{}\\sa60\\keepn", indent + STEP * 2),
+                &format!("{{\\b\\cf{} {title}}}", kind + 3),
+                out,
+            );
+            blocks(node, indent + STEP * 2, &mut None, out);
+        }
+        NodeValue::BlockQuote | NodeValue::MultilineBlockQuote(_) => {
             flush_marker(indent, marker, out);
             blocks(node, indent + STEP * 2, &mut None, out);
         }
@@ -333,6 +368,19 @@ mod tests {
         assert_eq!(out.matches("\\cell\n").count(), 4);
         assert_eq!(out.matches("\\row\n").count(), 2);
         assert!(out.contains("{\\b h1}"));
+    }
+
+    #[test]
+    fn alerts_keep_title_and_colour() {
+        let out = rtf("> [!WARNING]\n> Mind the gap\n\n> plain quote\n");
+        // Colour 6 = warning, #9a6700.
+        assert!(out.contains("\\red154\\green103\\blue0;"));
+        let table = out.split("\\colortbl;").nth(1).unwrap();
+        assert_eq!(table.split(';').nth(5), Some("\\red154\\green103\\blue0"));
+        assert!(out.contains("\\li720\\sa60\\keepn {\\b\\cf6 Warning}"));
+        assert!(out.contains("\\li720\\sa120 Mind the gap"));
+        assert!(!out.contains("[!WARNING]"));
+        assert!(out.contains("\\li720\\sa120 plain quote"));
     }
 
     #[test]
