@@ -839,8 +839,9 @@ pub(crate) fn highlight(text: &str, ranges: &[std::ops::Range<usize>]) -> String
 /// Shift+Ctrl+F: full-text search over the notes of the open folder (the last scan's list,
 /// read from disk: unsaved edits of the open note are not searched). Runs on a background
 /// thread, 250 ms after typing stops; a newer query cancels the older one. Activating a
-/// matching line opens the note at that line. Replace All replaces the listed matches after a
-/// confirmation (`replace_all`). Esc closes.
+/// matching line opens the note at that line. With Regex on, an invalid pattern shows its error
+/// under the box and no results. Replace All replaces the listed matches after a confirmation
+/// (`replace_all`). Esc closes.
 pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -869,9 +870,26 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
         .label("Whole Word")
         .active(editor.find_whole_word.get())
         .build();
+    let regex = gtk::CheckButton::builder()
+        .label("Regex")
+        .active(editor.find_regex.get())
+        .tooltip_text(
+            "Search with a regular expression (Rust regex syntax), line by line. \
+             In Replace with, $1…$9 or ${1} insert a group, $$ a literal $.",
+        )
+        .build();
     let toggles = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     toggles.append(&match_case);
     toggles.append(&whole_word);
+    toggles.append(&regex);
+    // An invalid pattern's reason, under the box.
+    let error = gtk::Label::builder()
+        .xalign(0.0)
+        .wrap(true)
+        .visible(false)
+        .build();
+    error.add_css_class("error");
+    error.add_css_class("caption");
     let status = gtk::Label::builder().xalign(0.0).build();
     status.add_css_class("dim-label");
     status.add_css_class("caption");
@@ -903,6 +921,7 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
     replace_row.append(&replacement);
     replace_row.append(&replace);
     content.append(&entry);
+    content.append(&error);
     content.append(&toggles);
     content.append(&replace_row);
     content.append(&status);
@@ -924,7 +943,7 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
     let show = {
         let (list, status, targets, root) = (list.clone(), status.clone(), targets.clone(), root);
         let (listed, replace) = (listed.clone(), replace.clone());
-        move |found: find::Found, query: &str, options: find::Options| {
+        move |found: find::Found, query: find::Query| {
             let matches: usize = found
                 .files
                 .iter()
@@ -936,9 +955,9 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
                 (f.path.clone(), f.version, lines)
             });
             replace.set_sensitive(matches > 0);
+            let empty = query.is_empty();
             listed.replace((matches > 0).then(|| Listed {
-                query: query.trim().to_string(),
-                options,
+                query,
                 matches,
                 files: files.collect(),
             }));
@@ -997,7 +1016,7 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
             targets.replace(rows);
             status.set_label(&match (count, found.more) {
                 (_, true) => format!("First {count} matching lines (more not shown)"),
-                (0, _) if query.trim().is_empty() => String::new(),
+                (0, _) if empty => String::new(),
                 (0, _) => "No matches".to_string(),
                 (1, _) => "1 matching line".to_string(),
                 _ => format!("{count} matching lines"),
@@ -1009,22 +1028,40 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
     let run = {
         let (generation, open_note) = (generation.clone(), open_note.clone());
         let (listed, replace) = (listed.clone(), replace.clone());
-        let (match_case, whole_word) = (match_case.clone(), whole_word.clone());
+        let (match_case, whole_word, regex) =
+            (match_case.clone(), whole_word.clone(), regex.clone());
+        let (error, list, status) = (error.clone(), list.clone(), status.clone());
+        let targets = targets.clone();
         move |query: String| {
             listed.replace(None);
             replace.set_sensitive(false);
             let mine = generation.fetch_add(1, Ordering::SeqCst) + 1;
-            let (notes, open_note) = (notes.clone(), open_note.borrow().clone());
-            let (generation, show) = (generation.clone(), show.clone());
             let options = find::Options {
                 match_case: match_case.is_active(),
                 whole_word: whole_word.is_active(),
+                regex: regex.is_active(),
             };
+            let query = match find::Query::new(&query, options) {
+                Ok(query) => query,
+                Err(reason) => {
+                    error.set_label(&reason);
+                    error.set_visible(true);
+                    while let Some(row) = list.first_child() {
+                        list.remove(&row);
+                    }
+                    targets.replace(Vec::new());
+                    status.set_label("");
+                    return;
+                }
+            };
+            error.set_visible(false);
+            let (notes, open_note) = (notes.clone(), open_note.borrow().clone());
+            let (generation, show) = (generation.clone(), show.clone());
             glib::spawn_future_local(async move {
                 let g = generation.clone();
                 let q = query.clone();
                 let found = gio::spawn_blocking(move || {
-                    find::search(&notes, open_note.as_ref().as_ref(), &q, options, &|| {
+                    find::search(&notes, open_note.as_ref().as_ref(), &q, &|| {
                         g.load(Ordering::SeqCst) != mine
                     })
                 })
@@ -1032,7 +1069,7 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
                 if let Ok(Some(found)) = found
                     && generation.load(Ordering::SeqCst) == mine
                 {
-                    show(found, &query, options);
+                    show(found, query);
                 }
             });
         }
@@ -1045,10 +1082,12 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
     ));
     let on_toggle = {
         let (editor, entry, run) = (editor.clone(), entry.clone(), run.clone());
-        let (match_case, whole_word) = (match_case.clone(), whole_word.clone());
+        let (match_case, whole_word, regex) =
+            (match_case.clone(), whole_word.clone(), regex.clone());
         move || {
             editor.find_match_case.set(match_case.is_active());
             editor.find_whole_word.set(whole_word.is_active());
+            editor.find_regex.set(regex.is_active());
             editor.remember();
             run(entry.text().to_string());
         }
@@ -1060,6 +1099,11 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
         move |_| on_toggle()
     ));
     whole_word.connect_toggled(clone!(
+        #[strong]
+        on_toggle,
+        move |_| on_toggle()
+    ));
+    regex.connect_toggled(clone!(
         #[strong]
         on_toggle,
         move |_| on_toggle()
@@ -1159,9 +1203,7 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
 /// The results Find in Folder shows, as Replace All needs them.
 #[derive(Clone)]
 struct Listed {
-    /// As typed (trimmed).
-    query: String,
-    options: find::Options,
+    query: find::Query,
     /// All matches of the listed lines.
     matches: usize,
     /// (note, `find::version` of the text searched, listed line numbers).
@@ -1186,10 +1228,21 @@ fn confirm_replace(
         count(found.matches, "match", "matches"),
         count(found.files.len(), "note", "notes")
     );
-    let body = if with.is_empty() {
-        format!("Every listed match of “{}” is deleted.", found.query)
+    let what = if found.query.options.regex {
+        "the pattern "
     } else {
-        format!("Every listed match of “{}” becomes “{with}”.", found.query)
+        ""
+    };
+    let body = if with.is_empty() {
+        format!(
+            "Every listed match of {what}“{}” is deleted.",
+            found.query.text
+        )
+    } else {
+        format!(
+            "Every listed match of {what}“{}” becomes “{with}”.",
+            found.query.text
+        )
     };
     let confirm = adw::AlertDialog::new(Some(&heading), Some(&body));
     confirm.add_responses(&[("cancel", "Cancel"), ("replace", "Replace All")]);
@@ -1234,7 +1287,7 @@ fn replace_all(
             skipped.push((path, CHANGED));
             continue;
         }
-        let edits = find::replace_edits(&text, &found.query, found.options, &lines, with);
+        let edits = find::replace_edits(&text, &found.query, &lines, with);
         if !edits.is_empty() {
             editor.edit_buffer(&text, &edits);
             editor.save();
@@ -1242,12 +1295,12 @@ fn replace_all(
         }
     }
     let (weak, parent, with) = (Rc::downgrade(editor), parent.clone(), with.to_string());
-    let (query, options) = (found.query, found.options);
+    let query = found.query;
     glib::spawn_future_local(async move {
         let paths: Vec<PathBuf> = closed.iter().map(|(path, ..)| path.clone()).collect();
         let results = gio::spawn_blocking(move || {
             let replace = |(path, version, lines): &(PathBuf, u64, Vec<usize>)| {
-                find::replace_in_file(path, *version, &query, options, lines, &with)
+                find::replace_in_file(path, *version, &query, lines, &with)
             };
             closed.iter().map(replace).collect::<Vec<_>>()
         })

@@ -274,6 +274,7 @@ pub struct State {
     pub expanded: Vec<PathBuf>,
     pub find_match_case: bool,
     pub find_whole_word: bool,
+    pub find_regex: bool,
     /// Favorites of every folder (`favorites.rs`).
     pub favorites: crate::favorites::All,
 }
@@ -393,6 +394,7 @@ impl State {
                 Some(("find_whole_word", v)) => {
                     state.find_whole_word = v.parse().unwrap_or(false);
                 }
+                Some(("find_regex", v)) => state.find_regex = v.parse().unwrap_or(false),
                 // Written before side by side existed.
                 Some(("preview", "true")) => state.mode = Mode::Preview,
                 _ => {}
@@ -454,8 +456,8 @@ impl State {
             p.spell_check
         );
         out += &format!(
-            "find_match_case={}\nfind_whole_word={}\n",
-            self.find_match_case, self.find_whole_word
+            "find_match_case={}\nfind_whole_word={}\nfind_regex={}\n",
+            self.find_match_case, self.find_whole_word, self.find_regex
         );
         out
     }
@@ -495,6 +497,7 @@ impl State {
             expanded,
             find_match_case: self.find_match_case,
             find_whole_word: self.find_whole_word,
+            find_regex: self.find_regex,
             // Kept even for folders gone now, like bookmarks; a missing favourite shows dimmed.
             favorites: self.favorites,
         }
@@ -698,11 +701,12 @@ mod tests {
             expanded: Vec::new(),
             find_match_case: false,
             find_whole_word: false,
+            find_regex: false,
             favorites: Default::default(),
         };
         let text = state.serialize();
         assert!(text.is_ascii());
-        assert_eq!(text.lines().count(), 25);
+        assert_eq!(text.lines().count(), 26);
         assert_eq!(State::parse(&text), state);
     }
 
@@ -1063,20 +1067,25 @@ mod tests {
     fn find_options_round_trip_and_default() {
         assert!(!State::default().find_match_case);
         assert!(!State::default().find_whole_word);
+        assert!(!State::default().find_regex);
         let state = State {
             find_match_case: true,
             find_whole_word: true,
+            find_regex: true,
             ..State::default()
         };
         let serialized = state.serialize();
         assert!(serialized.contains("find_match_case=true\n"));
         assert!(serialized.contains("find_whole_word=true\n"));
+        assert!(serialized.contains("find_regex=true\n"));
         let parsed = State::parse(&serialized);
         assert!(parsed.find_match_case);
         assert!(parsed.find_whole_word);
+        assert!(parsed.find_regex);
         let usable = parsed.usable();
         assert!(usable.find_match_case);
         assert!(usable.find_whole_word);
+        assert!(usable.find_regex);
     }
 
     #[test]

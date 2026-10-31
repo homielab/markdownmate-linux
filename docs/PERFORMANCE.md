@@ -267,6 +267,23 @@ software rasteriser: with `GSK_RENDERER=cairo` (`./dev.sh sh -c 'GSK_RENDERER=ca
 scripts/measure-folder.sh 10000 1'`) the app uses 183 MB with 10,000 notes and 195 MB with 20. Breakdown and
 what the app trims: [Memory](#memory).
 
+### Find in Folder with Regex
+
+Searching the whole folder for a query that matches nothing (every note read and searched to the
+end; best of 5, files in the page cache, release build, one thread):
+
+| query | time |
+|---|---|
+| plain `zzqx` | 163 ms |
+| Regex `zzqx` | 41 ms |
+| Regex `zz\w*qx` | 40 ms |
+| Regex `\bzz\d+\b` | 49 ms |
+
+A pattern is faster than plain text because plain text without Match Case lowercases every line
+char by char, while the `regex` crate matches case-insensitively without copying. A common word
+stops at the first 500 matching lines (under 5 ms either way). Run it with
+`./dev.sh sh -c 'cargo run -q --release --example generate_notes -- /tmp/notes 10000 && MM_FIND_NOTES=/tmp/notes cargo test --release find::tests::time_regex -- --ignored --nocapture'`.
+
 ## Memory
 
 Resident size (`VmRSS`, `/proc/<pid>/smaps` summed per mapping) with the folder of 20 notes,

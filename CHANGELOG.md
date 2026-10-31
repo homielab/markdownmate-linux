@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Find in Folder: a Regex toggle next to Match Case and Whole Word searches with a regular expression (Rust regex syntax, line by line); an invalid pattern shows why under the search box. Replace All then fills in groups: `$1`…`$9` or `${1}`, `$$` for a literal `$`. Same as the macOS app.
 - Favorites: right-click a note or folder ▸ Add to Favorites to pin it in a Favorites section at the top of the sidebar, one click away; Open Quickly lists them first. Each folder keeps its own, remembered across restarts, and they follow renames and moves made in the app. Same as the macOS app.
 - Duplicate in the sidebar's right-click menu: copies a note or a folder with its contents next to itself as "Name copy.md" ("Name copy 2.md" when taken) and opens a note copy. Same as the macOS app.
 - Move to Folder… in the sidebar's right-click menu: pick the folder from a list of the open folder's folders to move a note or folder without dragging, also from the keyboard. It refuses a name that is already taken and offers to update links, like a drag, and the sidebar then shows the moved entry. Same as the macOS app.
