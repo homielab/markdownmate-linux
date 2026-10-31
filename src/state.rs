@@ -204,6 +204,8 @@ pub struct Prefs {
     /// Today's Note's folder, relative to the open folder (`daily::folder`); empty = the open
     /// folder itself.
     pub daily_folder: String,
+    /// New from Template's folder, relative to the open folder (the `daily_folder` rule).
+    pub templates_folder: String,
     /// Line height in percent of the font's (`LINE_SPACINGS`); 100 = the font's own.
     pub line_spacing: u32,
     pub text_width: TextWidth,
@@ -246,6 +248,7 @@ impl Default for Prefs {
             format_bar: false,
             focus_mode: false,
             daily_folder: crate::daily::DEFAULT_FOLDER.to_string(),
+            templates_folder: crate::templates::DEFAULT_FOLDER.to_string(),
             line_spacing: 100,
             text_width: TextWidth::Medium,
             sidebar_sort: crate::notes::SortOrder::Name,
@@ -349,6 +352,7 @@ impl State {
                 }
                 // Kept as typed (an empty value is a choice: the open folder).
                 Some(("daily_folder", v)) => state.prefs.daily_folder = v.to_string(),
+                Some(("templates_folder", v)) => state.prefs.templates_folder = v.to_string(),
                 Some(("indent", v @ ("2" | "4"))) => state.prefs.indent = v.parse().unwrap_or(4),
                 Some(("zoom", v)) => {
                     if let Ok(z) = v.parse::<u32>() {
@@ -406,7 +410,7 @@ impl State {
             out += &format!("font={font}\n");
         }
         out += &format!(
-            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\nspell_check={}\n",
+            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\ntemplates_folder={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\nspell_check={}\n",
             p.line_numbers,
             p.wrap,
             p.indent,
@@ -420,6 +424,7 @@ impl State {
             p.format_bar,
             p.focus_mode,
             p.daily_folder.replace('\n', " "),
+            p.templates_folder.replace('\n', " "),
             line_spacing_name(p.line_spacing),
             p.text_width.name(),
             p.sidebar_sort.name(),
@@ -673,7 +678,7 @@ mod tests {
         };
         let text = state.serialize();
         assert!(text.is_ascii());
-        assert_eq!(text.lines().count(), 24);
+        assert_eq!(text.lines().count(), 25);
         assert_eq!(State::parse(&text), state);
     }
 
@@ -830,6 +835,7 @@ mod tests {
             format_bar: true,
             focus_mode: true,
             daily_folder: " Journal/2026 ".into(),
+            templates_folder: "Notes/My Templates".into(),
             line_spacing: 115,
             text_width: TextWidth::Wide,
             sidebar_sort: crate::notes::SortOrder::Modified,
@@ -849,6 +855,7 @@ mod tests {
         assert!(old.prefs.sync_scroll && old.prefs.tags && old.prefs.ignore_colours);
         assert!(!old.prefs.typewriter && !old.prefs.format_bar && !old.prefs.focus_mode);
         assert_eq!(old.prefs.daily_folder, "Daily");
+        assert_eq!(old.prefs.templates_folder, "Templates");
         assert_eq!(old.prefs.line_spacing, 100);
         assert_eq!(old.prefs.text_width, TextWidth::Medium);
         assert_eq!(old.prefs.sidebar_sort, crate::notes::SortOrder::Name);
@@ -856,6 +863,10 @@ mod tests {
         assert!(old.prefs.spell_check);
         // An empty daily notes folder (the open folder) stays empty.
         assert_eq!(State::parse("daily_folder=\n").prefs.daily_folder, "");
+        assert_eq!(
+            State::parse("templates_folder=\n").prefs.templates_folder,
+            ""
+        );
         // Broken values keep the default.
         let bad = State::parse(
             "font= \nline_numbers=yes\nwrap=1\nindent=3\nindent=x\ntheme=neon\nstyle=dim\nsync_scroll=no\ntags=0\nignore_colours=off\ntypewriter=on\nformat_bar=yes\nfocus_mode=1\nline_spacing=1.2\nline_spacing=x\ntext_width=huge\nsidebar_sort=size\nweb_images=yes\nhard_breaks=on\nspell_check=off\n",

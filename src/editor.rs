@@ -19,7 +19,7 @@ use crate::{
 };
 use crate::{
     backlinks, complete, find, images, links, lists, mentions, naming, notes, outline, quick,
-    relink, render, retag, save, sidebar, state, stats, tags, timing, title, url,
+    relink, render, retag, save, sidebar, state, stats, tags, templates, timing, title, url,
 };
 
 /// The window's widgets and the open note. Shared (Rc) by sidebar buttons, the auto-save
@@ -140,6 +140,8 @@ pub(crate) struct Editor {
     pub(crate) font_css: gtk::CssProvider,
     /// Main menu ▸ Open Recent: `recent` as `win.open-recent` items.
     pub(crate) recent_menu: gio::Menu,
+    /// Main menu ▸ New from Template: the templates folder's notes (`fill_templates_menu`).
+    pub(crate) templates_menu: gio::Menu,
     /// Focus Mode (Shift+Ctrl+J): the editor dims all but the cursor's paragraph.
     pub(crate) focus: Rc<crate::focus::Focus>,
     /// Spell check (Preferences ▸ Editor ▸ Check Spelling), on while `prefs.spell_check` and
@@ -1314,6 +1316,8 @@ impl Editor {
             "new-note",
             "new-folder",
             "todays-note",
+            "new-from-template",
+            "templates",
             "open-quickly",
             "find-in-folder",
         ] {
@@ -1396,6 +1400,40 @@ impl Editor {
             );
             self.recent_menu.append_item(&item);
         }
+    }
+
+    /// Main menu ▸ New from Template: one `win.new-from-template` item per template of the
+    /// templates folder (`templates::list`), or a greyed-out "No Templates" (also without an
+    /// open folder). Refilled each time the main menu opens, so it follows the folder, its
+    /// files and the preference.
+    pub(crate) fn fill_templates_menu(&self) {
+        self.templates_menu.remove_all();
+        let list = self
+            .templates_dir()
+            .map_or_else(Vec::new, |d| templates::list(&d));
+        if list.is_empty() {
+            // `win.no-templates` is never enabled.
+            self.templates_menu
+                .append(Some("No Templates"), Some("win.no-templates"));
+        }
+        for t in list {
+            // `_` marks a mnemonic in menu labels.
+            let item = gio::MenuItem::new(Some(&t.title.replace('_', "__")), None);
+            item.set_action_and_target_value(
+                Some("win.new-from-template"),
+                Some(&t.path.to_string_lossy().to_variant()),
+            );
+            self.templates_menu.append_item(&item);
+        }
+    }
+
+    /// The templates folder of the open folder (`Prefs::templates_folder`); None without one.
+    fn templates_dir(&self) -> Option<PathBuf> {
+        let root = self.root.borrow().clone()?;
+        Some(crate::daily::folder(
+            &root,
+            &self.prefs.borrow().templates_folder,
+        ))
     }
 
     /// Opens a recent folder like Open Folder; one that is gone is dropped from the list.
@@ -1554,6 +1592,66 @@ impl Editor {
         self.new_note(dir, &file.to_string_lossy());
     }
 
+    /// New from Template: a new note like New File (`Untitled.md`, `Untitled 2.md`, … in
+    /// `current_dir`, never overwriting) whose text is the template's with `{{date}}` and
+    /// `{{title}}` filled (`templates::fill`; title = the new note's name without `.md`), opened
+    /// with the cursor at its end. An unreadable template only shows a toast.
+    pub(crate) fn new_from_template(self: &Rc<Self>, template: &Path) {
+        let Some(dir) = self.current_dir() else {
+            return;
+        };
+        let text = match std::fs::read_to_string(template) {
+            Ok(text) => text,
+            Err(e) => {
+                self.toast(&format!(
+                    "Cannot read template {}: {e}",
+                    file_name(template)
+                ));
+                return;
+            }
+        };
+        let Some(date) = self.today() else {
+            return;
+        };
+        if !self.save() {
+            return;
+        }
+        let path = match naming::create_note(&dir, UNTITLED) {
+            Ok(path) => path,
+            Err(e) => return self.toast(&format!("Cannot create a note: {e}")),
+        };
+        let title = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if let Err(e) = std::fs::write(&path, templates::fill(&text, &date, &title)) {
+            self.toast(&format!("Cannot write {}: {e}", file_name(&path)));
+        }
+        self.expand_to(&dir);
+        self.update_note_list(None, Some(&path));
+        self.open(&path);
+        if self.path.borrow().as_deref() == Some(path.as_path()) {
+            self.buffer.place_cursor(&self.buffer.end_iter());
+            self.view
+                .scroll_to_mark(&self.buffer.get_insert(), 0.0, true, 0.0, 0.3);
+        }
+        self.schedule_rescan();
+    }
+
+    /// Today's local date as `YYYY-MM-DD` (`daily::date_string`); None (with a toast) if the
+    /// clock cannot be read.
+    fn today(&self) -> Option<String> {
+        let Ok(now) = glib::DateTime::now_local() else {
+            self.toast("Cannot read today's date");
+            return None;
+        };
+        Some(crate::daily::date_string(
+            now.year(),
+            now.month() as u32,
+            now.day_of_month() as u32,
+        ))
+    }
+
     /// Today's Note (Ctrl+D): opens `<open folder>/<daily notes folder>/YYYY-MM-DD.md` for the
     /// local date (`daily`); a missing one is created (with its folders) from `Template.md`
     /// (or `# YYYY-MM-DD` and a blank line) and opens with the cursor at its end. Nothing
@@ -1562,12 +1660,9 @@ impl Editor {
         let Some(root) = self.root.borrow().clone() else {
             return;
         };
-        let Ok(now) = glib::DateTime::now_local() else {
-            self.toast("Cannot read today's date");
+        let Some(date) = self.today() else {
             return;
         };
-        let date =
-            crate::daily::date_string(now.year(), now.month() as u32, now.day_of_month() as u32);
         let path = crate::daily::path(&root, &self.prefs.borrow().daily_folder, &date);
         if self.path.borrow().as_deref() == Some(path.as_path()) {
             return;

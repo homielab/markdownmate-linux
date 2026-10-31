@@ -40,6 +40,7 @@ mod stats;
 mod table;
 mod tablebar;
 mod tags;
+mod templates;
 mod timing;
 mod title;
 mod url;

@@ -345,11 +345,25 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
             editor.remember();
         }
     ));
+    // Saved as typed; the main menu reads it each time it opens.
+    let templates = adw::EntryRow::builder()
+        .title("Templates Folder")
+        .text(prefs.templates_folder.as_str())
+        .build();
+    templates.connect_changed(clone!(
+        #[strong]
+        editor,
+        move |row| {
+            editor.prefs.borrow_mut().templates_folder = row.text().to_string();
+            editor.remember();
+        }
+    ));
     let notes_group = adw::PreferencesGroup::builder()
         .title("Notes")
-        .description("Today's Note (Ctrl+D) opens YYYY-MM-DD.md in this folder of the open folder; empty: the open folder itself. A Template.md in this folder sets the initial text for new daily notes, replacing {{date}} and {{title}} with today's date.")
+        .description("Today's Note (Ctrl+D) opens YYYY-MM-DD.md in this folder of the open folder; empty: the open folder itself. A Template.md in this folder sets the initial text for new daily notes, replacing {{date}} and {{title}} with today's date. New from Template (main menu) lists the .md notes of the Templates Folder and creates an Untitled note from one, with {{date}} as today's date and {{title}} as the note's name.")
         .build();
     notes_group.add(&daily);
+    notes_group.add(&templates);
     let page = adw::PreferencesPage::new();
     page.add(&group);
     page.add(&look);

@@ -41,6 +41,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     let header = adw::HeaderBar::new();
     // Open Recent is refilled by `Editor::fill_recent_menu`.
     let recent_menu = gio::Menu::new();
+    // New from Template is refilled by `Editor::fill_templates_menu` when the menu opens.
+    let templates_menu = gio::Menu::new();
     let menu = gio::Menu::new();
     for items in [
         &[
@@ -69,6 +71,12 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         let section = gio::Menu::new();
         for (label, action) in items {
             section.append(Some(label), Some(action));
+            if *action == "win.new-folder" {
+                // Its action greys the submenu out until a folder is open.
+                let item = gio::MenuItem::new_submenu(Some("New from Template"), &templates_menu);
+                item.set_attribute_value("action", Some(&"win.templates".to_variant()));
+                section.append_item(&item);
+            }
         }
         if items[0].1 == "win.open-file" {
             section.append_submenu(Some("Open Recent"), &recent_menu);
@@ -143,14 +151,13 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     }
     // Smoke tests activate the actions, not this menu (an open GtkPopover logs Gdk-CRITICAL
     // under Xvfb). F10 opens it (`primary`).
-    header.pack_start(
-        &gtk::MenuButton::builder()
-            .icon_name("open-menu-symbolic")
-            .tooltip_text("Main Menu")
-            .menu_model(&menu)
-            .primary(true)
-            .build(),
-    );
+    let menu_button = gtk::MenuButton::builder()
+        .icon_name("open-menu-symbolic")
+        .tooltip_text("Main Menu")
+        .menu_model(&menu)
+        .primary(true)
+        .build();
+    header.pack_start(&menu_button);
     header.pack_start(
         &gtk::Button::builder()
             .icon_name("user-bookmarks-symbolic")
@@ -376,6 +383,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         find_whole_word: Cell::new(false),
         prefs: RefCell::default(),
         recent_menu,
+        templates_menu,
         font_css: gtk::CssProvider::new(),
         focus: crate::focus::Focus::attach(&focus_view),
         spelling: crate::spell::attach(&view),
@@ -508,6 +516,36 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     ));
     window.add_action(&today_action);
     app.set_accels_for_action("win.todays-note", &["<Control>d"]);
+
+    // New from Template ▸ <template>: the target is the template's path. Disabled until a
+    // folder is open (load_folder enables it, and `templates`, the submenu's own no-op action).
+    let template_action =
+        gio::SimpleAction::new("new-from-template", Some(glib::VariantTy::STRING));
+    template_action.set_enabled(false);
+    template_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, param| {
+            if let Some(path) = param.and_then(|p| p.str()) {
+                editor.new_from_template(std::path::Path::new(path));
+            }
+        }
+    ));
+    window.add_action(&template_action);
+    let templates_action = gio::SimpleAction::new("templates", None);
+    templates_action.set_enabled(false);
+    window.add_action(&templates_action);
+    // The "No Templates" item: always greyed out.
+    let no_templates = gio::SimpleAction::new("no-templates", None);
+    no_templates.set_enabled(false);
+    window.add_action(&no_templates);
+    if let Some(popover) = menu_button.popover() {
+        popover.connect_show(clone!(
+            #[weak]
+            editor,
+            move |_| editor.fill_templates_menu()
+        ));
+    }
 
     // Disabled until a folder is open (load_folder enables it).
     let quick_action = gio::SimpleAction::new("open-quickly", None);
@@ -1154,6 +1192,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         .replace(std::mem::take(&mut session.bookmarks));
     editor.recent.replace(std::mem::take(&mut session.recent));
     editor.fill_recent_menu();
+    editor.fill_templates_menu();
     editor.prefs.replace(std::mem::take(&mut session.prefs));
     editor
         .positions

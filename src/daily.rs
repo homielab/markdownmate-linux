@@ -57,10 +57,11 @@ pub fn load_template(folder: &Path) -> Option<String> {
 }
 
 /// What a new daily note starts with: `template` with `{{date}}` and `{{title}}` replaced by
-/// `date`, or `# <date>\n\n` when there is no template.
+/// `date` (`templates::fill`, as New from Template), or `# <date>\n\n` when there is no
+/// template.
 pub fn initial_text_from_template(template: Option<&str>, date: &str) -> String {
     match template {
-        Some(t) => t.replace("{{date}}", date).replace("{{title}}", date),
+        Some(t) => crate::templates::fill(t, date, date),
         None => format!("# {date}\n\n"),
     }
 }

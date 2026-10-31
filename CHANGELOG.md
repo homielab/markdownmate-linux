@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- New from Template in the main menu: lists the notes of a `Templates` folder in the open folder and creates an Untitled note from the one you pick, filling `{{date}}` with today's date and `{{title}}` with the note's name, then opens it with the cursor at the end. The folder is set in Preferences ▸ Notes ▸ Templates Folder. Same as the macOS app.
 - Find in Folder: Match Case and Whole Word toggles under the search box (both off by default, remembered across restarts). Replace All follows them.
 - Unlinked Mentions: each entry has a Link button that turns that mention into a wiki link to the current note, `[[Name]]`, or `[[Name|mention]]` when the wording differs from the name. Ctrl+Z undoes it in the open note; a note changed since the list was made is left alone, with a message. Same as the macOS app.
 - Table of contents: a line with only `[TOC]` shows the note's headings as nested links in the preview, print and HTML / PDF exports, and updates as you edit a heading. Same as the macOS app.
