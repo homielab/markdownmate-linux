@@ -83,7 +83,7 @@ pub fn first_mention(name: &str, text: &str) -> Option<Spot> {
             continue;
         }
         let mut excluded = None; // Only worked out for lines with the name.
-        for m in find::matches(line, &query) {
+        for m in find::matches(line, &query, find::Options::default()) {
             let before = line[..m.start].chars().next_back();
             let after = line[m.end..].chars().next();
             if before.is_some_and(is_word_char) || after.is_some_and(is_word_char) {

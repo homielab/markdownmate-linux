@@ -133,6 +133,8 @@ pub(crate) struct Editor {
     pub(crate) recent: RefCell<Vec<PathBuf>>,
     /// Vị trí con trỏ theo note, mới nhất trước (`state::push_position`).
     pub(crate) positions: RefCell<Vec<state::Position>>,
+    pub(crate) find_match_case: Cell<bool>,
+    pub(crate) find_whole_word: Cell<bool>,
     /// Editor preferences (Ctrl+,) and the CSS that sets the chosen font.
     pub(crate) prefs: RefCell<state::Prefs>,
     pub(crate) font_css: gtk::CssProvider,
@@ -176,6 +178,8 @@ impl Editor {
             prefs: self.prefs.borrow().clone(),
             positions: self.positions.borrow().clone(),
             expanded,
+            find_match_case: self.find_match_case.get(),
+            find_whole_word: self.find_whole_word.get(),
         };
         if let Err(e) = state::store(&state_file(), &state) {
             eprintln!("markdownmate: cannot save session state: {e}");

@@ -268,6 +268,8 @@ pub struct State {
     pub positions: Vec<Position>,
     /// Thư mục đang mở rộng trong sidebar (đường dẫn tuyệt đối, trong `folder`).
     pub expanded: Vec<PathBuf>,
+    pub find_match_case: bool,
+    pub find_whole_word: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -365,6 +367,12 @@ impl State {
                 }
                 Some(("theme", v)) => state.prefs.theme = Theme::from_name(v).unwrap_or_default(),
                 Some(("style", v)) => state.prefs.style = Style::from_name(v).unwrap_or_default(),
+                Some(("find_match_case", v)) => {
+                    state.find_match_case = v.parse().unwrap_or(false);
+                }
+                Some(("find_whole_word", v)) => {
+                    state.find_whole_word = v.parse().unwrap_or(false);
+                }
                 // Written before side by side existed.
                 Some(("preview", "true")) => state.mode = Mode::Preview,
                 _ => {}
@@ -419,6 +427,10 @@ impl State {
             p.hard_breaks,
             p.spell_check
         );
+        out += &format!(
+            "find_match_case={}\nfind_whole_word={}\n",
+            self.find_match_case, self.find_whole_word
+        );
         out
     }
 
@@ -455,6 +467,8 @@ impl State {
             // Note đã mất chỉ chiếm chỗ đến khi bị đẩy ra khỏi POS_MAX.
             positions: self.positions,
             expanded,
+            find_match_case: self.find_match_case,
+            find_whole_word: self.find_whole_word,
         }
     }
 }
@@ -654,10 +668,12 @@ mod tests {
             prefs: Prefs::default(),
             positions: Vec::new(),
             expanded: Vec::new(),
+            find_match_case: false,
+            find_whole_word: false,
         };
         let text = state.serialize();
         assert!(text.is_ascii());
-        assert_eq!(text.lines().count(), 22);
+        assert_eq!(text.lines().count(), 24);
         assert_eq!(State::parse(&text), state);
     }
 
@@ -1006,5 +1022,25 @@ mod tests {
         };
         assert_eq!(outside.usable(), State::default());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_options_round_trip_and_default() {
+        assert!(!State::default().find_match_case);
+        assert!(!State::default().find_whole_word);
+        let state = State {
+            find_match_case: true,
+            find_whole_word: true,
+            ..State::default()
+        };
+        let serialized = state.serialize();
+        assert!(serialized.contains("find_match_case=true\n"));
+        assert!(serialized.contains("find_whole_word=true\n"));
+        let parsed = State::parse(&serialized);
+        assert!(parsed.find_match_case);
+        assert!(parsed.find_whole_word);
+        let usable = parsed.usable();
+        assert!(usable.find_match_case);
+        assert!(usable.find_whole_word);
     }
 }

@@ -372,6 +372,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         bookmarks: RefCell::default(),
         recent: RefCell::default(),
         positions: RefCell::default(),
+        find_match_case: Cell::new(false),
+        find_whole_word: Cell::new(false),
         prefs: RefCell::default(),
         recent_menu,
         font_css: gtk::CssProvider::new(),
@@ -1156,6 +1158,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     editor
         .positions
         .replace(std::mem::take(&mut session.positions));
+    editor.find_match_case.set(session.find_match_case);
+    editor.find_whole_word.set(session.find_whole_word);
     // Chỉ dùng khi thư mục mở ra chính là thư mục đã lưu (`show_folder` lọc theo thư mục).
     editor
         .expanded
