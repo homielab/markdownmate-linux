@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- A new app icon: the same M↓ mark as on the Mac, now with bolder, solid black strokes.
 - Preferences ▸ Appearance ▸ Line Breaks: choose *Every New Line* to show each newline in a paragraph as a line break (no two spaces or `\` needed) in the preview, print and HTML / PDF / rich-text exports, as in the macOS app. *Markdown Standard* stays the default.
 
 ## 0.6.0
