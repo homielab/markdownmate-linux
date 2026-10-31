@@ -319,6 +319,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     );
     outline_panel.set_visible(false);
     let (tags_panel, tags_list) = sidebar::tags_panel();
+    let (favorites_panel, favorites_list) = sidebar::favorites_panel();
     let note_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     note_box.append(&panes);
     note_box.append(&outline_panel);
@@ -373,6 +374,10 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         rescan_timer: RefCell::new(None),
         expanded: RefCell::new(HashSet::new()),
         sidebar_store: RefCell::new(None),
+        sidebar_view: RefCell::new(None),
+        favorites_panel,
+        favorites_list: favorites_list.clone(),
+        favorites: RefCell::default(),
         scan_gen: Cell::new(0),
         applied_gen: Cell::new(0),
         scan_dir: RefCell::new(None),
@@ -405,6 +410,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
     sidebar::tags_menu(&tags_list, &Rc::downgrade(&editor));
+    sidebar::connect_favorites(&favorites_list, &Rc::downgrade(&editor));
     tags_list.connect_row_activated(clone!(
         #[weak]
         editor,

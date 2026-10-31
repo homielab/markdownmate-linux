@@ -4,6 +4,7 @@ mod daily;
 mod diagrams;
 mod dialogs;
 mod editor;
+mod favorites;
 mod find;
 mod focus;
 mod format;

@@ -646,9 +646,10 @@ pub(crate) fn go_to_line(editor: &Rc<Editor>) {
     entry.grab_focus();
 }
 
-/// Ctrl+P: search box over the notes of the open folder. Up/Down select, Enter opens the
-/// selected note, or creates a note named after the query in the folder root when nothing
-/// matches. Esc closes (adw::Dialog default).
+/// Ctrl+P: search box over the notes of the open folder and its Favorites (with a star).
+/// Up/Down select, Enter opens the selected note (a favourite folder is shown in the sidebar),
+/// or creates a note named after the query in the folder root when nothing matches. Esc
+/// closes (adw::Dialog default).
 pub(crate) fn open_quickly(editor: &Rc<Editor>) {
     let Some(root) = editor.root.borrow().clone() else {
         return;
@@ -663,6 +664,7 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
         .map(|p| p.note.clone())
         .collect();
     let current = editor.path.borrow().clone();
+    let favorites = editor.favorite_paths();
 
     let entry = gtk::SearchEntry::builder()
         .placeholder_text("Note name")
@@ -706,22 +708,32 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
             while let Some(row) = list.first_child() {
                 list.remove(&row);
             }
-            // Nothing opened yet: fall back to every note by path.
-            let hits = if query.trim().is_empty() && !recent.is_empty() {
-                recent
-            } else {
-                quick::search(query, &notes, &root)
-            };
-            let hits: Vec<PathBuf> = hits.into_iter().cloned().collect();
-            for path in &hits {
+            // Nothing opened yet: favourites, else every note by path.
+            let hits = quick::with_favorites(
+                query,
+                &favorites,
+                current.as_deref(),
+                &root,
+                &notes,
+                &recent,
+            );
+            for (path, favourite) in &hits {
                 let rel = path.strip_prefix(&root).unwrap_or(path);
                 let row = gtk::Box::new(gtk::Orientation::Vertical, 2);
-                row.append(
+                let name = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                if *favourite {
+                    let star = gtk::Image::from_icon_name("starred-symbolic");
+                    star.set_tooltip_text(Some("Favorite"));
+                    star.update_property(&[gtk::accessible::Property::Label("Favorite")]);
+                    name.append(&star);
+                }
+                name.append(
                     &gtk::Label::builder()
                         .label(file_name(path))
                         .xalign(0.0)
                         .build(),
                 );
+                row.append(&name);
                 let dim = gtk::Label::builder()
                     .label(rel.to_string_lossy())
                     .xalign(0.0)
@@ -733,7 +745,7 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
                 list.append(&row);
             }
             list.select_row(list.row_at_index(0).as_ref());
-            shown.replace(hits);
+            shown.replace(hits.into_iter().map(|(path, _)| path).collect());
         }
     };
     fill("");
@@ -749,6 +761,7 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
                 dialog.close();
             }
             match path {
+                Some(path) if path.is_dir() => editor.show_in_sidebar(&path),
                 Some(path) => editor.open(&path),
                 None if shown.borrow().is_empty() => match naming::note_name(query) {
                     Ok(name) => editor.new_note(&root, &name),

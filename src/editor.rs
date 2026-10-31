@@ -19,8 +19,8 @@ use crate::{
     STATUS_DELAY, TABLE_STYLE, TAG_STYLE, UNTITLED, file_name, state_file,
 };
 use crate::{
-    backlinks, complete, find, images, links, lists, mentions, naming, notes, outline, quick,
-    relink, render, retag, save, sidebar, state, stats, tags, templates, timing, title, url,
+    backlinks, complete, favorites, find, images, links, lists, mentions, naming, notes, outline,
+    quick, relink, render, retag, save, sidebar, state, stats, tags, templates, timing, title, url,
 };
 
 /// The window's widgets and the open note. Shared (Rc) by sidebar buttons, the auto-save
@@ -117,8 +117,14 @@ pub(crate) struct Editor {
     pub(crate) applied_gen: Cell<u64>,
     /// Folder of the newest scan (rescans target it, not a folder being replaced).
     pub(crate) scan_dir: RefCell<Option<PathBuf>>,
-    /// The sidebar's top-level entries (`sidebar::resort_note`).
+    /// The sidebar's top-level entries (`sidebar::resort_note`) and its tree view.
     pub(crate) sidebar_store: RefCell<Option<gio::ListStore>>,
+    pub(crate) sidebar_view: RefCell<Option<gtk::ListView>>,
+    /// Sidebar Favorites panel and its list; the open folder's favourites as last read from
+    /// the state file (relative paths; row i = favorites[i]).
+    pub(crate) favorites_panel: gtk::Box,
+    pub(crate) favorites_list: gtk::ListBox,
+    pub(crate) favorites: RefCell<Vec<PathBuf>>,
     /// Every note from the last scan, for Open Quickly.
     pub(crate) note_list: RefCell<Rc<Vec<PathBuf>>>,
     /// Sidebar Tags panel and its list; the tags shown (row i = tag_index[i]); the number of
@@ -173,6 +179,13 @@ impl Editor {
     /// Writes the open folder, note and view mode for the next launch. Errors are
     /// only logged: losing this must never block the app.
     pub(crate) fn remember(&self) {
+        self.write_state(None);
+    }
+
+    /// `remember`, with `favorites` (open folder, its list) replacing that folder's Favorites.
+    /// Every other Favorites list is kept as the state file has it, so a window never undoes
+    /// another window's change (`change_favorites`).
+    fn write_state(&self, favorites: Option<(&Path, &[PathBuf])>) {
         // `recent` only changes right before a `remember`.
         self.fill_recent_menu();
         self.keep_position();
@@ -189,6 +202,16 @@ impl Editor {
             expanded,
             find_match_case: self.find_match_case.get(),
             find_whole_word: self.find_whole_word.get(),
+            favorites: {
+                let mut all = state::load(&state_file()).favorites;
+                if let Some((root, list)) = favorites {
+                    all.remove(root);
+                    if !list.is_empty() {
+                        all.insert(root.to_path_buf(), list.to_vec());
+                    }
+                }
+                all
+            },
         };
         if let Err(e) = state::store(&state_file(), &state) {
             eprintln!("markdownmate: cannot save session state: {e}");
@@ -1428,10 +1451,14 @@ impl Editor {
         self.refresh_backlinks();
         self.refresh_mentions();
         // The Tags panel is kept across rescans (its own refresh: `load_tags`).
-        if let Some(parent) = self.tags_panel.parent().and_downcast::<gtk::Box>() {
-            parent.remove(&self.tags_panel);
+        for panel in [&self.favorites_panel, &self.tags_panel] {
+            if let Some(parent) = panel.parent().and_downcast::<gtk::Box>() {
+                parent.remove(panel);
+            }
         }
         let side = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        side.append(&self.favorites_panel);
+        self.fill_favorites();
         side.append(&sidebar::sidebar(self, tree, dir));
         side.append(&self.tags_panel);
         if timing::enabled() {
@@ -1951,7 +1978,8 @@ impl Editor {
                     .map(|d| moved(&d, from, &to).unwrap_or(d))
                     .collect();
                 drop(expanded);
-                self.remember();
+                let (f, t) = (from.to_path_buf(), to.clone());
+                self.change_favorites(move |list, root| favorites::follow(list, root, &f, &t));
                 self.schedule_rescan();
                 if to != from {
                     self.offer_link_updates(vec![(from.to_path_buf(), to.clone())], before);
@@ -2282,6 +2310,8 @@ impl Editor {
                 if open.is_some() {
                     self.close_note();
                 }
+                let t = target.to_path_buf();
+                self.change_favorites(move |list, root| favorites::remove_under(list, root, &t));
                 self.update_note_list(Some(target), None);
                 self.update_history_actions();
                 self.schedule_rescan();
@@ -2319,6 +2349,113 @@ impl Editor {
     fn update_note_list(&self, from: Option<&Path>, to: Option<&Path>) {
         let list = quick::updated(&self.note_list.borrow(), from, to);
         self.note_list.replace(Rc::new(list));
+    }
+
+    /// Applies `change` to the open folder's Favorites as the state file has them (another
+    /// window may have changed them since), saves them with the rest of the session
+    /// (`remember`) and shows them.
+    pub(crate) fn change_favorites(&self, change: impl FnOnce(&mut Vec<PathBuf>, &Path)) {
+        let Some(root) = self.root.borrow().clone() else {
+            return self.remember();
+        };
+        let mut list = state::load(&state_file())
+            .favorites
+            .remove(&root)
+            .unwrap_or_default();
+        change(&mut list, &root);
+        self.write_state(Some((&root, &list)));
+        self.show_favorites(&root, list);
+    }
+
+    /// Reads the open folder's Favorites from the state file and shows them (on every scan).
+    pub(crate) fn fill_favorites(&self) {
+        let Some(root) = self.root.borrow().clone() else {
+            return;
+        };
+        let list = state::load(&state_file())
+            .favorites
+            .remove(&root)
+            .unwrap_or_default();
+        self.show_favorites(&root, list);
+    }
+
+    fn show_favorites(&self, root: &Path, list: Vec<PathBuf>) {
+        let entries = favorites::entries(&list, root, Path::exists);
+        sidebar::fill_favorites(&self.favorites_list, &self.favorites_panel, &entries);
+        self.favorites.replace(list);
+    }
+
+    /// The open folder's favourites that are still there, as full paths (Open Quickly).
+    pub(crate) fn favorite_paths(&self) -> Vec<PathBuf> {
+        let Some(root) = self.root.borrow().clone() else {
+            return Vec::new();
+        };
+        favorites::entries(&self.favorites.borrow(), &root, Path::exists)
+            .into_iter()
+            .filter_map(|(path, there)| there.then_some(path))
+            .collect()
+    }
+
+    /// A click on Favorites row `index`: opens the note, shows the folder in the tree, or
+    /// removes a favourite that is gone (with a toast).
+    pub(crate) fn open_favorite(self: &Rc<Self>, index: usize) {
+        let (Some(root), Some(rel)) = (
+            self.root.borrow().clone(),
+            self.favorites.borrow().get(index).cloned(),
+        ) else {
+            return;
+        };
+        let path = root.join(rel);
+        if !path.exists() {
+            let name = file_name(&path);
+            self.change_favorites(move |list, root| favorites::toggle(list, root, &path, false));
+            self.toast(&format!("“{name}” is gone and was removed from Favorites"));
+        } else if path.is_dir() {
+            self.show_in_sidebar(&path);
+        } else {
+            self.open(&path);
+        }
+    }
+
+    /// Opens the folders above `path` in the sidebar tree and focuses its row.
+    pub(crate) fn show_in_sidebar(&self, path: &Path) {
+        if let Some(view) = self.sidebar_view.borrow().as_ref() {
+            sidebar::reveal(view, path);
+        }
+    }
+
+    /// Duplicate (sidebar right-click): copies the note or folder `path` next to itself as
+    /// "Name copy.md" / "Name copy" (`naming::duplicate`), the open note saved first if it is
+    /// inside. The sidebar then shows the copy, and a note copy opens.
+    pub(crate) fn duplicate(self: &Rc<Self>, path: &Path) {
+        let inside = self
+            .path
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| p.starts_with(path));
+        if inside && !self.save() {
+            return;
+        }
+        let (src, weak) = (path.to_path_buf(), Rc::downgrade(self));
+        glib::spawn_future_local(async move {
+            let job = src.clone();
+            let result = gio::spawn_blocking(move || naming::duplicate(&job)).await;
+            let Some(editor) = weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(Ok(copy)) => {
+                    if notes::is_note(&copy) && copy.is_file() {
+                        editor.update_note_list(None, Some(&copy));
+                        editor.open(&copy);
+                    }
+                    editor.reveal_in_sidebar(&copy);
+                    editor.schedule_rescan();
+                }
+                Ok(Err(e)) => editor.toast(&format!("Cannot duplicate {}: {e}", file_name(&src))),
+                Err(_) => editor.toast(&format!("Cannot duplicate {}", file_name(&src))),
+            }
+        });
     }
 
     /// Sorts the sidebar by `order` from now on (remembered): the folder is listed again,

@@ -1,10 +1,11 @@
 //! Sidebar: the folder tree as a `gtk::ListView` over a `gtk::TreeListModel`. Virtualized:
 //! only rows on screen get widgets, and a folder's rows are added when it is expanded, so a
-//! folder of thousands of notes stays fast. Right-click: New Note, New Folder…, Rename…, Move
-//! to Trash, Move to Folder…, Sort By. Drag an entry onto a folder (or empty space = the open
-//! folder) to move it.
+//! folder of thousands of notes stays fast. Right-click: New Note, New Folder…, Rename…,
+//! Duplicate, Add to / Remove from Favorites, Move to Trash, Move to Folder…, Sort By. Drag an
+//! entry onto a folder (or empty space = the open folder) to move it.
 //! Entries are in the scan's order (`notes::SortOrder`); under a date order a note whose date
-//! changed moves in place (`resort_note`). Below it, the Tags panel (`tags_panel`).
+//! changed moves in place (`resort_note`). Above it, the Favorites panel (`favorites_panel`);
+//! below it, the Tags panel (`tags_panel`).
 
 use std::cell::{Ref, RefCell};
 use std::path::{Path, PathBuf};
@@ -14,7 +15,7 @@ use std::time::SystemTime;
 use adw::prelude::*;
 use gtk::{gio, glib};
 
-use crate::{Editor, UNTITLED, complete, file_name, notes};
+use crate::{Editor, UNTITLED, complete, favorites, file_name, notes};
 
 /// One sidebar entry; `children` (the folder's entries) is None for a note. `date`: the one
 /// the order sorts by (`notes::Node::Note`).
@@ -260,6 +261,7 @@ pub fn sidebar(editor: &Rc<Editor>, tree: &[notes::Node], root: &Path) -> gtk::S
         .build();
     view.add_css_class("navigation-sidebar");
     view.add_css_class("sidebar-tree");
+    editor.sidebar_view.replace(Some(view.clone()));
     drop_target(&view, &weak, root);
     if let Some(i) = reveal {
         let view = view.clone();
@@ -289,9 +291,40 @@ pub fn sidebar(editor: &Rc<Editor>, tree: &[notes::Node], root: &Path) -> gtk::S
         .build()
 }
 
-/// Right-click menu of a sidebar entry: New Note, New Folder… (folders), Rename…, Show in
-/// Files, Copy Path, Copy Wiki Link (notes), Move to Trash, Move to Folder…, then Sort By (the
-/// current order checked).
+/// Scrolls the tree to `path` and focuses its row, opening the folders above it first (a
+/// Favorites folder, Open Quickly). Nothing happens for a path the tree does not list.
+pub fn reveal(view: &gtk::ListView, path: &Path) {
+    let Some(model) = view
+        .model()
+        .and_downcast::<gtk::NoSelection>()
+        .and_then(|s| s.model())
+        .and_downcast::<gtk::TreeListModel>()
+    else {
+        return;
+    };
+    let find = |p: &Path| {
+        (0..model.n_items()).find_map(|i| {
+            let row = model.row(i)?;
+            let obj = row.item()?;
+            (item(&obj).path == p).then_some((i, row))
+        })
+    };
+    let mut dirs: Vec<&Path> = path.ancestors().skip(1).collect();
+    dirs.reverse();
+    for dir in dirs {
+        // Expanding adds the folder's rows to the model at once.
+        if let Some((_, row)) = find(dir) {
+            row.set_expanded(true);
+        }
+    }
+    if let Some((i, _)) = find(path) {
+        view.scroll_to(i, gtk::ListScrollFlags::FOCUS, None);
+    }
+}
+
+/// Right-click menu of a sidebar entry: New Note, New Folder… (folders), Rename…, Duplicate,
+/// Add to / Remove from Favorites, Show in Files, Copy Path, Copy Wiki Link (notes), Move to
+/// Trash, Move to Folder…, then Sort By (the current order checked).
 /// The entry is read at click time: list rows are recycled for other entries.
 fn context_menu(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
     let gesture = gtk::GestureClick::builder()
@@ -361,6 +394,22 @@ fn context_menu(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
                 ask_name(&e, "Rename", &file_name(&p), "Rename", move |name| {
                     e2.rename(&p2, name, is_note)
                 });
+            }),
+        );
+        let (e, p) = (Rc::clone(&editor), path.clone());
+        item("Duplicate", Box::new(move || e.duplicate(&p)));
+        let root = editor.root.borrow().clone().unwrap_or_default();
+        let favourite = favorites::contains(&editor.favorites.borrow(), &root, &path);
+        let (e, p) = (Rc::clone(&editor), path.clone());
+        item(
+            if favourite {
+                "Remove from Favorites"
+            } else {
+                "Add to Favorites"
+            },
+            Box::new(move || {
+                let p = p.clone();
+                e.change_favorites(move |list, root| favorites::toggle(list, root, &p, !favourite));
             }),
         );
         let (e, p) = (Rc::clone(&editor), path.clone());
@@ -826,6 +875,129 @@ pub(crate) fn ask_name(
     dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
     dialog.connect_response(Some("ok"), move |_, _| done(&entry.text()));
     dialog.present(Some(&editor.window));
+}
+
+/// The sidebar's Favorites section (hidden while empty), above the folder tree: a heading over
+/// a list of notes and folders (`fill_favorites`).
+pub fn favorites_panel() -> (gtk::Box, gtk::ListBox) {
+    let list = gtk::ListBox::new();
+    list.add_css_class("navigation-sidebar");
+    list.update_property(&[gtk::accessible::Property::Label("Favorites")]);
+    let heading = gtk::Label::builder()
+        .label("Favorites")
+        .xalign(0.0)
+        .margin_start(12)
+        .margin_top(6)
+        .build();
+    heading.add_css_class("heading");
+    let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    panel.append(&heading);
+    panel.append(
+        &gtk::ScrolledWindow::builder()
+            .child(&list)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_height(true)
+            .max_content_height(220)
+            .build(),
+    );
+    panel.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    panel.set_visible(false);
+    (panel, list)
+}
+
+/// Shows `entries` (`favorites::entries`: path, still there) in `list`, in order: icon and
+/// name; one that is gone is dimmed (a click removes it).
+pub fn fill_favorites(list: &gtk::ListBox, panel: &gtk::Box, entries: &[(PathBuf, bool)]) {
+    while let Some(row) = list.first_child() {
+        list.remove(&row);
+    }
+    for (path, there) in entries {
+        let is_dir = path.is_dir();
+        let name = file_name(path);
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.set_margin_start(6);
+        row.append(&gtk::Image::from_icon_name(if is_dir {
+            "folder-symbolic"
+        } else {
+            "text-x-generic-symbolic"
+        }));
+        row.append(
+            &gtk::Label::builder()
+                .label(&name)
+                .xalign(0.0)
+                .hexpand(true)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .build(),
+        );
+        let row = gtk::ListBoxRow::builder().child(&row).build();
+        let label = if *there {
+            row.set_tooltip_text(Some(&path.to_string_lossy()));
+            name
+        } else {
+            row.add_css_class("dim-label");
+            row.set_tooltip_text(Some("No longer there. Click to remove it from Favorites."));
+            format!("{name}, missing")
+        };
+        row.update_property(&[gtk::accessible::Property::Label(&label)]);
+        list.append(&row);
+    }
+    panel.set_visible(!entries.is_empty());
+}
+
+/// Favorites rows: a click (or Enter) opens the note, shows the folder in the tree, or removes
+/// a favourite that is gone (`Editor::open_favorite`); right-click ▸ Remove from Favorites.
+/// Row i is `Editor::favorites[i]`.
+pub fn connect_favorites(list: &gtk::ListBox, editor: &Weak<Editor>) {
+    let weak = editor.clone();
+    list.connect_row_activated(move |_, row| {
+        if let (Some(editor), Ok(i)) = (weak.upgrade(), usize::try_from(row.index())) {
+            editor.open_favorite(i);
+        }
+    });
+    let gesture = gtk::GestureClick::builder()
+        .button(gtk::gdk::BUTTON_SECONDARY)
+        .build();
+    let (weak, list_weak) = (editor.clone(), list.downgrade());
+    gesture.connect_pressed(move |gesture, _, x, y| {
+        let (Some(editor), Some(list)) = (weak.upgrade(), list_weak.upgrade()) else {
+            return;
+        };
+        let Some(row) = list.row_at_y(y as i32) else {
+            return;
+        };
+        let (Some(root), Some(rel)) = (
+            editor.root.borrow().clone(),
+            usize::try_from(row.index())
+                .ok()
+                .and_then(|i| editor.favorites.borrow().get(i).cloned()),
+        ) else {
+            return;
+        };
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        let button = gtk::Button::builder()
+            .label("Remove from Favorites")
+            .has_frame(false)
+            .build();
+        let popover = gtk::Popover::builder()
+            .child(&button)
+            .has_arrow(false)
+            .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+            .build();
+        popover.set_parent(&list);
+        popover.connect_closed(|p| {
+            // Unparent after the button's click handler has run.
+            let p = p.clone();
+            glib::idle_add_local_once(move || p.unparent());
+        });
+        let p = popover.clone();
+        button.connect_clicked(move |_| {
+            p.popdown();
+            let path = root.join(&rel);
+            editor.change_favorites(move |list, root| favorites::toggle(list, root, &path, false));
+        });
+        popover.popup();
+    });
+    list.add_controller(gesture);
 }
 
 /// The sidebar's Tags section (hidden while there is no tag): a heading over a list of tags.

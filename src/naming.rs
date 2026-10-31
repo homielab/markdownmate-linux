@@ -93,12 +93,96 @@ pub fn copy_in(src: &Path, dir: &Path) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// `name` in `dir`, or the first free numbered variant, created with create_new.
-fn create_numbered(dir: &Path, name: &str) -> io::Result<(fs::File, PathBuf)> {
-    let (stem, ext) = match name.rfind('.') {
+/// `name` split before its extension: ("Note", ".md"); a leading dot is not one.
+fn split_ext(name: &str) -> (&str, &str) {
+    match name.rfind('.') {
         Some(i) if i > 0 => name.split_at(i),
         _ => (name, ""),
+    }
+}
+
+/// Name of Duplicate's copy of `name`: "Name copy.md", then "Name copy 2.md", … for a note
+/// (its extension kept); "Name copy", "Name copy 2", … for a folder (a dot in a folder name is
+/// not an extension). `n` starts at 1.
+pub fn copy_name(name: &str, is_dir: bool, n: u32) -> String {
+    let (stem, ext) = if is_dir { (name, "") } else { split_ext(name) };
+    numbered(&format!("{stem} copy"), ext, n)
+}
+
+/// Duplicate: copies the note or folder `src` next to itself under `copy_name` (the first
+/// free one; never overwrites), a folder with everything in it (symlinks copied as links).
+/// A failed copy removes what it made. Returns the copy's path.
+pub fn duplicate(src: &Path) -> io::Result<PathBuf> {
+    let (Some(dir), Some(name)) = (src.parent(), src.file_name()) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot duplicate this entry",
+        ));
     };
+    let name = name.to_string_lossy();
+    let is_dir = fs::metadata(src)?.is_dir();
+    for n in 1..=10_000 {
+        let to = dir.join(copy_name(&name, is_dir, n));
+        if is_dir {
+            match fs::create_dir(&to) {
+                Ok(()) => {
+                    if let Err(e) = copy_contents(src, &to) {
+                        let _ = fs::remove_dir_all(&to);
+                        return Err(e);
+                    }
+                    return Ok(to);
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+        } else {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&to)
+            {
+                Ok(mut file) => {
+                    let copied = fs::File::open(src)
+                        .and_then(|mut from| io::copy(&mut from, &mut file))
+                        .and_then(|_| file.sync_all());
+                    if let Err(e) = copied {
+                        let _ = fs::remove_file(&to);
+                        return Err(e);
+                    }
+                    return Ok(to);
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!("too many copies of “{name}”"),
+    ))
+}
+
+/// Copies what is in folder `from` into the new, empty folder `to`.
+fn copy_contents(from: &Path, to: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let dest = to.join(entry.file_name());
+        if kind.is_dir() {
+            fs::create_dir(&dest)?;
+            copy_contents(&entry.path(), &dest)?;
+        } else if kind.is_symlink() {
+            std::os::unix::fs::symlink(fs::read_link(entry.path())?, &dest)?;
+        } else {
+            fs::copy(entry.path(), &dest)?;
+        }
+    }
+    Ok(())
+}
+
+/// `name` in `dir`, or the first free numbered variant, created with create_new.
+fn create_numbered(dir: &Path, name: &str) -> io::Result<(fs::File, PathBuf)> {
+    let (stem, ext) = split_ext(name);
     for n in 1..=10_000 {
         let path = dir.join(numbered(stem, ext, n));
         match fs::OpenOptions::new()
@@ -313,6 +397,48 @@ mod tests {
         assert_eq!(copy_in(&copy, &dst).unwrap(), dst.join("Note 2 2.md"));
         assert!(copy_in(&src.join("missing.md"), &dst).is_err());
         assert!(!dst.join("missing.md").exists());
+    }
+
+    #[test]
+    fn copy_names_add_copy_then_a_number() {
+        assert_eq!(copy_name("Ideas.md", false, 1), "Ideas copy.md");
+        assert_eq!(copy_name("Ideas.md", false, 2), "Ideas copy 2.md");
+        assert_eq!(
+            copy_name("Old.Notes.markdown", false, 1),
+            "Old.Notes copy.markdown"
+        );
+        assert_eq!(copy_name(".hidden", false, 1), ".hidden copy");
+        assert_eq!(copy_name("Work", true, 1), "Work copy");
+        assert_eq!(copy_name("v1.2", true, 3), "v1.2 copy 3");
+    }
+
+    #[test]
+    fn duplicate_copies_next_to_it_and_never_overwrites() {
+        let t = TempDir::new("dup");
+        let note = t.0.join("Ideas.md");
+        fs::write(&note, "text").unwrap();
+        let copy = duplicate(&note).unwrap();
+        assert_eq!(copy, t.0.join("Ideas copy.md"));
+        assert_eq!(fs::read_to_string(&copy).unwrap(), "text");
+        assert_eq!(duplicate(&note).unwrap(), t.0.join("Ideas copy 2.md"));
+        assert_eq!(fs::read_to_string(&copy).unwrap(), "text");
+
+        let dir = t.0.join("Work");
+        fs::create_dir_all(dir.join("sub/deep")).unwrap();
+        fs::write(dir.join("a.md"), "a").unwrap();
+        fs::write(dir.join("sub/deep/b.md"), "b").unwrap();
+        std::os::unix::fs::symlink("../a.md", dir.join("sub/link.md")).unwrap();
+        fs::create_dir(t.0.join("Work copy")).unwrap();
+        let copy = duplicate(&dir).unwrap();
+        assert_eq!(copy, t.0.join("Work copy 2"), "a taken name gets a number");
+        assert_eq!(fs::read_to_string(copy.join("a.md")).unwrap(), "a");
+        assert_eq!(fs::read_to_string(copy.join("sub/deep/b.md")).unwrap(), "b");
+        assert_eq!(
+            fs::read_link(copy.join("sub/link.md")).unwrap(),
+            PathBuf::from("../a.md")
+        );
+        assert_eq!(fs::read_dir(t.0.join("Work copy")).unwrap().count(), 0);
+        assert!(duplicate(&t.0.join("missing.md")).is_err());
     }
 
     #[test]

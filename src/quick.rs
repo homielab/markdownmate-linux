@@ -3,7 +3,8 @@
 //!
 //! Ranking, best first: the file name starts with the query > contains it in one piece >
 //! contains its characters in order; then the same three against the path relative to the
-//! open folder. Ties: shorter name, then relative path.
+//! open folder. Ties: shorter name, then relative path. The open folder's Favorites are
+//! listed and preferred (`with_favorites`).
 
 use std::path::{Path, PathBuf};
 
@@ -83,25 +84,125 @@ fn tier(query: &str, text: &str) -> Option<u8> {
     query.chars().all(|q| chars.any(|c| c == q)).then_some(2)
 }
 
+/// Rank of `path` for lowercase, trimmed `query` (smaller is better); None = no match.
+fn key(query: &str, path: &Path, root: &Path) -> Option<(u8, usize, String)> {
+    let name = path.file_name()?.to_string_lossy();
+    let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
+    let rank = tier(query, &name).or_else(|| tier(query, &rel).map(|t| t + 3))?;
+    Some((rank, name.chars().count(), rel.to_lowercase()))
+}
+
 /// Notes matching `query`, best first, at most `LIMIT`. An empty query lists notes by path.
 pub fn search<'a>(query: &str, notes: &'a [PathBuf], root: &Path) -> Vec<&'a PathBuf> {
     let query = query.trim().to_lowercase();
     let mut hits: Vec<_> = notes
         .iter()
-        .filter_map(|path| {
-            let name = path.file_name()?.to_string_lossy();
-            let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
-            let rank = tier(&query, &name).or_else(|| tier(&query, &rel).map(|t| t + 3))?;
-            Some(((rank, name.chars().count(), rel.to_lowercase()), path))
-        })
+        .filter_map(|path| Some((key(&query, path, root)?, path)))
         .collect();
     hits.sort_by(|a, b| a.0.cmp(&b.0));
     hits.into_iter().take(LIMIT).map(|(_, p)| p).collect()
 }
 
+/// Open Quickly's list, each path with whether it is one of the open folder's `favorites`
+/// (notes and folders that exist). Empty `query`: the `recent` notes, then the favourites not
+/// listed yet (minus `current`); with neither, every note by path. Otherwise favourites
+/// (folders too) and `notes` ranked together like `search`, favourites first within each kind
+/// of match (prefix, in one piece, …). At most `LIMIT`.
+pub fn with_favorites(
+    query: &str,
+    favorites: &[PathBuf],
+    current: Option<&Path>,
+    root: &Path,
+    notes: &[PathBuf],
+    recent: &[&PathBuf],
+) -> Vec<(PathBuf, bool)> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() && !(recent.is_empty() && favorites.is_empty()) {
+        let fav = |p: &PathBuf| favorites.contains(p);
+        let mut out: Vec<(PathBuf, bool)> = recent.iter().map(|p| ((*p).clone(), fav(p))).collect();
+        for f in favorites {
+            if Some(f.as_path()) != current && !recent.contains(&f) {
+                out.push((f.clone(), true));
+            }
+        }
+        out.truncate(LIMIT);
+        return out;
+    }
+    let others = notes.iter().filter(|n| !favorites.contains(n));
+    let mut hits: Vec<_> = favorites
+        .iter()
+        .map(|p| (p, true))
+        .chain(others.map(|p| (p, false)))
+        .filter_map(|(path, fav)| {
+            let (rank, len, rel) = key(&query, path, root)?;
+            Some(((rank, !fav, len, rel), path, fav))
+        })
+        .collect();
+    hits.sort_by(|a, b| a.0.cmp(&b.0));
+    hits.into_iter()
+        .take(LIMIT)
+        .map(|(_, path, fav)| (path.clone(), fav))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn favorites_after_recent_notes_and_ranked_with_matches() {
+        let root = Path::new("/n");
+        let p = |v: &[&str]| v.iter().map(|s| root.join(s)).collect::<Vec<_>>();
+        let favorites = p(&["Daily", "plan.md", "b.md"]);
+        let notes = p(&["a.md", "b.md", "plan.md", "Daily/x.md", "pla.md"]);
+        let names = |got: Vec<(PathBuf, bool)>| {
+            got.into_iter()
+                .map(|(path, fav)| (path.strip_prefix(root).unwrap().display().to_string(), fav))
+                .collect::<Vec<_>>()
+        };
+        let s = |v: &str, fav| (v.to_string(), fav);
+        let current = root.join("plan.md");
+        // Empty box: recent notes (Enter = the previous note), then the other favourites but
+        // the open note.
+        let recent = [&notes[0], &notes[1]];
+        assert_eq!(
+            names(with_favorites(
+                " ",
+                &favorites,
+                Some(&current),
+                root,
+                &notes,
+                &recent
+            )),
+            [s("a.md", false), s("b.md", true), s("Daily", true)]
+        );
+        // Nothing opened yet: favourites alone; with no favourites either, every note.
+        assert_eq!(
+            names(with_favorites("", &favorites, None, root, &notes, &[])),
+            [s("Daily", true), s("plan.md", true), s("b.md", true)]
+        );
+        assert_eq!(
+            with_favorites("", &[], None, root, &notes, &[]).len(),
+            notes.len()
+        );
+        // A query: ranked like `search`, folders too; within a kind of match a favourite comes
+        // first, listed once.
+        assert_eq!(
+            names(with_favorites("pla", &favorites, None, root, &notes, &[])),
+            [s("plan.md", true), s("pla.md", false)]
+        );
+        assert_eq!(
+            names(with_favorites("a", &favorites, None, root, &notes, &[])),
+            [
+                s("a.md", false),
+                s("Daily", true),
+                s("plan.md", true),
+                s("pla.md", false),
+                s("Daily/x.md", false)
+            ]
+        );
+        assert!(with_favorites("zzz", &favorites, None, root, &notes, &[]).is_empty());
+    }
 
     #[test]
     fn updated_follows_create_move_and_trash() {

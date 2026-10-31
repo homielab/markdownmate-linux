@@ -1,7 +1,8 @@
 //! Session state remembered between runs: open folder, open note, view mode, bookmarked
 //! folders (in order, one `bookmark=` line each), recent folders (newest first, one `recent=`
 //! line each), editor preferences (`Prefs`), cursor position per note (`pos=dòng:cột:đường dẫn`,
-//! mới nhất trước, tối đa POS_MAX) and expanded sidebar folders (`expanded=`).
+//! mới nhất trước, tối đa POS_MAX), expanded sidebar folders (`expanded=`) and each folder's
+//! Favorites (`favorite=folder<TAB>relative path`, in the order added).
 //! Stored as `key=value` lines; paths are byte-escaped (`%XX`) so non-UTF-8 paths survive.
 //! A missing, unreadable or malformed file is never an error: unknown lines are ignored.
 
@@ -273,6 +274,8 @@ pub struct State {
     pub expanded: Vec<PathBuf>,
     pub find_match_case: bool,
     pub find_whole_word: bool,
+    /// Favorites of every folder (`favorites.rs`).
+    pub favorites: crate::favorites::All,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -316,6 +319,19 @@ impl State {
                         && !state.expanded.contains(&p)
                     {
                         state.expanded.push(p);
+                    }
+                }
+                Some(("favorite", v)) => {
+                    // A tab is escaped inside paths, so it only separates the two.
+                    if let Some((root, rel)) = v.split_once('\t')
+                        && let (Some(root), Some(rel)) = (unescape(root), unescape(rel))
+                        && root.is_absolute()
+                        && crate::favorites::is_clean(&rel)
+                    {
+                        let list = state.favorites.entry(root).or_default();
+                        if !list.contains(&rel) {
+                            list.push(rel);
+                        }
                     }
                 }
                 Some(("font", v)) if !v.trim().is_empty() => {
@@ -405,6 +421,11 @@ impl State {
         for e in &self.expanded {
             out += &format!("expanded={}\n", escape(e));
         }
+        for (root, list) in &self.favorites {
+            for rel in list {
+                out += &format!("favorite={}\t{}\n", escape(root), escape(rel));
+            }
+        }
         let p = &self.prefs;
         if let Some(font) = &p.font {
             out += &format!("font={font}\n");
@@ -474,6 +495,8 @@ impl State {
             expanded,
             find_match_case: self.find_match_case,
             find_whole_word: self.find_whole_word,
+            // Kept even for folders gone now, like bookmarks; a missing favourite shows dimmed.
+            favorites: self.favorites,
         }
     }
 }
@@ -675,6 +698,7 @@ mod tests {
             expanded: Vec::new(),
             find_match_case: false,
             find_whole_word: false,
+            favorites: Default::default(),
         };
         let text = state.serialize();
         assert!(text.is_ascii());
@@ -1053,5 +1077,34 @@ mod tests {
         let usable = parsed.usable();
         assert!(usable.find_match_case);
         assert!(usable.find_whole_word);
+    }
+
+    #[test]
+    fn favorites_per_folder_in_order_broken_lines_skipped() {
+        let mut favorites = crate::favorites::All::new();
+        let odd = PathBuf::from(OsString::from_vec(b"d\t\xff/n.md".to_vec()));
+        favorites.insert(
+            PathBuf::from("/home/u/Notes"),
+            vec![PathBuf::from("b.md"), PathBuf::from("a"), odd.clone()],
+        );
+        favorites.insert(PathBuf::from("/w"), vec![PathBuf::from("x.md")]);
+        let state = State {
+            favorites,
+            ..State::default()
+        };
+        let text = state.serialize();
+        assert!(text.is_ascii());
+        assert!(text.contains("favorite=/home/u/Notes\tb.md\nfavorite=/home/u/Notes\ta\n"));
+        let parsed = State::parse(&format!(
+            "{text}favorite=/n\t../x.md\nfavorite=rel\tx.md\nfavorite=/n\nfavorite=/n\t/abs.md\n\
+             favorite=/w\tx.md\n"
+        ));
+        assert_eq!(
+            parsed.favorites, state.favorites,
+            "bad and repeated lines dropped"
+        );
+        assert_eq!(parsed.favorites[Path::new("/home/u/Notes")][2], odd);
+        assert_eq!(parsed.usable().favorites, state.favorites);
+        assert!(State::parse("folder=/a\n").favorites.is_empty());
     }
 }

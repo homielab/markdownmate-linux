@@ -6,6 +6,8 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Favorites: right-click a note or folder ▸ Add to Favorites to pin it in a Favorites section at the top of the sidebar, one click away; Open Quickly lists them first. Each folder keeps its own, remembered across restarts, and they follow renames and moves made in the app. Same as the macOS app.
+- Duplicate in the sidebar's right-click menu: copies a note or a folder with its contents next to itself as "Name copy.md" ("Name copy 2.md" when taken) and opens a note copy. Same as the macOS app.
 - Move to Folder… in the sidebar's right-click menu: pick the folder from a list of the open folder's folders to move a note or folder without dragging, also from the keyboard. It refuses a name that is already taken and offers to update links, like a drag, and the sidebar then shows the moved entry. Same as the macOS app.
 - Back and Forward (Alt+Left / Alt+Right, or the main menu): return to the note you came from after following a link, a backlink or Open Quickly, then forward again, like a browser. Each window has its own history of up to 50 notes; notes deleted since are skipped. Same as the macOS app.
 - Highlights: write `==text==` and it shows with a soft yellow background in the preview (light and dark), print, HTML / PDF export and Copy as HTML; Copy as Rich Text and Export as RTF give it a yellow background, and the editor shows it on a light background with dimmed `==`. Format ▸ Highlight (Shift+Ctrl+H, or `==` on the format bar) adds or removes it around the selection or the word at the cursor. Same as the macOS app.
