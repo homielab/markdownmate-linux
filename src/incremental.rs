@@ -6,7 +6,8 @@
 //! each part ("chunk") then renders standalone (`render::render_body` with its first line) to
 //! exactly its part of the whole note's HTML. Heading ids are the exception: a repeated title
 //! gets `-1`, `-2`, … counted from the note's start, so they are set again over the whole note
-//! after each update (`Preview::set_ids`).
+//! after each update (`Preview::set_ids`). So is a `[TOC]` block, which lists the headings of
+//! the whole note: it is filled again whenever that list changes.
 //!
 //! After an edit, the chunks the changed lines touch are parsed again with one chunk of context
 //! on each side; if the cut before or after them no longer holds (a fence or list now runs on),
@@ -54,6 +55,10 @@ struct Chunk {
     /// `render::Rendered::headings`, and the ids `html` gives those headings.
     headings: Vec<String>,
     ids: Vec<String>,
+    /// `render::Rendered::titles`.
+    titles: Vec<(u8, String)>,
+    /// With a `[TOC]` block: `html` before `render::fill_toc` (same lines and ids as `html`).
+    template: Option<String>,
     /// The top-level DOM nodes `html` makes in the page's body.
     nodes: usize,
 }
@@ -66,6 +71,8 @@ pub(crate) struct Preview {
     /// The chunks the last update replaced (`Key`):
     /// typing a fence and closing it again gets the code after it back without rendering.
     spare: HashMap<Key, Chunk>,
+    /// The table of contents the `[TOC]` blocks show (`render::toc_list`).
+    toc: String,
 }
 
 /// A chunk by what its HTML depends on: whether it is the note's first chunk, the line after
@@ -141,7 +148,7 @@ pub(crate) fn render(
                 style.theme,
                 Some(style.width),
                 style.web_images,
-                &render::body_html(md, wiki, true, true, true),
+                &render::body_html(md, wiki, true, true, true, true),
             )),
         ),
     }
@@ -349,6 +356,7 @@ fn render_chunk(part: &Part, wiki: &Wiki) -> Option<Chunk> {
         rich: true,
         tasks: true,
         sourcepos: true,
+        toc: true,
         first_line: part.line,
         cached: false,
         next: part.next.is_some(),
@@ -374,11 +382,28 @@ fn render_chunk(part: &Part, wiki: &Wiki) -> Option<Chunk> {
         line: part.line,
         byte: part.byte,
         at: part.line,
+        template: rendered.toc.then(|| rendered.html.clone()),
         html: rendered.html,
         headings: rendered.headings,
         ids,
+        titles: rendered.titles,
         nodes,
     })
+}
+
+impl Chunk {
+    /// Moves its HTML to its line (`shift`).
+    fn shift_to_line(&mut self) {
+        let delta = self.line as isize - self.at as isize;
+        if delta == 0 {
+            return;
+        }
+        self.html = shift(&self.html, delta).into_owned();
+        if let Some(template) = &mut self.template {
+            *template = shift(template, delta).into_owned();
+        }
+        self.at = self.line;
+    }
 }
 
 impl Preview {
@@ -399,8 +424,9 @@ impl Preview {
             text: md.to_string(),
             chunks,
             spare: HashMap::new(),
+            toc: String::new(),
         };
-        preview.set_ids(0);
+        preview.set_ids(0..preview.chunks.len())?;
         Some(preview)
     }
 
@@ -558,8 +584,7 @@ impl Preview {
         }
         let mut fresh = render_parts(&parts, wiki, &mut spare)?;
         for chunk in &mut fresh {
-            chunk.html = shift(&chunk.html, chunk.line as isize - chunk.at as isize).into_owned();
-            chunk.at = chunk.line;
+            chunk.shift_to_line();
         }
         self.spare = keys
             .into_iter()
@@ -572,7 +597,7 @@ impl Preview {
         }
         self.chunks.splice(lo..lo, fresh);
         self.text = md.to_string();
-        let changed = self.set_ids(lo + added);
+        let changed = self.set_ids(lo..lo + added)?;
         if changed.len() > MAX_ID_EDITS {
             let page = self.page();
             return Some((Some(self), Update::Page(page)));
@@ -585,17 +610,22 @@ impl Preview {
                 .map(|c| c.html.as_str())
                 .collect(),
         }];
-        // A later chunk whose heading ids changed: rendered for its line now.
+        // Another chunk whose heading ids or table of contents changed: rendered for its line
+        // now. `changed` is ascending and skips the new chunks, so the edits stay in order.
         for i in changed {
-            let old_index = i - added + (hi + 1 - lo);
+            let old_index = if i < lo { i } else { i - added + (hi + 1 - lo) };
             let chunk = &mut self.chunks[i];
-            chunk.html = shift(&chunk.html, chunk.line as isize - chunk.at as isize).into_owned();
-            chunk.at = chunk.line;
-            edits.push(Edit {
+            chunk.shift_to_line();
+            let edit = Edit {
                 at: node_at[old_index],
-                remove: chunk.nodes,
+                remove: node_at[old_index + 1] - node_at[old_index],
                 html: chunk.html.clone(),
-            });
+            };
+            if i < lo {
+                edits.insert(edits.len() - 1, edit);
+            } else {
+                edits.push(edit);
+            }
         }
         let after = self.chunks.iter().map(|c| c.nodes).sum();
         let patch = Patch {
@@ -608,10 +638,11 @@ impl Preview {
         Some((Some(self), Update::Patch(patch)))
     }
 
-    /// Sets every heading id as a render of the whole note gives it; returns the chunks from
-    /// index `from` on whose ids changed (those before `from` are new: their HTML is sent
-    /// anyway).
-    fn set_ids(&mut self, from: usize) -> Vec<usize> {
+    /// Sets every heading id as a render of the whole note gives it, and fills the `[TOC]`
+    /// blocks with its headings; returns, in order, the chunks outside `fresh` whose HTML
+    /// changed (those in `fresh` are new: their HTML is sent anyway). None if a filled chunk's
+    /// HTML cannot be cut into nodes.
+    fn set_ids(&mut self, fresh: std::ops::Range<usize>) -> Option<Vec<usize>> {
         let mut anchorizer = comrak::Anchorizer::new();
         let mut changed = Vec::new();
         for (i, chunk) in self.chunks.iter_mut().enumerate() {
@@ -622,13 +653,41 @@ impl Preview {
                 .collect();
             if ids != chunk.ids {
                 chunk.html = replace_ids(&chunk.html, &ids);
+                if let Some(template) = &mut chunk.template {
+                    *template = replace_ids(template, &ids);
+                }
                 chunk.ids = ids;
-                if i >= from {
+                if !fresh.contains(&i) {
                     changed.push(i);
                 }
             }
         }
-        changed
+        if self.chunks.iter().all(|c| c.template.is_none()) {
+            return Some(changed);
+        }
+        let toc = render::toc_list(self.chunks.iter().flat_map(|c| {
+            c.titles
+                .iter()
+                .zip(&c.ids)
+                .map(|((level, title), id)| (*level, title.as_str(), id.as_str()))
+        }));
+        let all = toc != self.toc;
+        self.toc = toc;
+        for (i, chunk) in self.chunks.iter_mut().enumerate() {
+            let Some(template) = &chunk.template else {
+                continue;
+            };
+            let touched = changed.contains(&i);
+            if all || touched || fresh.contains(&i) {
+                chunk.html = render::fill_toc(template, &self.toc);
+                chunk.nodes = top_nodes(&chunk.html)?;
+                if !touched && !fresh.contains(&i) {
+                    changed.push(i);
+                }
+            }
+        }
+        changed.sort_unstable();
+        Some(changed)
     }
 }
 
@@ -883,7 +942,7 @@ mod tests {
                 Theme::Default,
                 Some(STYLE.width),
                 false,
-                &render::body_html(md, &wiki, true, true, true),
+                &render::body_html(md, &wiki, true, true, true, true),
             );
             match update {
                 Update::Page(page) => {
@@ -986,6 +1045,44 @@ mod tests {
         assert!(patch.edits[0].html.contains("alert alert-note"));
     }
 
+    #[test]
+    fn table_of_contents_follows_the_headings() {
+        let texts: Vec<String> = [
+            "[TOC]\n\ntext\n",
+            "[TOC]\n\ntext\n\n# One\n",
+            "[TOC]\n\ntext\n\n# One\n\nmore\n\n## Two\n",
+            "[TOC]\n\ntext\n\n# One\n\nmore\n\n## Twice\n",
+            "# Top\n\n[TOC]\n\ntext\n\n# One\n\nmore\n\n## Twice\n",
+            "# Top\n\n[TOC]\n\ntext\n\n# One\n\nmore\n\n## Twice\n\n[toc]\n",
+            "# Top\n\n[TOC] x\n\ntext\n\n# One\n\nmore\n\n## Twice\n\n[toc]\n",
+            "# Top\n\n[TOC]\n\ntext\n\n# One\n\nmore\n\nTwice\n",
+            "[TOC]\n\ntext\n\nmore\n",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert!(check(&texts) >= 6);
+        // Renaming a heading patches it and the table of contents, nothing else.
+        let md = "[TOC]\n\na\n\n# One\n\nb\n\n## Two\n\nc\n";
+        let edited = md.replace("## Two", "## Three");
+        let (state, _) = render(None, md, STYLE, &wiki);
+        let (_, update) = render(state, &edited, STYLE, &wiki);
+        let Update::Patch(patch) = update else {
+            panic!("not a patch");
+        };
+        assert_eq!(patch.edits.len(), 2, "{patch:?}");
+        assert!(patch.edits[0].html.contains("<nav class=\"toc\""));
+        assert!(patch.edits[0].html.contains(">Three</a>"));
+        assert!(patch.edits[1].html.contains("<h2"));
+        // Text elsewhere: only that block.
+        let edited = md.replace("\nb\n", "\nbb\n");
+        let (state, _) = render(None, md, STYLE, &wiki);
+        let (_, update) = render(state, &edited, STYLE, &wiki);
+        let Update::Patch(patch) = update else {
+            panic!("not a patch");
+        };
+        assert_eq!(patch.edits.len(), 1, "{patch:?}");
+    }
+
     /// A small deterministic generator (no dependency for tests).
     struct Random(u64);
 
@@ -1001,7 +1098,7 @@ mod tests {
 
     #[test]
     fn random_edits_patch_to_the_whole_render() {
-        const SNIPPETS: [&str; 33] = [
+        const SNIPPETS: [&str; 35] = [
             "* ",
             "+ ",
             "  - ",
@@ -1035,6 +1132,8 @@ mod tests {
             "$$\n",
             "```rust\nlet a = 1;\n```\n",
             "<!--\n",
+            "\n[TOC]\n",
+            "[toc]",
         ];
         // `SEED=<n> cargo test random_edits` tries other edits.
         let seed = std::env::var("SEED").ok().and_then(|s| s.parse().ok());

@@ -16,33 +16,54 @@ use crate::{state, tags};
 /// links) become `<span class="tag">`. Task checkboxes are wrapped in a
 /// `<a class="task" href="mm-task:N">`, N the 1-based source line of the item's `[ ]`.
 /// Code blocks are wrapped in `<div class="code">` with a `<a class="copy" href="mm-copy:N">`
-/// button, N the block's first source line (see `code_block_at`). The preview (`page`)
-/// adds `data-sourcepos`; this test-only form leaves it out to keep the expected HTML short.
+/// button, N the block's first source line (see `code_block_at`). A `[TOC]` paragraph
+/// lists the note's headings (`toc_list`). The preview (`page`) adds `data-sourcepos`; this
+/// test-only form leaves it out to keep the expected HTML short.
 #[cfg(test)]
 fn to_html(md: &str, wiki: &dyn Fn(&str) -> Option<PathBuf>) -> String {
-    body_html(md, wiki, true, true, false)
+    body_html(md, wiki, true, true, false, true)
 }
 
 /// `to_html`, with syntect code highlighting and formulas marked for KaTeX (`math_html`)
 /// only if `rich` (the preview and exports, not Copy as HTML), clickable task checkboxes and
-/// code Copy buttons only if `tasks`, and `data-sourcepos="L:C-L:C"` on elements (for scroll
-/// sync) only if `sourcepos`.
+/// code Copy buttons only if `tasks`, `data-sourcepos="L:C-L:C"` on elements (for scroll
+/// sync) only if `sourcepos`, and `[TOC]` as the table of contents only if `toc` (not in Rich
+/// Text, which keeps it as written).
 pub(crate) fn body_html(
     md: &str,
     wiki: &dyn Fn(&str) -> Option<PathBuf>,
     rich: bool,
     tasks: bool,
     sourcepos: bool,
+    toc: bool,
 ) -> String {
     let body = Body {
         rich,
         tasks,
         sourcepos,
+        toc,
         first_line: 1,
         cached: rich,
         next: false,
     };
-    render_body(md, wiki, &body).expect("whole note").html
+    let rendered = render_body(md, wiki, &body).expect("whole note");
+    if !rendered.toc {
+        return rendered.html;
+    }
+    let mut anchorizer = comrak::Anchorizer::new();
+    let ids: Vec<String> = rendered
+        .headings
+        .iter()
+        .map(|h| anchorizer.anchorize(h))
+        .collect();
+    let list = toc_list(
+        rendered
+            .titles
+            .iter()
+            .zip(&ids)
+            .map(|((level, title), id)| (*level, title.as_str(), id.as_str())),
+    );
+    fill_toc(&rendered.html, &list)
 }
 
 /// How `render_body` renders.
@@ -51,6 +72,7 @@ pub(crate) struct Body {
     pub rich: bool,
     pub tasks: bool,
     pub sourcepos: bool,
+    pub toc: bool,
     /// The 1-based line of the note `md` starts at: source lines (`data-sourcepos`, task and
     /// Copy links) count from there, and front matter is only read at line 1. A part of a note
     /// cut between top-level blocks renders as that part of the whole note's HTML
@@ -72,6 +94,10 @@ pub(crate) struct Rendered {
     /// The text comrak makes each heading's id from, in order (`Anchorizer::anchorize`, which
     /// adds `-1`, `-2`, … to an id seen before).
     pub headings: Vec<String>,
+    /// Each heading's level and its title in a table of contents (`heading_title`), in order.
+    pub titles: Vec<(u8, String)>,
+    /// Whether `html` holds a `[TOC]` placeholder for `fill_toc`.
+    pub toc: bool,
 }
 
 /// `body_html` of `md` as `body` says.
@@ -84,6 +110,7 @@ pub(crate) fn render_body(
         rich,
         tasks,
         sourcepos,
+        toc,
         first_line,
         cached,
         next,
@@ -125,6 +152,20 @@ pub(crate) fn render_body(
         .collect();
     // Every quote is tried (`count`, not `any`).
     let alerts = quotes.into_iter().filter(|quote| make_alert(quote)).count() > 0;
+    // A `[TOC]` paragraph becomes a placeholder, `<p …>TOC</p>`, that `fill_toc` replaces once
+    // the note's headings are known.
+    let mut has_toc = false;
+    for paragraph in root.children().filter(|_| toc) {
+        if is_toc_marker(paragraph) {
+            while let Some(child) = paragraph.first_child() {
+                child.detach();
+            }
+            let text = comrak::nodes::NodeValue::Text(TOC.to_string().into());
+            paragraph.append(arena.alloc(text.into()));
+            has_toc = true;
+        }
+    }
+    let mut titles = Vec::new();
     let mut task_items = Vec::new();
     let mut code_lines = Vec::new();
     let mut front_matter = None;
@@ -132,6 +173,10 @@ pub(crate) fn render_body(
     let mut code_blocks = Vec::new();
     for node in root.descendants() {
         use comrak::nodes::NodeValue;
+        // Before its text is marked below (tags, formulas): its descendants come after it.
+        if let NodeValue::Heading(heading) = &node.data().value {
+            titles.push((heading.level, heading_title(node)));
+        }
         let in_link = || {
             node.ancestors().any(|n| {
                 matches!(
@@ -365,7 +410,159 @@ pub(crate) fn render_body(
         comrak::html::escape(&mut pre, text.trim_end()).expect("writing to a String");
         html.insert_str(0, &format!("{pre}</pre>\n"));
     }
-    Some(Rendered { html, headings })
+    Some(Rendered {
+        html,
+        headings,
+        titles,
+        toc: has_toc,
+    })
+}
+
+/// Whether `paragraph` is a `[TOC]` marker: top-level, plain text only (comrak may split it at
+/// the brackets), `[TOC]` in any case once trimmed. `[TOC] x`, `*[TOC]*`, a second line, or
+/// `[toc]` as a link to a `[toc]: …` definition are not.
+fn is_toc_marker<'a>(paragraph: &'a comrak::nodes::AstNode<'a>) -> bool {
+    use comrak::nodes::NodeValue;
+    if !matches!(paragraph.data().value, NodeValue::Paragraph) {
+        return false;
+    }
+    let mut text = String::new();
+    for child in paragraph.children() {
+        let NodeValue::Text(piece) = &child.data().value else {
+            return false;
+        };
+        if text.len() + piece.len() > 16 {
+            return false;
+        }
+        text.push_str(piece);
+    }
+    text.trim().eq_ignore_ascii_case("[toc]")
+}
+
+/// A heading's title in a table of contents, as the macOS app's outline gives it: its plain
+/// text (code spans keep their backticks, formulas their `$`), trimmed; "Untitled Heading"
+/// when empty.
+fn heading_title<'a>(heading: &'a comrak::nodes::AstNode<'a>) -> String {
+    use comrak::nodes::NodeValue;
+    let mut title = String::new();
+    for node in heading.descendants().skip(1) {
+        match &node.data().value {
+            NodeValue::Text(text) => title.push_str(text),
+            NodeValue::Code(code) => {
+                title.push('`');
+                title.push_str(&code.literal);
+                title.push('`');
+            }
+            NodeValue::Math(math) => {
+                let dollars = if math.display_math { "$$" } else { "$" };
+                title.push_str(dollars);
+                title.push_str(&math.literal);
+                title.push_str(dollars);
+            }
+            NodeValue::HtmlInline(html) => title.push_str(html),
+            NodeValue::FootnoteReference(note) => {
+                title.push_str("[^");
+                title.push_str(&note.name);
+                title.push(']');
+            }
+            NodeValue::SoftBreak | NodeValue::LineBreak => title.push(' '),
+            _ => {}
+        }
+    }
+    let title = title.replace(is_marker, "");
+    match title.trim() {
+        "" => "Untitled Heading".to_string(),
+        trimmed => trimmed.to_string(),
+    }
+}
+
+/// The table of contents of headings given as (level, title, id), in order: nested
+/// `<ul>\n<li><a href="#id">Title</a>\n<ul>\n…</ul>\n</li>\n</ul>\n`, empty without headings.
+/// A deeper heading opens a list inside the item before it (one level, however many it skips);
+/// a shallower one closes the lists deeper than itself, and joins the list it lands in when it
+/// is still deeper than that list's parent (h1, h3, h2: h2 is h3's sibling). The macOS app
+/// makes the same HTML.
+pub(crate) fn toc_list<'a>(headings: impl IntoIterator<Item = (u8, &'a str, &'a str)>) -> String {
+    let mut out = String::new();
+    // The level of each open list.
+    let mut levels: Vec<u8> = Vec::new();
+    for (level, title, id) in headings {
+        match levels.last() {
+            None => {
+                out.push_str("<ul>\n");
+                levels.push(level);
+            }
+            Some(&last) if level > last => {
+                out.push_str("\n<ul>\n");
+                levels.push(level);
+            }
+            Some(_) => {
+                out.push_str("</li>\n");
+                while levels.len() > 1 && level < levels[levels.len() - 1] {
+                    if level > levels[levels.len() - 2] {
+                        *levels.last_mut().expect("open list") = level;
+                        break;
+                    }
+                    levels.pop();
+                    out.push_str("</ul>\n</li>\n");
+                }
+            }
+        }
+        out.push_str("<li><a href=\"#");
+        push_escaped(&mut out, id);
+        out.push_str("\">");
+        push_escaped(&mut out, title);
+        out.push_str("</a>");
+    }
+    if levels.is_empty() {
+        return out;
+    }
+    out.push_str("</li>\n");
+    for _ in 1..levels.len() {
+        out.push_str("</ul>\n</li>\n");
+    }
+    out.push_str("</ul>\n");
+    out
+}
+
+/// `text` with `& < > "` escaped, onto `out`.
+fn push_escaped(out: &mut String, text: &str) {
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            c => out.push(c),
+        }
+    }
+}
+
+/// `html` with each `[TOC]` placeholder `render_body` left (`<p …>TOC</p>\n`) replaced by
+/// `<nav class="toc" …>\n{list}</nav>\n`, keeping the paragraph's attributes
+/// (`data-sourcepos`); by nothing when `list` (`toc_list`) is empty.
+pub(crate) fn fill_toc(html: &str, list: &str) -> String {
+    const END: &str = "</p>\n";
+    let mut out = String::with_capacity(html.len() + list.len());
+    let mut rest = html;
+    // The note's own copies of the marker were dropped, so each one is a placeholder, right
+    // after its `<p …>` tag.
+    while let Some(at) = rest.find(TOC) {
+        let open = rest[..at].rfind('<').expect("placeholder in a paragraph");
+        out.push_str(&rest[..open]);
+        if !list.is_empty() {
+            let attributes = &rest[open + 2..at - 1];
+            out.push_str("<nav class=\"toc\"");
+            out.push_str(attributes);
+            out.push_str(">\n");
+            out.push_str(list);
+            out.push_str("</nav>\n");
+        }
+        let after = &rest[at + TOC.len_utf8()..];
+        rest = after.strip_prefix(END).unwrap_or(after);
+    }
+    out.push_str(rest);
+    out
 }
 
 /// GitHub's alerts: a block quote whose first line is exactly `[!NOTE]`, `[!TIP]`,
@@ -841,13 +1038,15 @@ const TASK_CLOSE: char = '\u{E003}';
 const MATH: char = '\u{E004}';
 const MATH_TEXT: char = '\u{E005}';
 const MATH_END: char = '\u{E006}';
+/// A `[TOC]` paragraph's text in the AST (`fill_toc`).
+const TOC: char = '\u{E007}';
 /// `'0'`…`'9'` of a formula's index.
 const MATH_DIGITS: std::ops::RangeInclusive<char> = '\u{E010}'..='\u{E019}';
 
 /// Whether `c` is one of the private-use chars `body_html` marks the AST with; the note's own
 /// copies are dropped before parsing.
 pub(crate) fn is_marker(c: char) -> bool {
-    matches!(c, TAG_OPEN..=MATH_END) || MATH_DIGITS.contains(&c)
+    matches!(c, TAG_OPEN..=TOC) || MATH_DIGITS.contains(&c)
 }
 
 /// `n` in `MATH_DIGITS`.
@@ -1007,7 +1206,7 @@ pub fn page(
         theme,
         None,
         web_images,
-        &body_html(md, wiki, true, true, true),
+        &body_html(md, wiki, true, true, true, true),
     )
 }
 
@@ -1078,7 +1277,7 @@ pub fn export_page(
     note_dir: &Path,
     wiki: &dyn Fn(&str) -> Option<PathBuf>,
 ) -> String {
-    let body = portable_body(md, note_dir, wiki, true);
+    let body = portable_body(md, note_dir, wiki, true, true);
     let mut escaped = String::new();
     comrak::html::escape(&mut escaped, title).expect("writing to a String");
     html_page(
@@ -1097,13 +1296,13 @@ pub fn export_page(
 pub fn html_fragment(md: &str, note_dir: &Path, wiki: &dyn Fn(&str) -> Option<PathBuf>) -> String {
     format!(
         "<meta charset=\"utf-8\">{}",
-        portable_body(md, note_dir, wiki, false)
+        portable_body(md, note_dir, wiki, false, true)
     )
 }
 
 /// Copy as Rich Text: the note's (or selection's) HTML as a whole document for word
 /// processors and mail (LibreOffice, Thunderbird, web mail), which paste it formatted. The body
-/// is Copy as HTML's (links, MathML, diagrams as code) plus a small style sheet (table borders,
+/// is Copy as HTML's (links, MathML, diagrams as code; `[TOC]` kept as written) plus a small style sheet (table borders,
 /// monospace code) those apps read; `<img>`s go through `inline_images` with `image`.
 pub fn rich_text_page(
     md: &str,
@@ -1111,7 +1310,7 @@ pub fn rich_text_page(
     wiki: &dyn Fn(&str) -> Option<PathBuf>,
     image: &dyn Fn(&str) -> Option<String>,
 ) -> String {
-    let body = inline_images(&portable_body(md, note_dir, wiki, false), image);
+    let body = inline_images(&portable_body(md, note_dir, wiki, false, false), image);
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><style>\
 table {{ border-collapse: collapse; }} th, td {{ border: 1px solid #999; padding: 2px 6px; }} \
@@ -1167,9 +1366,10 @@ fn portable_body(
     note_dir: &Path,
     wiki: &dyn Fn(&str) -> Option<PathBuf>,
     rich: bool,
+    toc: bool,
 ) -> String {
     let wiki = |t: &str| wiki(t).map(|p| relative(note_dir, &p));
-    let mut body = body_html(md, &wiki, rich, false, false);
+    let mut body = body_html(md, &wiki, rich, false, false, toc);
     // A link cannot contain a link, so the next `</a>` closes it; the note's own text is
     // escaped and cannot contain this markup.
     let open = format!("<a href=\"{MISSING}");
@@ -1428,6 +1628,7 @@ div.mermaid .diagram svg { max-width: 100%; height: auto; }
 p.mermaid-error { margin: .3em 0 0; font-size: .85em; color: var(--missing); white-space: pre-wrap; }
 code.math-error { color: var(--missing); }
 .katex-display { overflow-x: auto; overflow-y: hidden; }
+nav.toc { margin: 0 0 1em; } nav.toc ul ul { margin: 0; }
 @media print { html { background: none; } body { max-width: none; padding: 0; } pre, table, img, blockquote, .alert, div.mermaid, .katex-display { break-inside: avoid; } a.copy, pre.front-matter { display: none; } }
 ";
 
@@ -1707,7 +1908,7 @@ mod tests {
     #[test]
     fn alert_lines() {
         let md = "# A\n\n> [!NOTE]\n> one\n> two\n\n> [!TIP]\n>\n> three\n";
-        let html = body_html(md, &|_| None, true, true, true);
+        let html = body_html(md, &|_| None, true, true, true, true);
         assert!(
             html.contains(
                 "<div class=\"alert alert-note\" data-sourcepos=\"3:1-5:5\">\n\
@@ -1747,6 +1948,124 @@ mod tests {
             &|_| None,
         );
         assert!(!html.contains("<div"), "{html}");
+    }
+
+    #[test]
+    fn table_of_contents() {
+        let md = "# Intro\n\n[TOC]\n\n## Same\n\n### Deep `code` & <b>\n\n## Same\n\n# After\n";
+        let html = to_html(md, &|_| None);
+        assert_eq!(
+            html.split("<h2").next().unwrap(),
+            "<h1 id=\"intro\">Intro</h1>\n<nav class=\"toc\">\n<ul>\n\
+<li><a href=\"#intro\">Intro</a>\n<ul>\n<li><a href=\"#same\">Same</a>\n<ul>\n\
+<li><a href=\"#deep-code--\">Deep `code` &amp; &lt;b&gt;</a></li>\n</ul>\n</li>\n\
+<li><a href=\"#same-1\">Same</a></li>\n</ul>\n</li>\n<li><a href=\"#after\">After</a></li>\n\
+</ul>\n</nav>\n"
+        );
+        // Every listed id is a heading's.
+        for id in ["intro", "same", "deep-code--", "same-1", "after"] {
+            assert!(html.contains(&format!("id=\"{id}\"")), "{id}: {html}");
+        }
+        // The preview keeps the marker's lines; any case, spaces around, several markers.
+        let html = body_html(
+            "# A\n\n  [toc]  \n\n[Toc]\n",
+            &|_| None,
+            true,
+            true,
+            true,
+            true,
+        );
+        assert!(
+            html.contains("<nav class=\"toc\" data-sourcepos=\"3:3-3:9\">\n<ul>\n<li><a href=\"#a\">A</a></li>\n</ul>\n</nav>\n"),
+            "{html}"
+        );
+        assert_eq!(html.matches("<nav").count(), 2, "{html}");
+        // No headings, an empty note: nothing. Front matter and code are not headings.
+        assert_eq!(to_html("[TOC]\n", &|_| None), "");
+        assert_eq!(to_html("", &|_| None), "");
+        let html = to_html("---\ntitle: x\n---\n[TOC]\n\n```\n# no\n```\n", &|_| None);
+        assert!(!html.contains("nav") && !html.contains("[TOC]"), "{html}");
+        // Headings in quotes and lists count; an empty one is untitled.
+        let html = to_html("[TOC]\n\n> # Quoted\n\n- ## Listed\n\n#\n", &|_| None);
+        assert!(
+            html.contains(">Quoted</a>") && html.contains(">Listed</a>"),
+            "{html}"
+        );
+        assert!(html.contains(">Untitled Heading</a>"), "{html}");
+        // Rich Text keeps it as written.
+        assert!(
+            rich_text_page("# A\n\n[TOC]\n", Path::new("/r"), &|_| None, &|_| None)
+                .contains("<p>[TOC]</p>")
+        );
+        assert!(
+            html_fragment("# A\n\n[TOC]\n", Path::new("/r"), &|_| None)
+                .contains("<nav class=\"toc\">")
+        );
+        assert!(
+            export_page("# A\n\n[TOC]\n", "t", Path::new("/r"), &|_| None)
+                .contains("<nav class=\"toc\">")
+        );
+    }
+
+    #[test]
+    fn toc_markers_left_as_written() {
+        for md in [
+            "# A\n\n[TOC] x\n",
+            "# A\n\n[TOC]\nmore\n",
+            "# A\n\n> [TOC]\n",
+            "# A\n\n- [TOC]\n",
+            "# A\n\n```\n[TOC]\n```\n",
+            "# A\n\n    [TOC]\n",
+            "# A\n\n*[TOC]*\n",
+            "# A\n\n[TOCS]\n",
+            "# [TOC]\n",
+        ] {
+            let html = to_html(md, &|_| None);
+            assert!(!html.contains("<nav"), "{md:?}: {html}");
+            assert!(html.contains("[TOC"), "{md:?}: {html}");
+        }
+        // A link to a definition named `toc`.
+        let html = to_html("# A\n\n[TOC]\n\n[toc]: /x\n", &|_| None);
+        assert!(
+            html.contains("<a href=\"/x\">TOC</a>") && !html.contains("<nav"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn toc_nesting() {
+        let list = |levels: &[u8]| {
+            let ids: Vec<String> = (0..levels.len()).map(|i| i.to_string()).collect();
+            toc_list(
+                levels
+                    .iter()
+                    .zip(&ids)
+                    .map(|(l, id)| (*l, id.as_str(), id.as_str())),
+            )
+            .replace("<a href=\"#", "")
+            .replace('\n', "")
+        };
+        assert_eq!(list(&[]), "");
+        // A skipped level opens one list; a shallower heading closes the deeper ones.
+        assert_eq!(
+            list(&[1, 3, 1]),
+            "<ul><li>0\">0</a><ul><li>1\">1</a></li></ul></li><li>2\">2</a></li></ul>"
+        );
+        // h1, h3, h2: the h2 joins the h3's list.
+        assert_eq!(
+            list(&[1, 3, 2]),
+            "<ul><li>0\">0</a><ul><li>1\">1</a></li><li>2\">2</a></li></ul></li></ul>"
+        );
+        // A deep first heading: later shallower ones are its siblings.
+        assert_eq!(
+            list(&[3, 1, 2]),
+            "<ul><li>0\">0</a></li><li>1\">1</a></li><li>2\">2</a></li></ul>"
+        );
+        assert_eq!(
+            list(&[1, 2, 3, 2, 1]),
+            "<ul><li>0\">0</a><ul><li>1\">1</a><ul><li>2\">2</a></li></ul></li>\
+<li>3\">3</a></li></ul></li><li>4\">4</a></li></ul>"
+        );
     }
 
     #[test]

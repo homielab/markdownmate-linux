@@ -91,7 +91,7 @@ const MAX_TRIALS: usize = 64;
 /// removal leaves the rendered HTML unchanged, so the note reads like the source; escapes
 /// that matter (literal `\*x\*`, code spans, …) are kept because removing them would not.
 fn drop_needless_escapes(md: &str) -> String {
-    let html = |s: &str| crate::render::body_html(s, &|_| None, false, false, false);
+    let html = |s: &str| crate::render::body_html(s, &|_| None, false, false, false, false);
     let base = html(md);
     // Byte offsets of `\` before ASCII punctuation; `\\` (a literal backslash) is skipped.
     let mut escapes = Vec::new();

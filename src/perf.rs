@@ -103,7 +103,7 @@ fn large_notes() {
             render::page(&md, false, Theme::Default, false, &wiki)
         });
         let (plain, _) = best(runs, cold, || {
-            render::body_html(&md, &wiki, false, true, true)
+            render::body_html(&md, &wiki, false, true, true, true)
         });
         // A keystroke in a code block in the middle of the note, after the note's preview:
         // the whole note is rendered again.
