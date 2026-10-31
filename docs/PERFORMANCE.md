@@ -105,17 +105,18 @@ checks it too.
 300 characters into a paragraph in the middle of the 5 MB note in a shown editor, waiting for
 each frame to be drawn, with Focus Mode off, on, then off again; it also times turning Focus
 Mode on and a cursor jump to another paragraph. In the container (Xvfb, GTK on llvmpipe,
-2026-10-26):
+2026-10-31):
 
 | Focus Mode | to the next frame, per keystroke | CPU per keystroke |
 |---|---|---|
-| off | 52.8 ms | 19.8 ms |
-| on | 45.0 ms | 20.4 ms |
-| off again | 45.9 ms | 19.5 ms |
+| off | 39.6 ms | 10.6 ms |
+| on | 33.8 ms | 13.2 ms |
+| off again | 42.3 ms | 11.9 ms |
 
-Turning it on takes under 1 ms (one tag over the note), so does moving to another paragraph:
-the tag changes only on the old and new paragraph, read at most 1,000 lines each way. The
-frame times are software rendering's; the difference is within the noise.
+Turning it on takes under 1 ms, moving to another paragraph 1 ms: nothing in the note is
+tagged; the view draws a veil over the visible lines outside the paragraph (two rectangles a
+frame), and the paragraph is read at most 1,000 lines each way. The frame times are software
+rendering's; the difference is within the noise.
 
 ### Typing with spell check
 

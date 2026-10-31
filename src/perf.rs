@@ -205,9 +205,8 @@ fn focus_typing() {
             .as_ref(),
     );
     buffer.set_text(&md);
-    let focus = crate::focus::Focus::attach(&buffer);
-    focus.set_colours(None, false);
-    let view = sourceview5::View::with_buffer(&buffer);
+    let view = crate::focus::View::new(&buffer);
+    let focus = crate::focus::Focus::attach(&view);
     let scroll = gtk::ScrolledWindow::builder().child(&view).build();
     let window = gtk::Window::builder()
         .default_width(900)

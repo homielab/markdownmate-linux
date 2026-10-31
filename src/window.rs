@@ -197,16 +197,16 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     // Mid-tone purple, readable on light and dark schemes like the tag blue.
     buffer.create_tag(Some(MATH_STYLE), &[("foreground", &"#9141ac")]);
     let style = adw::StyleManager::default();
-    let view = sourceview5::View::builder()
-        .buffer(&buffer)
-        .wrap_mode(gtk::WrapMode::WordChar)
-        .monospace(true)
-        .css_classes(["mm-editor"])
-        .left_margin(crate::editor::SIDE_MARGIN)
-        .right_margin(crate::editor::SIDE_MARGIN)
-        .top_margin(12)
-        .bottom_margin(crate::editor::BOTTOM_MARGIN)
-        .build();
+    // A GtkSourceView that draws Focus Mode's veil.
+    let focus_view = crate::focus::View::new(&buffer);
+    let view = focus_view.clone().upcast::<sourceview5::View>();
+    view.set_wrap_mode(gtk::WrapMode::WordChar);
+    view.set_monospace(true);
+    view.add_css_class("mm-editor");
+    view.set_left_margin(crate::editor::SIDE_MARGIN);
+    view.set_right_margin(crate::editor::SIDE_MARGIN);
+    view.set_top_margin(12);
+    view.set_bottom_margin(crate::editor::BOTTOM_MARGIN);
     let scroll = gtk::ScrolledWindow::builder()
         .child(&view)
         .vexpand(true)
@@ -375,8 +375,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         prefs: RefCell::default(),
         recent_menu,
         font_css: gtk::CssProvider::new(),
-        // After the tags above, so its colour wins over theirs.
-        focus: crate::focus::Focus::attach(&buffer),
+        focus: crate::focus::Focus::attach(&focus_view),
         spelling: crate::spell::attach(&view),
     });
     // Window-wide so the rule (class `mm-editor`) beats the theme's `.monospace` font.

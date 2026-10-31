@@ -1,23 +1,23 @@
 //! Focus Mode (main menu, Shift+Ctrl+J): the editor draws every line outside the cursor's
-//! paragraph (`paragraph`) dimmed, with one text tag over the rest of the note.
+//! paragraph (`paragraph`) dimmed.
 //!
-//! Display only: the text, undo, saving and the preview are untouched. The tag covers the
-//! text before and after the focused paragraph; when the paragraph changes, only the text that
-//! leaves it is tagged and only the new paragraph is untagged, so moving the cursor or typing
-//! costs the paragraph, not the note. Text inserted outside the focused paragraph (Replace All,
-//! undo, a note opened) is tagged as it comes in. The tag is the scheme's text colour, faded, so
-//! every style scheme, light or dark, keeps its own look.
+//! Display only: the text, undo, saving and the preview are untouched. The editor view (`View`)
+//! draws a veil of the scheme's background over the visible lines above and below the focused
+//! paragraph, so dimmed text keeps its syntax colours (headings, links, code), faded, in every
+//! style scheme, light or dark. Nothing is tagged: moving the cursor or typing costs reading the
+//! paragraph, not the note, and drawing costs two rectangles a frame.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use gtk::glib;
 use gtk::prelude::*;
+use gtk::subclass::prelude::*;
+use gtk::{gdk, glib, graphene};
 
 /// Lines read above and below the cursor's line, at most: the cost doesn't grow with the note.
 pub(crate) const MAX_LINES: usize = 1000;
 
-/// The opacity of dimmed text: about a tertiary label's contrast.
+/// The opacity dimmed text keeps: about a tertiary label's contrast.
 const FADED_ALPHA: f32 = 0.3;
 
 /// The paragraph Focus Mode keeps at full contrast, as (first, last) line numbers (0-based,
@@ -98,59 +98,49 @@ pub(crate) fn is_list_item(line: &str) -> bool {
         .is_none_or(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{2028}' | '\u{2029}'))
 }
 
-/// Focus Mode of one editor buffer.
+/// Focus Mode of one editor view.
 pub(crate) struct Focus {
     buffer: sourceview5::Buffer,
-    tag: gtk::TextTag,
-    /// The focused paragraph as last tagged (moves with edits): everything outside it is
-    /// tagged. Start: left gravity, end: right gravity, so typing at either end stays inside.
+    view: glib::WeakRef<View>,
+    /// The focused paragraph (moves with edits): every line outside it is dimmed. Start: left
+    /// gravity, end: right gravity, so typing at either end stays inside.
     start: gtk::TextMark,
     end: gtk::TextMark,
     on: Cell<bool>,
     /// An update is queued (`schedule`).
     pending: Cell<bool>,
+    /// Drawn over the dimmed lines: the scheme's background at `1 - FADED_ALPHA`.
+    veil: Cell<gdk::RGBA>,
 }
 
 impl Focus {
-    /// Focus Mode for `buffer`, off; follows the cursor and edits once turned on.
-    pub(crate) fn attach(buffer: &sourceview5::Buffer) -> Rc<Focus> {
-        let tag = gtk::TextTag::new(None);
-        buffer.tag_table().add(&tag);
+    /// Focus Mode for `view`, off; follows the cursor and edits once turned on.
+    pub(crate) fn attach(view: &View) -> Rc<Focus> {
+        let buffer = view
+            .buffer()
+            .downcast::<sourceview5::Buffer>()
+            .expect("the editor's buffer is a GtkSourceBuffer");
         let at = buffer.start_iter();
         let focus = Rc::new(Focus {
-            buffer: buffer.clone(),
-            tag,
             start: buffer.create_mark(None, &at, true),
             end: buffer.create_mark(None, &at, false),
+            buffer: buffer.clone(),
+            view: view.downgrade(),
             on: Cell::new(false),
             pending: Cell::new(false),
+            veil: Cell::new(gdk::RGBA::WHITE),
         });
+        focus.set_colours(None, false);
+        view.imp().focus.replace(Rc::downgrade(&focus));
         let weak = Rc::downgrade(&focus);
-        // After the text is in: `location` is then the end of the inserted text.
-        buffer.connect_closure(
-            "insert-text",
-            true,
-            glib::closure_local!(
-                #[strong]
-                weak,
-                move |_buffer: sourceview5::Buffer,
-                      location: gtk::TextIter,
-                      text: String,
-                      _len: i32| {
-                    if let Some(focus) = weak.upgrade() {
-                        focus.inserted(&location, text.chars().count() as i32);
-                    }
-                }
-            ),
-        );
-        let w = weak.clone();
         buffer.connect_mark_set(move |buffer, _, mark| {
             if (*mark == buffer.get_insert() || *mark == buffer.selection_bound())
-                && let Some(focus) = w.upgrade()
+                && let Some(focus) = weak.upgrade()
             {
                 focus.schedule();
             }
         });
+        let weak = Rc::downgrade(&focus);
         buffer.connect_changed(move |_| {
             if let Some(focus) = weak.upgrade() {
                 focus.schedule();
@@ -164,34 +154,31 @@ impl Focus {
         if self.on.replace(on) == on {
             return;
         }
-        let (start, end) = self.buffer.bounds();
-        if on {
-            // Above the tags made before it (tags, formulas), which set colours too.
-            self.tag
-                .set_priority(self.buffer.tag_table().size().saturating_sub(1));
-            self.buffer.apply_tag(&self.tag, &start, &end);
-            self.buffer.move_mark(&self.start, &start);
-            self.buffer.move_mark(&self.end, &start);
-            self.update();
-        } else {
-            self.buffer.remove_tag(&self.tag, &start, &end);
-        }
+        self.update();
+        self.redraw();
     }
 
-    /// The dimmed text's colour: the scheme's text colour (`dark`: white without one, else
-    /// black), faded.
+    /// The veil's colour: the scheme's background (`dark`: a dark grey without one, else
+    /// white), at the opacity that leaves text `FADED_ALPHA` of its contrast.
     pub(crate) fn set_colours(&self, scheme: Option<&sourceview5::StyleScheme>, dark: bool) {
         let mut colour = scheme
             .and_then(|s| s.style("text"))
-            .and_then(|s| s.foreground())
-            .and_then(|c| gtk::gdk::RGBA::parse(c.as_str()).ok())
+            .and_then(|s| s.background())
+            .and_then(|c| gdk::RGBA::parse(c.as_str()).ok())
             .unwrap_or(if dark {
-                gtk::gdk::RGBA::WHITE
+                gdk::RGBA::new(0.12, 0.12, 0.12, 1.0)
             } else {
-                gtk::gdk::RGBA::BLACK
+                gdk::RGBA::WHITE
             });
-        colour.set_alpha(FADED_ALPHA);
-        self.tag.set_foreground_rgba(Some(&colour));
+        colour.set_alpha(1.0 - FADED_ALPHA);
+        self.veil.set(colour);
+        self.redraw();
+    }
+
+    fn redraw(&self) {
+        if let Some(view) = self.view.upgrade() {
+            view.queue_draw();
+        }
     }
 
     /// Updates once the current change is over (all of a Replace All, the cursor moved), but
@@ -210,51 +197,51 @@ impl Focus {
         });
     }
 
-    /// Text inserted, ending at `end`, `chars` long: dimmed unless inside the focused
-    /// paragraph (`update` sorts out the paragraph afterwards).
-    fn inserted(&self, end: &gtk::TextIter, chars: i32) {
-        if !self.on.get() || chars == 0 {
-            return;
-        }
-        let stop = end.offset();
-        let from = stop - chars;
-        let first = self.buffer.iter_at_mark(&self.start).offset();
-        let last = self.buffer.iter_at_mark(&self.end).offset();
-        // An empty paragraph before (a blank line) has nothing to be inside of.
-        if from >= first && stop <= last && last - first > chars {
-            return;
-        }
-        let start = self.buffer.iter_at_offset(from);
-        self.buffer.apply_tag(&self.tag, &start, end);
-    }
-
-    /// Dims what left the focused paragraph and undims the paragraph now at the cursor.
+    /// Moves the focused paragraph to the cursor's.
     pub(crate) fn update(&self) {
         if !self.on.get() {
             return;
         }
-        let (new_start, new_end) = self.current();
-        let old_start = self.buffer.iter_at_mark(&self.start);
-        let old_end = self.buffer.iter_at_mark(&self.end);
-        let (ns, ne) = (new_start.offset(), new_end.offset());
-        let (os, oe) = (old_start.offset(), old_end.offset());
-        if (os, oe) != (ns, ne) {
-            for (a, b) in [(os, oe.min(ns)), (os.max(ne), oe)] {
-                if a < b {
-                    let (a, b) = (self.buffer.iter_at_offset(a), self.buffer.iter_at_offset(b));
-                    self.buffer.apply_tag(&self.tag, &a, &b);
-                }
-            }
-            self.buffer.move_mark(&self.start, &new_start);
-            self.buffer.move_mark(&self.end, &new_end);
+        let (start, end) = self.current();
+        let (old_start, old_end) = self.bright();
+        if (old_start.offset(), old_end.offset()) != (start.offset(), end.offset()) {
+            self.buffer.move_mark(&self.start, &start);
+            self.buffer.move_mark(&self.end, &end);
+            self.redraw();
         }
-        // Text pasted with the tag, or typed on what was a blank line.
-        let mut toggle = new_start;
-        if ns < ne
-            && (new_start.has_tag(&self.tag)
-                || (toggle.forward_to_tag_toggle(Some(&self.tag)) && toggle.offset() < ne))
-        {
-            self.buffer.remove_tag(&self.tag, &new_start, &new_end);
+    }
+
+    /// The focused paragraph as last updated; empty on a blank line.
+    fn bright(&self) -> (gtk::TextIter, gtk::TextIter) {
+        (
+            self.buffer.iter_at_mark(&self.start),
+            self.buffer.iter_at_mark(&self.end),
+        )
+    }
+
+    /// Veils the visible lines outside the focused paragraph (on a blank line: outside the
+    /// cursor's line, so the cursor stays bright). `snapshot` is in buffer coordinates.
+    fn draw(&self, view: &gtk::TextView, snapshot: &gtk::Snapshot) {
+        if !self.on.get() {
+            return;
+        }
+        let visible = view.visible_rect();
+        let (top, bottom) = (visible.y(), visible.y() + visible.height());
+        let (start, end) = self.bright();
+        let first = view.line_yrange(&start).0;
+        let (y, height) = view.line_yrange(&end);
+        let last = y + height;
+        let veil = self.veil.get();
+        for (a, b) in [(top, first.min(bottom)), (last.max(top), bottom)] {
+            if a < b {
+                let area = graphene::Rect::new(
+                    visible.x() as f32,
+                    a as f32,
+                    visible.width() as f32,
+                    (b - a) as f32,
+                );
+                snapshot.append_color(&veil, &area);
+            }
         }
     }
 
@@ -296,6 +283,51 @@ impl Focus {
         }
         (start, end)
     }
+}
+
+glib::wrapper! {
+    /// The editor's GtkSourceView, drawing Focus Mode's veil above the text.
+    pub struct View(ObjectSubclass<imp::View>)
+        @extends sourceview5::View, gtk::TextView, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget, gtk::Scrollable;
+}
+
+impl View {
+    pub(crate) fn new(buffer: &sourceview5::Buffer) -> View {
+        glib::Object::builder().property("buffer", buffer).build()
+    }
+}
+
+mod imp {
+    use super::*;
+
+    #[derive(Default)]
+    pub struct View {
+        pub(super) focus: RefCell<Weak<Focus>>,
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for View {
+        const NAME: &'static str = "MarkdownMateEditorView";
+        type Type = super::View;
+        type ParentType = sourceview5::View;
+    }
+
+    impl ObjectImpl for View {}
+    impl WidgetImpl for View {}
+
+    impl TextViewImpl for View {
+        fn snapshot_layer(&self, layer: gtk::TextViewLayer, snapshot: gtk::Snapshot) {
+            self.parent_snapshot_layer(layer, snapshot.clone());
+            if layer == gtk::TextViewLayer::AboveText
+                && let Some(focus) = self.focus.borrow().upgrade()
+            {
+                focus.draw(self.obj().upcast_ref(), &snapshot);
+            }
+        }
+    }
+
+    impl sourceview5::subclass::prelude::ViewImpl for View {}
 }
 
 #[cfg(test)]
@@ -401,33 +433,24 @@ mod tests {
         assert_eq!(at(text, "| 1"), "| A | B |\n| --- | --- |\n| 1 | 2 |");
     }
 
-    /// The editor's lines drawn dimmed, by their text, in order (blank lines left out); each
-    /// line is dimmed as a whole or not at all.
+    /// The editor's lines drawn dimmed, by their text, in order (blank lines left out).
     fn dimmed(focus: &Focus) -> Vec<String> {
         focus.update();
+        if !focus.on.get() {
+            return Vec::new();
+        }
         let buffer = &focus.buffer;
+        let (start, end) = focus.bright();
+        let (first, last) = (start.line(), end.line());
         let mut out = Vec::new();
-        for n in 0..buffer.line_count() {
+        for n in (0..buffer.line_count()).filter(|n| *n < first || *n > last) {
             let start = buffer.iter_at_line(n).expect("line");
             let mut end = start;
             if !end.ends_line() {
                 end.forward_to_line_end();
             }
             let text = start.slice(&end).to_string();
-            let mut tagged = Vec::new();
-            let mut at = start;
-            while at < end {
-                tagged.push(at.has_tag(&focus.tag));
-                at.forward_char();
-            }
-            if text.trim().is_empty() {
-                continue;
-            }
-            assert!(
-                tagged.iter().all(|&t| t == tagged[0]),
-                "{text}: part dimmed"
-            );
-            if tagged[0] {
+            if !text.trim().is_empty() {
                 out.push(text);
             }
         }
@@ -444,8 +467,8 @@ mod tests {
         let buffer = sourceview5::Buffer::new(None);
         buffer.set_text(text);
         buffer.place_cursor(&buffer.start_iter());
-        let focus = Focus::attach(&buffer);
-        focus.set_colours(None, false);
+        let view = View::new(&buffer);
+        let focus = Focus::attach(&view);
         assert!(dimmed(&focus).is_empty(), "off by default");
         focus.set_on(true);
         assert_eq!(dimmed(&focus), ["Second paragraph", "Third paragraph"]);
@@ -518,7 +541,7 @@ mod tests {
         place(0);
         assert_eq!(dimmed(&focus), ["Two"]);
 
-        // The schemes' text colours (named palette colours in the system ones), faded.
+        // The schemes' backgrounds (named palette colours in the system ones), as the veil.
         let manager = sourceview5::StyleSchemeManager::default();
         for id in [
             "Adwaita",
@@ -527,10 +550,10 @@ mod tests {
             "solarized-dark",
         ] {
             focus.set_colours(manager.scheme(id).as_ref(), false);
-            let colour = focus.tag.foreground_rgba().expect("colour");
-            assert!((colour.alpha() - FADED_ALPHA).abs() < 0.01, "{id}");
-            // Not the fallback (black or white): the scheme's own colour.
-            assert!(colour.red() > 0.01 && colour.red() < 0.99, "{id}");
+            let colour = focus.veil.get();
+            assert!((colour.alpha() - (1.0 - FADED_ALPHA)).abs() < 0.01, "{id}");
+            // Not the fallback (white): the scheme's own colour.
+            assert!(colour.red() < 0.995 || colour.blue() < 0.995, "{id}");
         }
 
         focus.set_on(false);

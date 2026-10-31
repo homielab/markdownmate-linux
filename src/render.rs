@@ -403,12 +403,11 @@ fn mathml(latex: &str, display: bool, delim: &str) -> String {
     html + "</code>"
 }
 
-/// Markdown options shared by rendering and `code_block_at`.
-/// Preferences ▸ Line breaks ▸ Every New Line: a single newline inside a paragraph renders
-/// as `<br>`. Process-wide because every renderer (preview, exports, print, copy) builds its
-/// options here; set at launch and when the preference changes.
+/// Preferences ▸ Line Breaks ▸ Every New Line: a single newline in a paragraph renders as `<br>`.
 static HARD_BREAKS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Sets `HARD_BREAKS`, at launch and when the preference changes. Process-wide because every
+/// renderer (preview, exports, print, copy) builds its options in `options`.
 pub(crate) fn set_hard_breaks(on: bool) {
     HARD_BREAKS.store(on, std::sync::atomic::Ordering::Relaxed);
 }
@@ -417,6 +416,7 @@ pub(crate) fn hard_breaks() -> bool {
     HARD_BREAKS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Markdown options shared by rendering and `code_block_at`.
 pub(crate) fn options() -> comrak::Options<'static> {
     options_with(hard_breaks())
 }
