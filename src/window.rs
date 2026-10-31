@@ -377,6 +377,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         font_css: gtk::CssProvider::new(),
         // After the tags above, so its colour wins over theirs.
         focus: crate::focus::Focus::attach(&buffer),
+        spelling: crate::spell::attach(&view),
     });
     // Window-wide so the rule (class `mm-editor`) beats the theme's `.monospace` font.
     gtk::style_context_add_provider_for_display(
@@ -398,6 +399,18 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     ));
 
     image_input(&view, &editor);
+    // The right-click menu's own Check Spelling item: remembered like the Preferences switch.
+    editor.spelling.connect_enabled_notify(clone!(
+        #[weak]
+        editor,
+        move |a| {
+            let on = a.is_enabled();
+            if editor.prefs.borrow().spell_check != on {
+                editor.prefs.borrow_mut().spell_check = on;
+                editor.remember();
+            }
+        }
+    ));
     crate::search::find_bar(&editor, &editor_pane, app);
     crate::editor::typewriter_scrolling(&editor, &scroll);
     crate::editor::text_width_resizing(&editor, &scroll);

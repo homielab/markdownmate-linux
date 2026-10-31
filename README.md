@@ -81,6 +81,7 @@ Shortcuts use `Ctrl` where the macOS app uses `⌘`.
 - **Table bar**: while the cursor is in a table and the format bar is off, a bar under the editor shows the table commands — Row: Above / Below / Delete, Column: Add / Delete, the three column alignments and Format (hover a button for its full name and shortcut); it hides again outside tables.
 - **Wrap lines & line numbers**: toggle in Preferences (Ctrl+,) ▸ Editor; lines wrap by default, line numbers are off.
 - **Typewriter scrolling** (Preferences ▸ Editor, off by default): the cursor's line stays in the middle of the editor as you type, move with the arrow keys or click (not while dragging a selection), with room below the text so the last line can reach the middle too.
+- **Spell check** (Preferences ▸ Editor ▸ Check Spelling; on by default, remembered): misspelled words are underlined as you type. Right-click one for suggestions, Add to Dictionary or Ignore; the same menu has Check Spelling (the same switch) and Languages (for the open window only). The language is your system's, or US English if no dictionary covers it (add one with `sudo apt install hunspell-<code>`, e.g. `hunspell-fr`). Inline code, ```` ``` ```` code blocks and link URLs are skipped; `~~~` code blocks and code indented by 4 spaces are checked like text (GtkSourceView's Markdown rules). A note is checked from the top down in the background without slowing typing: a typical note in a few seconds, a very large one at about 3 minutes per MB, so far down such a note words are underlined only once the check gets there (`docs/PERFORMANCE.md`).
 - **Focus Mode** (Shift+Ctrl+J, or main menu ▸ Focus Mode; off by default, remembered): the editor dims every paragraph except the one you are writing in. A paragraph is a block of lines between blank lines (so a table or a code block without blank lines is one), and in a list each item is its own paragraph; on a blank line everything is dimmed, and with a selection the paragraphs it touches stay bright. Dimmed text is the theme's text colour, faded, in every theme, light or dark; works with typewriter scrolling. Only the editor's display changes: the note, the preview, print and exports are untouched.
 - **Line spacing & text width** (Preferences ▸ Editor): Line Spacing 1, 1.15, 1.3, 1.5 or 2 (1 by default); Text Width Narrow (680 px), Medium (820 px), Wide (1080 px) or Full Width (Medium by default) keeps long lines readable on wide screens: the editor's text is centred at most that wide, and so is the preview's page; Full Width has no limit in either, so the text fills the window edge to edge (the side padding stays). Print and exports are unchanged.
 - **Go to Line** (Ctrl+L): jump to a line, or `line:column` (1-based; past the end goes to the last line / line end).
@@ -124,7 +125,7 @@ Shortcuts use `Ctrl` where the macOS app uses `⌘`.
 - **Print…** (Shift+Ctrl+P or the main menu): the note as the preview renders it (unsaved edits included, always light, no background), from Edit, Preview or Side by side, to a printer or GTK's Print to File (PDF). Code blocks, tables and images are kept off page breaks where they fit.
 - **Auto-save** directly to disk, and **Reload** (Ctrl+R) from disk — with unsaved edits it asks first (Reload drops them and clears undo).
 - **Session restore**: reopens your folder and note, the cursor position in each note (the last 100 notes; a target line from Find in Folder / Go to Line wins) and the expanded sidebar folders.
-- **Preferences** (Ctrl+, or the header-bar button): editor font and size (system monospace by default), line numbers, line wrapping, list indent width (2 / 4 spaces), line spacing, text width, typewriter scrolling, style, theme, sync scrolling, loading images from the web. Changes apply at once and are remembered. Preferences ▸ Default App shows whether MarkdownMate opens Markdown files (`text/markdown`, `text/x-markdown`) and has a Make Default button that sets it (the same as Files ▸ Open With ▸ Set as default); it needs the installed package, and a failure shows a message at the bottom of the window. Nothing asks at launch.
+- **Preferences** (Ctrl+, or the header-bar button): editor font and size (system monospace by default), line numbers, line wrapping, list indent width (2 / 4 spaces), line spacing, text width, typewriter scrolling, spell check, style, theme, sync scrolling, loading images from the web. Changes apply at once and are remembered. Preferences ▸ Default App shows whether MarkdownMate opens Markdown files (`text/markdown`, `text/x-markdown`) and has a Make Default button that sets it (the same as Files ▸ Open With ▸ Set as default); it needs the installed package, and a failure shows a message at the bottom of the window. Nothing asks at launch.
 - **Light / Dark / System** appearance: Preferences ▸ Appearance ▸ Style (System by default) switches the window, editor and preview at once and is remembered.
 - **Zoom** (Ctrl+= or Ctrl++ in, Ctrl+− out, Ctrl+0 back to 100%): editor text and preview, 10% steps from 50% to 300%, remembered. The sidebar and header bar keep their size; Print and Export HTML are not zoomed.
 - **Default app** for `.md` files, if you want it.
@@ -175,7 +176,7 @@ Your files and settings stay where they belong: **on your machine**. The only fi
 |---|---|
 | Language | Rust (stable) |
 | UI | [GTK 4](https://gtk-rs.org) + [libadwaita](https://gnome.pages.gitlab.gnome.org/libadwaita/) |
-| Editor | [GtkSourceView 5](https://wiki.gnome.org/Projects/GtkSourceView) |
+| Editor | [GtkSourceView 5](https://wiki.gnome.org/Projects/GtkSourceView); spell check by [libspelling](https://gitlab.gnome.org/GNOME/libspelling) (enchant / Hunspell dictionaries) |
 | Preview | [WebKitGTK 6](https://webkitgtk.org), page scripts off (the page's Content-Security-Policy blocks scripts and every network load); code highlighted in Rust by [syntect](https://github.com/trishume/syntect) (light/dark CSS classes; its default syntaxes plus TypeScript / TSX from `resources/syntaxes/`, Apache-2.0, compiled into one embedded set); math typeset by [KaTeX](https://katex.org) 0.18 (MIT, bundled with its fonts in `resources/katex/`), which only notes with a formula load, into the app's isolated script world, over the MathML from [math-core](https://crates.io/crates/math-core) that stays the fallback (no script, Copy as HTML); ```` ```mermaid ```` diagrams drawn by [Mermaid](https://mermaid.js.org) 11 (MIT, bundled in `resources/mermaid/`), which only notes with a diagram load, into the app's own isolated script world (not the page's) with Mermaid's `strict` security level |
 | Markdown | [comrak](https://github.com/kivikakk/comrak) (CommonMark + GFM) |
 | Packaging | `.deb`, published in the Launchpad PPA `ppa:homielab/markdownmate` |
@@ -249,7 +250,8 @@ To release: bump `version` in `Cargo.toml`, move the `## Unreleased` notes in `C
 - System libraries:
   ```bash
   sudo apt install build-essential pkg-config \
-    libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libwebkitgtk-6.0-dev
+    libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libwebkitgtk-6.0-dev \
+    libspelling-1-dev
   ```
 
 ### Build from Source

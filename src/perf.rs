@@ -283,3 +283,123 @@ CPU {:.2} ms per keystroke",
     typing("focus mode off again");
     window.destroy();
 }
+
+/// Typing into a 5 MB note in a shown editor with spell check off, on while libspelling still
+/// checks the rest of the note in the background, and on once the note is checked: 300
+/// keystrokes of prose (with a misspelled word) in a paragraph in the middle, each followed by
+/// the main loop until the next frame is drawn. Also how long the whole note takes to be
+/// checked (until the main loop is idle). Run like `large_notes` (`spell_typing` instead), with
+/// a display and the en_US dictionary.
+#[test]
+#[ignore]
+fn spell_typing() {
+    use sourceview5::prelude::*;
+    if gtk::init().is_err() {
+        eprintln!("no display");
+        return;
+    }
+    let md = sample_note(5_000_000);
+    let buffer = sourceview5::Buffer::new(None);
+    buffer.set_language(
+        sourceview5::LanguageManager::default()
+            .language("markdown")
+            .as_ref(),
+    );
+    buffer.set_text(&md);
+    let view = sourceview5::View::with_buffer(&buffer);
+    let spelling = crate::spell::attach(&view);
+    spelling.set_language("en_US");
+    let scroll = gtk::ScrolledWindow::builder().child(&view).build();
+    let window = gtk::Window::builder()
+        .default_width(900)
+        .default_height(600)
+        .child(&scroll)
+        .build();
+    window.present();
+    let context = gtk::glib::MainContext::default();
+    let painted = std::rc::Rc::new(std::cell::Cell::new(0u64));
+    let settle = |budget: Duration| {
+        let start = Instant::now();
+        while context.pending() && start.elapsed() < budget {
+            context.iteration(false);
+        }
+    };
+    let start = Instant::now();
+    while window.frame_clock().is_none() && start.elapsed() < Duration::from_secs(10) {
+        context.iteration(true);
+    }
+    let clock = window.frame_clock().expect("shown");
+    let p = std::rc::Rc::clone(&painted);
+    clock.connect_after_paint(move |_| p.set(p.get() + 1));
+    let middle = md[..md.len() / 2].rfind("\nParagraph ").expect("paragraph") + 1;
+    let at = buffer.iter_at_offset(md[..middle].chars().count() as i32);
+    buffer.place_cursor(&at);
+    view.scroll_to_iter(&mut at.clone(), 0.0, true, 0.0, 0.5);
+    let drawn = || {
+        let frame = painted.get();
+        let start = Instant::now();
+        while painted.get() == frame && start.elapsed() < Duration::from_secs(5) {
+            context.iteration(true);
+        }
+    };
+    settle(Duration::from_secs(120));
+    drawn();
+    let prose: Vec<char> = "Spell chekc as you type in a large note. "
+        .chars()
+        .collect();
+    let keys = 300;
+    let typing = |label: &str| {
+        let (start, cpu) = (Instant::now(), cpu_time());
+        let mut worst = Duration::ZERO;
+        for i in 0..keys {
+            let key = Instant::now();
+            buffer.insert_at_cursor(&prose[i % prose.len()].to_string());
+            drawn();
+            worst = worst.max(key.elapsed());
+        }
+        let (took, cpu) = (start.elapsed(), cpu_time() - cpu);
+        eprintln!(
+            "{label}: {keys} keystrokes, {:.1} ms each to the next frame (worst {}), \
+CPU {:.2} ms per keystroke",
+            took.as_secs_f64() * 1000.0 / keys as f64,
+            ms(worst),
+            cpu.as_secs_f64() * 1000.0 / keys as f64
+        );
+    };
+    typing("spell check off");
+    let check = Instant::now();
+    spelling.set_enabled(true);
+    drawn();
+    typing("spell check on, note being checked");
+    // Done once the last section's misspelled words (`\frac`, `\sqrt`…) are underlined.
+    // A timer wakes the blocking loop; the check runs between frames.
+    let tick = gtk::glib::timeout_add_local(Duration::from_millis(100), || {
+        gtk::glib::ControlFlow::Continue
+    });
+    let (chars, cpu) = (buffer.char_count(), cpu_time());
+    let checked = || {
+        crate::spell::misspelled(&spelling)
+            .last()
+            .is_some_and(|&(start, _)| start > chars - 2_000)
+    };
+    while !checked() && check.elapsed() < Duration::from_secs(900) {
+        let poll = Instant::now();
+        while poll.elapsed() < Duration::from_secs(2) {
+            context.iteration(true);
+        }
+    }
+    tick.remove();
+    eprintln!(
+        "whole note checked {:.0} s after turning it on (CPU {:.0} s after the typing), \
+{} misspelled words",
+        check.elapsed().as_secs_f64(),
+        (cpu_time() - cpu).as_secs_f64(),
+        crate::spell::misspelled(&spelling).len()
+    );
+    drawn();
+    typing("spell check on, note checked");
+    let start = Instant::now();
+    spelling.set_enabled(false);
+    eprintln!("turn spell check off: {}", ms(start.elapsed()));
+    window.destroy();
+}

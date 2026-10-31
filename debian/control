@@ -9,14 +9,15 @@ Build-Depends: debhelper-compat (= 13),
                libgtk-4-dev,
                libadwaita-1-dev (>= 1.5),
                libgtksourceview-5-dev,
-               libwebkitgtk-6.0-dev
+               libwebkitgtk-6.0-dev,
+               libspelling-1-dev
 Standards-Version: 4.6.2
 Homepage: https://markdownmate.homielab.com/
 Rules-Requires-Root: no
 
 Package: markdownmate
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, libspelling-1-1
 Description: local-first, native Markdown note-taking app
  MarkdownMate keeps notes as plain .md files in your own folders: no cloud,
  no account, no telemetry. It is a GTK 4 + libadwaita app with a Markdown

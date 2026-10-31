@@ -100,6 +100,20 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
         }
     ));
 
+    let spelling = adw::SwitchRow::builder()
+        .title("Check Spelling")
+        .subtitle("Underline misspelled words; right-click one for suggestions")
+        .active(prefs.spell_check)
+        .build();
+    spelling.connect_active_notify(clone!(
+        #[strong]
+        update,
+        move |r| {
+            let on = r.is_active();
+            update(&|p| p.spell_check = on);
+        }
+    ));
+
     let spacing_names: Vec<String> = state::LINE_SPACINGS
         .iter()
         .map(|s| format!("{}", f64::from(*s) / 100.0))
@@ -162,6 +176,7 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
     group.add(&line_spacing);
     group.add(&text_width);
     group.add(&typewriter);
+    group.add(&spelling);
 
     let theme = adw::ComboRow::builder()
         .title("Theme")

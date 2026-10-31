@@ -33,6 +33,7 @@ mod rtf;
 mod save;
 mod search;
 mod sidebar;
+mod spell;
 mod state;
 mod stats;
 mod table;

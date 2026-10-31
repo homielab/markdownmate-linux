@@ -117,6 +117,27 @@ Turning it on takes under 1 ms (one tag over the note), so does moving to anothe
 the tag changes only on the old and new paragraph, read at most 1,000 lines each way. The
 frame times are software rendering's; the difference is within the noise.
 
+### Typing with spell check
+
+`perf::spell_typing` (ignored; run it like `large_notes`, with `spell_typing` instead; needs the
+`hunspell-en-us` dictionary, in the container) types 300 characters of prose with a misspelled
+word into a paragraph in the middle of the 5 MB note in a shown editor, waiting for each frame:
+with spell check off, on while libspelling still checks the rest of the note, and on once the
+whole note is checked. In the container (Xvfb, GTK on llvmpipe, 2026-10-31):
+
+| Spell check | to the next frame, per keystroke | CPU per keystroke |
+|---|---|---|
+| off | 26.2 ms (worst 103 ms) | 18.9 ms |
+| on, note being checked | 23.9 ms (worst 109 ms) | 19.8 ms |
+| on, note checked | 30.5 ms (worst 106 ms) | 12.8 ms |
+
+Typing is as fast with it on: libspelling checks only the words that change, and runs the first
+check of the note in slices of a few milliseconds between frames. That first check goes from the
+top down at about 6 KB/s: 825 s for the 5 MB note (96 s of CPU), so about 3 minutes per MB and
+a few seconds for a typical note. Until it gets there, words far down a very large note are not
+underlined, typed ones included. Turning it off takes 36 ms (the underline removed from the
+whole note).
+
 ## A folder of 10,000 notes
 
 `scripts/measure-folder.sh` times launch, the sidebar, the Tags list and Backlinks with a large

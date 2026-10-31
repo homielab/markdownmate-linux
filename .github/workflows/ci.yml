@@ -30,12 +30,12 @@ jobs:
       - uses: actions/checkout@v7
 
       # same packages as debian/control Build-Depends (the unit tests need no display)
-      - name: Install GTK 4, libadwaita, GtkSourceView 5 and WebKitGTK 6
+      - name: Install GTK 4, libadwaita, GtkSourceView 5, WebKitGTK 6 and libspelling
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential pkg-config \
-            libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libwebkitgtk-6.0-dev
+            libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libwebkitgtk-6.0-dev libspelling-1-dev
 
       - name: Install Rust (stable, with rustfmt and clippy)
         run: |

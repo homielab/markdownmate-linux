@@ -11,6 +11,9 @@ gtk = { package = "gtk4", version = "0.10", features = ["v4_10"] }
 adw = { package = "libadwaita", version = "0.8", features = ["v1_5"] }
 sourceview5 = "0.10"
 webkit6 = "0.5"
+# Spell check in the editor (GNOME's libspelling, enchant-backed). 0.4 is the binding for gtk4 0.10 /
+# sourceview5 0.10; only libspelling 0.2 calls (Ubuntu 24.04's): no `update_corrections`.
+libspelling = "0.4"
 # renameat2(RENAME_NOREPLACE) và số signal; đã có sẵn trong cây dependency (qua glib).
 libc = "0.2"
 comrak = { version = "0.56", default-features = false }

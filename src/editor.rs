@@ -140,6 +140,8 @@ pub(crate) struct Editor {
     pub(crate) recent_menu: gio::Menu,
     /// Focus Mode (Shift+Ctrl+J): the editor dims all but the cursor's paragraph.
     pub(crate) focus: Rc<crate::focus::Focus>,
+    /// Spell check (Preferences ▸ Editor ▸ Check Spelling), on while `prefs.spell_check`.
+    pub(crate) spelling: libspelling::TextBufferAdapter,
 }
 
 impl Editor {
@@ -219,6 +221,9 @@ impl Editor {
         });
         // Read back by the Tab / Shift+Tab list handler.
         self.view.set_indent_width(p.indent as i32);
+        if self.spelling.is_enabled() != p.spell_check {
+            self.spelling.set_enabled(p.spell_check);
+        }
         let css = match &p.font {
             Some(font) => {
                 let d = gtk::pango::FontDescription::from_string(font);
