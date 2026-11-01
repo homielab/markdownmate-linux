@@ -8,7 +8,7 @@ use gtk::glib::{self, clone};
 
 use crate::editor::Editor;
 use crate::file_name;
-use crate::{find, goto, naming, quick, render, state};
+use crate::{broken, find, goto, naming, quick, render, state};
 
 /// Desktop id of `packaging/com.homielab.MarkdownMate.desktop`.
 const DESKTOP_ID: &str = "com.homielab.MarkdownMate.desktop";
@@ -847,7 +847,19 @@ pub(crate) fn highlight(text: &str, ranges: &[std::ops::Range<usize>]) -> String
 /// under the box and no results. Replace All replaces the listed matches after a confirmation
 /// (`replace_all`). Esc closes.
 pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
-    open_find(editor, None);
+    open_find(editor, None, false);
+}
+
+/// Main menu ▸ Find Broken Links…: Find in Folder in its Broken Links mode, which lists the
+/// links of the folder's notes that lead nowhere (`broken.rs`) instead of searching text. The
+/// search box gives way to a "Broken links" chip whose ✕ (or the Broken Links toggle) returns
+/// to text search. Scanned when shown or switched on again, not live.
+pub(crate) fn find_broken_links(editor: &Rc<Editor>) {
+    let set = editor.find_broken.borrow().clone();
+    match set {
+        Some(set) => set(),
+        None => open_find(editor, None, true),
+    }
 }
 
 /// Sidebar ▸ Find in “Folder”…: Find in Folder limited to the notes under `folder`, shown as
@@ -857,11 +869,11 @@ pub(crate) fn find_in_scope(editor: &Rc<Editor>, folder: &Path) {
     let set = editor.find_set_scope.borrow().clone();
     match set {
         Some(set) => set(Some(folder.to_path_buf())),
-        None => open_find(editor, Some(folder.to_path_buf())),
+        None => open_find(editor, Some(folder.to_path_buf()), false),
     }
 }
 
-fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>) {
+fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, broken_links: bool) {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -884,6 +896,8 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>) {
     };
     let (scope, notes) = scoped(scope);
     let notes = Rc::new(RefCell::new(notes));
+    // The folder scope, for Broken Links (which filters the link index's notes instead).
+    let current_scope = Rc::new(RefCell::new(scope.clone()));
     // The open note is searched as in the buffer (unsaved edits); the dialog is modal, so a
     // snapshot taken now stays current until Replace All edits it.
     let snapshot = {
@@ -916,6 +930,14 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>) {
     toggles.append(&match_case);
     toggles.append(&whole_word);
     toggles.append(&regex);
+    let broken_toggle = gtk::CheckButton::builder()
+        .label("Broken Links")
+        .tooltip_text(
+            "List the wiki links and links to files in the notes that lead nowhere, \
+             instead of searching text",
+        )
+        .build();
+    toggles.append(&broken_toggle);
     // An invalid pattern's reason, under the box.
     let error = gtk::Label::builder()
         .xalign(0.0)
@@ -985,6 +1007,28 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>) {
         }
     };
     show_scope(scope.as_deref());
+    // Broken Links mode: this chip stands in for the search box; ✕ returns to text search.
+    let broken_text = gtk::Label::builder()
+        .label("Broken links")
+        .margin_start(10)
+        .build();
+    broken_text.add_css_class("caption");
+    let broken_clear = gtk::Button::builder()
+        .icon_name("window-close-symbolic")
+        .tooltip_text("Search text again")
+        .valign(gtk::Align::Center)
+        .build();
+    broken_clear.add_css_class("flat");
+    broken_clear.add_css_class("circular");
+    let broken_chip = gtk::Box::builder()
+        .spacing(4)
+        .halign(gtk::Align::Start)
+        .visible(false)
+        .css_classes(["card", "find-scope"])
+        .build();
+    broken_chip.append(&broken_text);
+    broken_chip.append(&broken_clear);
+    content.append(&broken_chip);
     content.append(&entry);
     content.append(&scope_chip);
     content.append(&error);
@@ -1028,58 +1072,15 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>) {
                 matches,
                 files: files.collect(),
             }));
-            while let Some(row) = list.first_child() {
-                list.remove(&row);
-            }
-            let mut rows = Vec::new();
-            let mut count = 0;
-            for file in &found.files {
-                let rel = file.path.strip_prefix(&root).unwrap_or(&file.path);
-                for (i, hit) in file.lines.iter().enumerate() {
-                    let row = gtk::Box::new(gtk::Orientation::Vertical, 4);
-                    // The file's name and path head its first match (a separate header row
-                    // would take keyboard focus without opening anything).
-                    if i == 0 {
-                        let head = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                        let name = gtk::Label::new(Some(&file_name(&file.path)));
-                        name.add_css_class("heading");
-                        head.append(&name);
-                        let path = gtk::Label::builder()
-                            .label(rel.to_string_lossy())
-                            .xalign(0.0)
-                            .ellipsize(gtk::pango::EllipsizeMode::Middle)
-                            .build();
-                        path.add_css_class("dim-label");
-                        path.add_css_class("caption");
-                        head.append(&path);
-                        if count > 0 {
-                            head.set_margin_top(8);
-                        }
-                        row.append(&head);
-                    }
-                    let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                    let number = gtk::Label::builder()
-                        .label(hit.line.to_string())
-                        .width_chars(5)
-                        .xalign(1.0)
-                        .build();
-                    number.add_css_class("dim-label");
-                    number.add_css_class("numeric");
-                    line.append(&number);
-                    line.append(
-                        &gtk::Label::builder()
-                            .use_markup(true)
-                            .label(highlight(&hit.snippet, &hit.ranges))
-                            .xalign(0.0)
-                            .ellipsize(gtk::pango::EllipsizeMode::End)
-                            .build(),
-                    );
-                    row.append(&line);
-                    list.append(&row);
-                    rows.push((file.path.clone(), hit.line));
-                    count += 1;
-                }
-            }
+            let files = found.files.iter().map(|f| {
+                let lines = f
+                    .lines
+                    .iter()
+                    .map(|h| (h.line, highlight(&h.snippet, &h.ranges)));
+                (f.path.clone(), lines.collect())
+            });
+            let rows = result_rows(&list, &root, files.collect());
+            let count = rows.len();
             targets.replace(rows);
             status.set_label(&match (count, found.more) {
                 (_, true) => format!("First {count} matching lines (more not shown)"),
@@ -1142,14 +1143,85 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>) {
         }
     };
     let run = Rc::new(run);
+    // Broken Links: scans the link index on a background thread (cancelled like a search).
+    let scan_broken = {
+        let (editor, generation, current_scope) =
+            (editor.clone(), generation.clone(), current_scope.clone());
+        let (listed, replace, error) = (listed.clone(), replace.clone(), error.clone());
+        let (list, status, targets, root) =
+            (list.clone(), status.clone(), targets.clone(), root.clone());
+        let snapshot = snapshot.clone();
+        move || {
+            listed.replace(None);
+            replace.set_sensitive(false);
+            error.set_visible(false);
+            targets.replace(result_rows(&list, &root, Vec::new()));
+            status.set_label("Looking for broken links…");
+            let mine = generation.fetch_add(1, Ordering::SeqCst) + 1;
+            let (open, scope) = (snapshot(), current_scope.borrow().clone());
+            let g = generation.clone();
+            let Some(job) = editor.links_job(move |index| {
+                broken::find(index, open.as_ref().as_ref(), scope.as_deref(), &|| {
+                    g.load(Ordering::SeqCst) != mine
+                })
+            }) else {
+                return;
+            };
+            let (generation, list, status, targets, root) = (
+                generation.clone(),
+                list.clone(),
+                status.clone(),
+                targets.clone(),
+                root.clone(),
+            );
+            glib::spawn_future_local(async move {
+                let Ok(Some(found)) = gio::spawn_blocking(job).await else {
+                    return;
+                };
+                if generation.load(Ordering::SeqCst) != mine {
+                    return;
+                }
+                let files = found.iter().map(|n| {
+                    let links = n.links.iter().map(|l| {
+                        let text = glib::markup_escape_text(&l.text).to_string();
+                        (l.line, text)
+                    });
+                    (n.path.clone(), links.collect())
+                });
+                targets.replace(result_rows(&list, &root, files.collect()));
+                status.set_label(&broken::summary(&found));
+                if let Some(row) = list.row_at_index(0) {
+                    row.grab_focus();
+                }
+            });
+        }
+    };
+    let scan_broken = Rc::new(scan_broken);
+    // Searches again in the current mode (after a scope change).
+    let refresh = {
+        let (broken_toggle, entry, run, scan_broken) = (
+            broken_toggle.clone(),
+            entry.clone(),
+            run.clone(),
+            scan_broken.clone(),
+        );
+        move || {
+            if broken_toggle.is_active() {
+                scan_broken();
+            } else {
+                run(entry.text().to_string());
+            }
+        }
+    };
     // Sets the scope (None = the whole folder) and searches again.
     let set_scope = {
-        let (notes, entry, run) = (notes.clone(), entry.clone(), run.clone());
+        let (notes, current_scope) = (notes.clone(), current_scope.clone());
         move |scope: Option<PathBuf>| {
             let (scope, scoped_notes) = scoped(scope);
             notes.replace(scoped_notes);
             show_scope(scope.as_deref());
-            run(entry.text().to_string());
+            current_scope.replace(scope);
+            refresh();
         }
     };
     let set_scope: Rc<dyn Fn(Option<PathBuf>)> = Rc::new(set_scope);
@@ -1197,6 +1269,60 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>) {
         on_toggle,
         move |_| on_toggle()
     ));
+    // Broken Links on: the chip replaces the search box, the text options and Replace are off,
+    // and the folder is scanned; off: the text search runs again.
+    broken_toggle.connect_toggled(clone!(
+        #[strong]
+        run,
+        #[strong]
+        scan_broken,
+        #[weak]
+        entry,
+        #[weak]
+        broken_chip,
+        #[weak]
+        match_case,
+        #[weak]
+        whole_word,
+        #[weak]
+        regex,
+        #[weak]
+        replace_row,
+        move |toggle| {
+            let on = toggle.is_active();
+            entry.set_visible(!on);
+            broken_chip.set_visible(on);
+            for option in [&match_case, &whole_word, &regex] {
+                option.set_sensitive(!on);
+            }
+            replace_row.set_sensitive(!on);
+            if on {
+                scan_broken();
+            } else {
+                run(entry.text().to_string());
+                entry.grab_focus();
+            }
+        }
+    ));
+    broken_clear.connect_clicked(clone!(
+        #[weak]
+        broken_toggle,
+        move |_| broken_toggle.set_active(false)
+    ));
+    // The menu entry while the dialog is open: switch to Broken Links, or scan again.
+    editor.find_broken.replace(Some(Rc::new(clone!(
+        #[weak]
+        broken_toggle,
+        #[strong]
+        scan_broken,
+        move || {
+            if broken_toggle.is_active() {
+                scan_broken();
+            } else {
+                broken_toggle.set_active(true);
+            }
+        }
+    ))));
     replace.connect_clicked(clone!(
         #[strong]
         editor,
@@ -1243,6 +1369,7 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>) {
         move |_| {
             generation.fetch_add(1, Ordering::SeqCst);
             editor.find_set_scope.replace(None);
+            editor.find_broken.replace(None);
         }
     ));
 
@@ -1289,7 +1416,71 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>) {
     entry.add_controller(keys);
 
     dialog.present(Some(&editor.window));
-    entry.grab_focus();
+    if broken_links {
+        broken_toggle.set_active(true);
+    } else {
+        entry.grab_focus();
+    }
+}
+
+/// Fills Find in Folder's result list: per note, its rows as (1-based line, Pango markup); the
+/// note's name and path head its first row. The (note, line) of each row, in order.
+fn result_rows(
+    list: &gtk::ListBox,
+    root: &Path,
+    files: Vec<(PathBuf, Vec<(usize, String)>)>,
+) -> Vec<(PathBuf, usize)> {
+    while let Some(row) = list.first_child() {
+        list.remove(&row);
+    }
+    let mut rows = Vec::new();
+    for (path, lines) in files {
+        let rel = path.strip_prefix(root).unwrap_or(&path);
+        for (i, (number, markup)) in lines.into_iter().enumerate() {
+            let row = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            // The file's name and path head its first row (a separate header row would take
+            // keyboard focus without opening anything).
+            if i == 0 {
+                let head = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                let name = gtk::Label::new(Some(&file_name(&path)));
+                name.add_css_class("heading");
+                head.append(&name);
+                let rel = gtk::Label::builder()
+                    .label(rel.to_string_lossy())
+                    .xalign(0.0)
+                    .ellipsize(gtk::pango::EllipsizeMode::Middle)
+                    .build();
+                rel.add_css_class("dim-label");
+                rel.add_css_class("caption");
+                head.append(&rel);
+                if !rows.is_empty() {
+                    head.set_margin_top(8);
+                }
+                row.append(&head);
+            }
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let label = gtk::Label::builder()
+                .label(number.to_string())
+                .width_chars(5)
+                .xalign(1.0)
+                .build();
+            label.add_css_class("dim-label");
+            label.add_css_class("numeric");
+            line.append(&label);
+            line.append(
+                &gtk::Label::builder()
+                    .use_markup(true)
+                    .label(markup)
+                    .xalign(0.0)
+                    .ellipsize(gtk::pango::EllipsizeMode::End)
+                    .build(),
+            );
+            row.append(&line);
+            list.append(&row);
+            rows.push((path.clone(), number));
+        }
+    }
+    rows
 }
 
 /// The results Find in Folder shows, as Replace All needs them.

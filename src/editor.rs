@@ -159,6 +159,8 @@ pub(crate) struct Editor {
     pub(crate) find_regex: Cell<bool>,
     /// While Find in Folder is open: sets its folder scope and searches again (`None` = all).
     pub(crate) find_set_scope: RefCell<Option<SetScope>>,
+    /// While Find in Folder is open: switches it to Broken Links and scans again.
+    pub(crate) find_broken: RefCell<Option<Rc<dyn Fn()>>>,
     /// Editor preferences (Ctrl+,) and the CSS that sets the chosen font.
     pub(crate) prefs: RefCell<state::Prefs>,
     pub(crate) font_css: gtk::CssProvider,
@@ -587,7 +589,7 @@ impl Editor {
     /// A job for a background thread: brings the link index in line with the note list and
     /// the notes changed since the last sync, then runs `then` on it. The first sync of a folder
     /// reads every note; later ones only what changed. None without a folder.
-    fn links_job<T: Send + 'static>(
+    pub(crate) fn links_job<T: Send + 'static>(
         &self,
         then: impl FnOnce(&backlinks::LinkIndex) -> T + Send + 'static,
     ) -> Option<impl FnOnce() -> T + Send + 'static> {
@@ -1558,6 +1560,7 @@ impl Editor {
             "templates",
             "open-quickly",
             "find-in-folder",
+            "find-broken-links",
             "export-folder-html",
         ] {
             if let Some(a) = self.window.lookup_action(name)

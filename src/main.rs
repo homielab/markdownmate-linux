@@ -1,6 +1,7 @@
 mod about;
 mod aliases;
 mod backlinks;
+mod broken;
 mod complete;
 mod daily;
 mod diagrams;

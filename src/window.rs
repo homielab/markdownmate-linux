@@ -11,7 +11,8 @@ use sourceview5::prelude::*;
 use webkit6::prelude::*;
 
 use crate::dialogs::{
-    bookmarks_dialog, find_in_folder, go_to_line, open_quickly, preferences_dialog, reload_note,
+    bookmarks_dialog, find_broken_links, find_in_folder, go_to_line, open_quickly,
+    preferences_dialog, reload_note,
 };
 use crate::editor::{Editor, FolderScan};
 use crate::input::{
@@ -58,6 +59,10 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         &[
             ("Open File…", "win.open-file"),
             ("Open Folder…", "win.open-folder"),
+        ],
+        &[
+            ("Find in Folder…", "win.find-in-folder"),
+            ("Find Broken Links…", "win.find-broken-links"),
         ],
         &[("Back", "win.go-back"), ("Forward", "win.go-forward")],
         &[
@@ -413,6 +418,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         find_whole_word: Cell::new(false),
         find_regex: Cell::new(false),
         find_set_scope: RefCell::new(None),
+        find_broken: RefCell::new(None),
         prefs: RefCell::default(),
         recent_menu,
         templates_menu,
@@ -645,6 +651,16 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     ));
     window.add_action(&find_action);
     app.set_accels_for_action("win.find-in-folder", &["<Shift><Control>f"]);
+
+    // Find in Folder in its Broken Links mode; enabled with the folder like Find in Folder.
+    let broken_action = gio::SimpleAction::new("find-broken-links", None);
+    broken_action.set_enabled(false);
+    broken_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| find_broken_links(&editor)
+    ));
+    window.add_action(&broken_action);
 
     // Ctrl+L is not bound by GTK or GtkSourceView; does nothing without an open note.
     let goto_action = gio::SimpleAction::new("go-to-line", None);

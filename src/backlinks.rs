@@ -205,6 +205,35 @@ impl LinkIndex {
     }
 }
 
+impl LinkIndex {
+    /// The wiki resolver of the synced notes and aliases.
+    pub fn wiki(&self) -> &WikiIndex {
+        &self.wiki
+    }
+
+    /// The notes with a link that may lead nowhere: a wiki name that resolves to no note or
+    /// a file that `exists` says is missing. Find Broken Links reads only these (and checks
+    /// what this does not know: front matter, absolute paths).
+    pub fn suspects(&self, exists: &dyn Fn(&Path) -> bool) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for note in self.wiki.notes() {
+            let Some(lines) = self.lines.get(note) else {
+                continue;
+            };
+            let suspect = lines.iter().any(|l| {
+                l.wiki
+                    .iter()
+                    .any(|n| self.wiki.resolve(n, Some(note)).is_none())
+                    || l.files.iter().any(|f| !exists(f))
+            });
+            if suspect {
+                out.push(note.clone());
+            }
+        }
+        out
+    }
+}
+
 /// 1-based lines of `text` (the note at `note`) with a link to `target`, outside fenced code
 /// and code spans.
 #[cfg(test)]
@@ -229,7 +258,7 @@ pub fn lines_linking(text: &str, note: &Path, target: &Path, index: &WikiIndex) 
 }
 
 /// The file a relative (or absolute-path) link in `note` points to; None for URLs.
-fn href_path(href: &str, note: &Path) -> Option<PathBuf> {
+pub(crate) fn href_path(href: &str, note: &Path) -> Option<PathBuf> {
     let href = href.split(['#', '?']).next()?;
     // `scheme:` before any `/` is a URL (http:, mailto:, file:…).
     if href.split('/').next()?.contains(':') {
