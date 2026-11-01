@@ -1873,7 +1873,7 @@ impl Editor {
                 return;
             }
         };
-        let Some((date, time)) = self.now() else {
+        let Some(components) = self.now() else {
             return;
         };
         if !self.save() {
@@ -1887,7 +1887,7 @@ impl Editor {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let filled = templates::fill(&text, &date, &time, &title);
+        let filled = templates::fill(&text, &components, &title);
         if let Err(e) = std::fs::write(&path, &filled.text) {
             self.toast(&format!("Cannot write {}: {e}", file_name(&path)));
         }
@@ -1987,17 +1987,22 @@ impl Editor {
         self.schedule_rescan();
     }
 
-    /// The local date as `YYYY-MM-DD` (`daily::date_string`) and time as `HH:MM`
-    /// (`templates::time_string`); None (with a toast) if the clock cannot be read.
-    fn now(&self) -> Option<(String, String)> {
+    /// The local date and time components for templates; None (with a toast) if the clock
+    /// cannot be read.
+    fn now(&self) -> Option<templates::Components> {
         let Ok(now) = glib::DateTime::now_local() else {
             self.toast("Cannot read today's date");
             return None;
         };
-        let date =
-            crate::daily::date_string(now.year(), now.month() as u32, now.day_of_month() as u32);
-        let time = templates::time_string(now.hour() as u32, now.minute() as u32);
-        Some((date, time))
+        Some(templates::Components {
+            year: now.year(),
+            month: now.month() as u32,
+            day: now.day_of_month() as u32,
+            weekday: now.day_of_week() as u32,
+            hour: now.hour() as u32,
+            minute: now.minute() as u32,
+            second: now.second() as u32,
+        })
     }
 
     /// Puts the cursor of a note just created from a template at `offset` (characters; past
@@ -2039,9 +2044,10 @@ impl Editor {
         let Some(root) = self.root.borrow().clone() else {
             return;
         };
-        let Some((date, time)) = self.now() else {
+        let Some(components) = self.now() else {
             return;
         };
+        let date = components.date_string();
         let path = crate::daily::path(&root, &self.prefs.borrow().daily_folder, &date);
         if self.path.borrow().as_deref() == Some(path.as_path()) {
             return;
@@ -2050,7 +2056,7 @@ impl Editor {
             return;
         }
         let daily_folder = crate::daily::folder(&root, &self.prefs.borrow().daily_folder);
-        let filled = crate::daily::initial_text(&daily_folder, &date, &time);
+        let filled = crate::daily::initial_text(&daily_folder, &components);
         let created = match crate::daily::create_if_missing(&path, &filled.text) {
             Ok(created) => created,
             Err(e) => {

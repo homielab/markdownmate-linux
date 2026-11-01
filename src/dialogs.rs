@@ -360,7 +360,7 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
     ));
     let notes_group = adw::PreferencesGroup::builder()
         .title("Notes")
-        .description("Today's Note (Ctrl+D) opens YYYY-MM-DD.md in this folder of the open folder; empty: the open folder itself. A Template.md in this folder sets the initial text for new daily notes, replacing {{date}} and {{title}} with today's date. New from Template (main menu) lists the .md notes of the Templates Folder and creates an Untitled note from one, with {{date}} as today's date and {{title}} as the note's name.")
+        .description("Today's Note (Ctrl+D) opens YYYY-MM-DD.md in this folder of the open folder; empty: the open folder itself. A Template.md in this folder sets the initial text for new daily notes, replacing {{date}}, {{time}} and {{title}} with today's date and time (formats like {{date:dddd, MMMM D, YYYY}}). New from Template (main menu) lists the .md notes of the Templates Folder and creates an Untitled note from one, with {{date}}, {{time}}, {{title}} and {{cursor}}.")
         .build();
     notes_group.add(&daily);
     notes_group.add(&templates);
