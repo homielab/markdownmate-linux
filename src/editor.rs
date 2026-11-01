@@ -1854,9 +1854,10 @@ impl Editor {
     }
 
     /// New from Template: a new note like New File (`Untitled.md`, `Untitled 2.md`, … in
-    /// `current_dir`, never overwriting) whose text is the template's with `{{date}}` and
-    /// `{{title}}` filled (`templates::fill`; title = the new note's name without `.md`), opened
-    /// with the cursor at its end. An unreadable template only shows a toast.
+    /// `current_dir`, never overwriting) whose text is the template's filled in by
+    /// `templates::fill` (`{{date}}`, `{{time}}`, `{{title}}` = the new note's name without
+    /// `.md`, `{{cursor}}`), opened with the cursor at the first `{{cursor}}`, else at its end.
+    /// An unreadable template only shows a toast.
     pub(crate) fn new_from_template(self: &Rc<Self>, template: &Path) {
         let Some(dir) = self.current_dir() else {
             return;
@@ -1871,7 +1872,7 @@ impl Editor {
                 return;
             }
         };
-        let Some(date) = self.today() else {
+        let Some((date, time)) = self.now() else {
             return;
         };
         if !self.save() {
@@ -1885,16 +1886,15 @@ impl Editor {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        if let Err(e) = std::fs::write(&path, templates::fill(&text, &date, &title)) {
+        let filled = templates::fill(&text, &date, &time, &title);
+        if let Err(e) = std::fs::write(&path, &filled.text) {
             self.toast(&format!("Cannot write {}: {e}", file_name(&path)));
         }
         self.expand_to(&dir);
         self.update_note_list(None, Some(&path));
         self.open(&path);
         if self.path.borrow().as_deref() == Some(path.as_path()) {
-            self.buffer.place_cursor(&self.buffer.end_iter());
-            self.view
-                .scroll_to_mark(&self.buffer.get_insert(), 0.0, true, 0.0, 0.3);
+            self.place_new_note_cursor(filled.cursor);
         }
         self.schedule_rescan();
     }
@@ -1986,24 +1986,29 @@ impl Editor {
         self.schedule_rescan();
     }
 
-    /// Today's local date as `YYYY-MM-DD` (`daily::date_string`); None (with a toast) if the
-    /// clock cannot be read.
-    fn today(&self) -> Option<String> {
+    /// The local date as `YYYY-MM-DD` (`daily::date_string`) and time as `HH:MM`
+    /// (`templates::time_string`); None (with a toast) if the clock cannot be read.
+    fn now(&self) -> Option<(String, String)> {
         let Ok(now) = glib::DateTime::now_local() else {
             self.toast("Cannot read today's date");
             return None;
         };
-        Some(crate::daily::date_string(
-            now.year(),
-            now.month() as u32,
-            now.day_of_month() as u32,
-        ))
+        let date =
+            crate::daily::date_string(now.year(), now.month() as u32, now.day_of_month() as u32);
+        let time = templates::time_string(now.hour() as u32, now.minute() as u32);
+        Some((date, time))
     }
 
-    /// Today's Note (Ctrl+D): opens `<open folder>/<daily notes folder>/YYYY-MM-DD.md` for the
-    /// local date (`daily`); a missing one is created (with its folders) from `Template.md`
-    /// (or `# YYYY-MM-DD` and a blank line) and opens with the cursor at its end. Nothing
-    /// without an open folder.
+    /// Puts the cursor of a note just created from a template at `offset` (characters; past
+    /// the end = the end) and scrolls to it.
+    fn place_new_note_cursor(&self, offset: usize) {
+        let offset = i32::try_from(offset).unwrap_or(i32::MAX);
+        self.buffer
+            .place_cursor(&self.buffer.iter_at_offset(offset));
+        self.view
+            .scroll_to_mark(&self.buffer.get_insert(), 0.0, true, 0.0, 0.3);
+    }
+
     /// `markdownmate --new` / `--today` (the dock menu): in the open folder; while the
     /// window's folder is still being scanned, once it is shown.
     pub(crate) fn quick(self: &Rc<Self>, q: crate::cli::Quick) {
@@ -2024,11 +2029,16 @@ impl Editor {
         }
     }
 
+    /// Today's Note (Ctrl+D): opens `<open folder>/<daily notes folder>/YYYY-MM-DD.md` for the
+    /// local date (`daily`); a missing one is created (with its folders) from `Template.md`
+    /// (filled in like New from Template) or `# YYYY-MM-DD` and a blank line, and opens with
+    /// the cursor at the template's first `{{cursor}}`, else at its end. Nothing without an
+    /// open folder.
     pub(crate) fn todays_note(self: &Rc<Self>) {
         let Some(root) = self.root.borrow().clone() else {
             return;
         };
-        let Some(date) = self.today() else {
+        let Some((date, time)) = self.now() else {
             return;
         };
         let path = crate::daily::path(&root, &self.prefs.borrow().daily_folder, &date);
@@ -2039,8 +2049,8 @@ impl Editor {
             return;
         }
         let daily_folder = crate::daily::folder(&root, &self.prefs.borrow().daily_folder);
-        let text = crate::daily::initial_text(&daily_folder, &date);
-        let created = match crate::daily::create_if_missing(&path, &text) {
+        let filled = crate::daily::initial_text(&daily_folder, &date, &time);
+        let created = match crate::daily::create_if_missing(&path, &filled.text) {
             Ok(created) => created,
             Err(e) => {
                 self.toast(&format!("Cannot create today's note: {e}"));
@@ -2056,9 +2066,7 @@ impl Editor {
         }
         self.open(&path);
         if created && self.path.borrow().as_deref() == Some(path.as_path()) {
-            self.buffer.place_cursor(&self.buffer.end_iter());
-            self.view
-                .scroll_to_mark(&self.buffer.get_insert(), 0.0, true, 0.0, 0.3);
+            self.place_new_note_cursor(filled.cursor);
         }
     }
 

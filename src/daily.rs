@@ -1,12 +1,15 @@
 //! Today's Note (Ctrl+D): `<open folder>/<daily notes folder>/YYYY-MM-DD.md` for the local
-//! date, created from `Template.md` in that folder (replacing `{{date}}` and `{{title}}`),
-//! or `# YYYY-MM-DD` and a blank line when missing or unreadable. The daily notes folder is a
+//! date, created from `Template.md` in that folder (filled like New from Template:
+//! `{{date}}`, `{{time}}`, `{{title}}`, `{{cursor}}`), or `# YYYY-MM-DD` and a blank line when
+//! missing or unreadable. The daily notes folder is a
 //! preference (`Prefs::daily_folder`), relative to the open folder, `Daily` by default; empty
 //! means the open folder itself. Pure Rust (no GTK) so it is testable headless.
 
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+
+use crate::templates::Filled;
 
 /// The daily notes folder a new state file starts with.
 pub const DEFAULT_FOLDER: &str = "Daily";
@@ -56,20 +59,24 @@ pub fn load_template(folder: &Path) -> Option<String> {
     fs::read_to_string(&template_path).ok()
 }
 
-/// What a new daily note starts with: `template` with `{{date}}` and `{{title}}` replaced by
-/// `date` (`templates::fill`, as New from Template), or `# <date>\n\n` when there is no
-/// template.
-pub fn initial_text_from_template(template: Option<&str>, date: &str) -> String {
+/// What a new daily note starts with and where its cursor goes: `template` filled in by
+/// `templates::fill` (as New from Template, with the title = `date`), or `# <date>\n\n` with
+/// the cursor at the end when there is no template.
+pub fn initial_text_from_template(template: Option<&str>, date: &str, time: &str) -> Filled {
     match template {
-        Some(t) => crate::templates::fill(t, date, date),
-        None => format!("# {date}\n\n"),
+        Some(t) => crate::templates::fill(t, date, time, date),
+        None => {
+            let text = format!("# {date}\n\n");
+            let cursor = text.chars().count();
+            Filled { text, cursor }
+        }
     }
 }
 
 /// Resolves what a new daily note in `daily_folder` starts with: reads `Template.md` if present
 /// and readable, or falls back to `# <date>\n\n`.
-pub fn initial_text(daily_folder: &Path, date: &str) -> String {
-    initial_text_from_template(load_template(daily_folder).as_deref(), date)
+pub fn initial_text(daily_folder: &Path, date: &str, time: &str) -> Filled {
+    initial_text_from_template(load_template(daily_folder).as_deref(), date, time)
 }
 
 /// Writes `text` to `path` (creating its folders) unless something is already there; true
@@ -214,14 +221,17 @@ mod tests {
     #[test]
     fn initial_text_without_template() {
         assert_eq!(
-            initial_text_from_template(None, "2026-10-25"),
+            initial_text_from_template(None, "2026-10-25", "08:00").text,
             "# 2026-10-25\n\n"
         );
 
         let (folder, _guard) = make_temp_dir("no-tpl");
-        assert_eq!(initial_text(&folder, "2026-10-25"), "# 2026-10-25\n\n");
         assert_eq!(
-            initial_text(&folder.join("missing"), "2026-10-25"),
+            initial_text(&folder, "2026-10-25", "08:00").text,
+            "# 2026-10-25\n\n"
+        );
+        assert_eq!(
+            initial_text(&folder.join("missing"), "2026-10-25", "08:00").text,
             "# 2026-10-25\n\n"
         );
     }
@@ -229,7 +239,7 @@ mod tests {
     #[test]
     fn template_with_placeholders() {
         let template = "# {{title}}\n\nCreated: {{date}}\nLog for {{date}}:\n";
-        let rendered = initial_text_from_template(Some(template), "2026-10-25");
+        let rendered = initial_text_from_template(Some(template), "2026-10-25", "08:00").text;
         assert_eq!(
             rendered,
             "# 2026-10-25\n\nCreated: 2026-10-25\nLog for 2026-10-25:\n"
@@ -237,18 +247,18 @@ mod tests {
 
         let (folder, _guard) = make_temp_dir("with-placeholders");
         fs::write(folder.join(TEMPLATE_FILE), template).unwrap();
-        assert_eq!(initial_text(&folder, "2026-10-25"), rendered);
+        assert_eq!(initial_text(&folder, "2026-10-25", "08:00").text, rendered);
     }
 
     #[test]
     fn template_without_placeholders() {
         let template = "# Journal\n\n## Plan\n\n## Notes\n";
-        let rendered = initial_text_from_template(Some(template), "2026-10-25");
+        let rendered = initial_text_from_template(Some(template), "2026-10-25", "08:00").text;
         assert_eq!(rendered, template);
 
         let (folder, _guard) = make_temp_dir("no-placeholders");
         fs::write(folder.join(TEMPLATE_FILE), template).unwrap();
-        assert_eq!(initial_text(&folder, "2026-10-25"), template);
+        assert_eq!(initial_text(&folder, "2026-10-25", "08:00").text, template);
     }
 
     #[test]
@@ -258,12 +268,18 @@ mod tests {
 
         // Template.md is a directory.
         fs::create_dir_all(&tpl_path).unwrap();
-        assert_eq!(initial_text(&folder, "2026-10-25"), "# 2026-10-25\n\n");
+        assert_eq!(
+            initial_text(&folder, "2026-10-25", "08:00").text,
+            "# 2026-10-25\n\n"
+        );
         fs::remove_dir(&tpl_path).unwrap();
 
         // Template.md contains non-UTF-8 bytes.
         fs::write(&tpl_path, [0xFF, 0xFE, 0xFD]).unwrap();
-        assert_eq!(initial_text(&folder, "2026-10-25"), "# 2026-10-25\n\n");
+        assert_eq!(
+            initial_text(&folder, "2026-10-25", "08:00").text,
+            "# 2026-10-25\n\n"
+        );
     }
 
     #[test]
@@ -278,15 +294,33 @@ mod tests {
             .collect();
         if entries.iter().any(|e| e == "template.md") && !entries.iter().any(|e| e == "Template.md")
         {
-            assert_eq!(initial_text(&folder, "2026-10-25"), "# 2026-10-25\n\n");
+            assert_eq!(
+                initial_text(&folder, "2026-10-25", "08:00").text,
+                "# 2026-10-25\n\n"
+            );
         }
+    }
+
+    #[test]
+    fn template_with_time_and_cursor() {
+        let template = "# {{title}}\n\n{{time}} — {{cursor}}\n\n## Later\n{{cursor}}";
+        let filled = initial_text_from_template(Some(template), "2026-10-25", "08:05");
+        assert_eq!(filled.text, "# 2026-10-25\n\n08:05 — \n\n## Later\n");
+        assert_eq!(filled.cursor, "# 2026-10-25\n\n08:05 — ".chars().count());
+
+        let (folder, _guard) = make_temp_dir("time-cursor");
+        fs::write(folder.join(TEMPLATE_FILE), template).unwrap();
+        assert_eq!(initial_text(&folder, "2026-10-25", "08:05"), filled);
+
+        let fallback = initial_text_from_template(None, "2026-10-25", "08:05");
+        assert_eq!(fallback.cursor, fallback.text.chars().count());
     }
 
     #[test]
     fn creates_once_and_never_overwrites() {
         let (root, _guard) = make_temp_dir("creates-once");
         let note = path(&root, "Daily/Sub", "2026-10-25");
-        let text = initial_text(&root.join("Daily/Sub"), "2026-10-25");
+        let text = initial_text(&root.join("Daily/Sub"), "2026-10-25", "08:00").text;
         assert_eq!(text, "# 2026-10-25\n\n");
         assert!(create_if_missing(&note, &text).unwrap());
         assert_eq!(fs::read_to_string(&note).unwrap(), text);
