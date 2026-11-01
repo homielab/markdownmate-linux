@@ -197,8 +197,24 @@ pub(crate) fn render_body(md: &str, wiki: &dyn Links, body: &Body) -> Option<Ren
         .descendants()
         .filter(|n| matches!(n.data().value, comrak::nodes::NodeValue::BlockQuote))
         .collect();
-    // Every quote is tried (`count`, not `any`).
-    let alerts = quotes.into_iter().filter(|quote| make_alert(quote)).count() > 0;
+    let mut alerts = false;
+    for quote in quotes {
+        let Some(fold) = make_alert(quote) else {
+            continue;
+        };
+        alerts = true;
+        if fold != Fold::Fixed {
+            fold_alert(&arena, quote, fold);
+        }
+    }
+    let images: Vec<_> = root
+        .descendants()
+        .filter(|n| matches!(n.data().value, comrak::nodes::NodeValue::Image(_)))
+        .collect();
+    let mut sized = false;
+    for image in images {
+        sized |= size_image(&arena, image);
+    }
     // A `[TOC]` paragraph becomes a placeholder, `<p …>TOC</p>`, that `fill_toc` replaces once
     // the note's headings are known.
     let mut has_toc = false;
@@ -342,6 +358,7 @@ pub(crate) fn render_body(md: &str, wiki: &dyn Links, body: &Body) -> Option<Ren
     out.push_str(rest);
     // comrak's alert tags → ours (`alert_tags`).
     let html = if alerts { alert_tags(&out) } else { out };
+    let html = if sized { image_sizes(&html) } else { html };
     let html = html
         .replace(TAG_OPEN, "<span class=\"tag\">")
         .replace(TAG_CLOSE, "</span>");
@@ -716,18 +733,7 @@ fn embed_html(written: &str, links: &dyn Links, body: &Body, in_paragraph: bool)
 /// `300x200` (width and height) in pixels, else its alt text (default: `name`). `src` comes
 /// first, as `site::rewrite` and `inline_images` read it.
 fn image_tag(src: &Path, name: &str, option: Option<&str>) -> String {
-    let size = option.and_then(|o| {
-        let (w, h) = match o.split_once(['x', 'X']) {
-            Some((w, h)) => (w, Some(h)),
-            None => (o, None),
-        };
-        let w: u32 = w.trim().parse().ok()?;
-        let h = match h {
-            Some(h) => Some(h.trim().parse::<u32>().ok()?),
-            None => None,
-        };
-        Some((w, h))
-    });
+    let size = option.and_then(image_size);
     let alt = match option {
         Some(alt) if size.is_none() && !alt.is_empty() => alt,
         _ => name,
@@ -745,6 +751,23 @@ fn image_tag(src: &Path, name: &str, option: Option<&str>) -> String {
     }
     tag.push_str(" />");
     tag
+}
+
+/// An image size as Obsidian writes it after `|`: `300` → (300, None), `300x200` (or
+/// `300X200`) → (300, Some(200)), spaces around the numbers allowed; None for anything else
+/// (digits only, each above 0: `0`, `+300`, `300px`, empty).
+fn image_size(option: &str) -> Option<(u32, Option<u32>)> {
+    let number = |text: &str| {
+        let digits = text.trim();
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        digits.parse::<u32>().ok().filter(|&n| n > 0)
+    };
+    match option.split_once(['x', 'X']) {
+        Some((width, height)) => Some((number(width)?, Some(number(height)?))),
+        None => Some((number(option)?, None)),
+    }
 }
 
 /// The HTML of the note `file` (or its section under `heading`) inside a page made with
@@ -1005,22 +1028,20 @@ pub(crate) fn fill_toc(html: &str, list: &str) -> String {
 }
 
 /// Alerts (GitHub's and Obsidian's callouts): a block quote whose first line is `[!KIND]`,
-/// optionally a fold marker `-`/`+` (ignored: rendered open) and a space and a title, any
-/// case, with KIND one of `ALERT_KINDS`, becomes comrak's alert node without that line,
-/// rendered as `<div class="alert alert-<kind> alert-group-<group>"><p
-/// class="alert-title">Title</p>…</div>` (`render_body` rewrites comrak's tags,
-/// `alert_tags`; the five GitHub kinds keep `alert alert-<kind>` without a group class).
+/// optionally a fold marker `-`/`+` and a space and a title, any case, with KIND one of
+/// `ALERT_KINDS`, becomes comrak's alert node without that line, rendered as `<div
+/// class="alert alert-<kind> alert-group-<group>"><p class="alert-title">Title</p>…</div>`
+/// (`render_body` rewrites comrak's tags, `alert_tags`; the five GitHub kinds keep `alert
+/// alert-<kind>` without a group class; a fold marker makes it a `<details>`, `fold_alert`).
 /// The kind and title travel in the node's title as `kind ALERT title` (`alert_parts`).
 /// Comrak's own `alerts` extension stays off: it only knows GitHub's five kinds and also
-/// takes `>>>` fences. Unknown kinds stay quotes. True if `quote` became an alert.
-pub(crate) fn make_alert<'a>(quote: &'a comrak::nodes::AstNode<'a>) -> bool {
+/// takes `>>>` fences. Unknown kinds stay quotes. Some(its fold marker) if `quote` became an
+/// alert.
+pub(crate) fn make_alert<'a>(quote: &'a comrak::nodes::AstNode<'a>) -> Option<Fold> {
     use comrak::nodes::{AlertType, NodeAlert, NodeValue};
-    let Some(paragraph) = quote
+    let paragraph = quote
         .first_child()
-        .filter(|p| matches!(p.data().value, NodeValue::Paragraph))
-    else {
-        return false;
-    };
+        .filter(|p| matches!(p.data().value, NodeValue::Paragraph))?;
     // The inlines of the first line, up to and with the break that ends it. comrak may split
     // `[!NOTE]` at the brackets: the pieces are joined. The marker itself must be plain text;
     // a title may hold inline Markdown (kept as its text).
@@ -1040,12 +1061,10 @@ pub(crate) fn make_alert<'a>(quote: &'a comrak::nodes::AstNode<'a>) -> bool {
                     }
                 }
             }
-            _ => return false,
+            _ => return None,
         }
     }
-    let Some((kind, title)) = parse_alert_marker(&line) else {
-        return false;
-    };
+    let (kind, fold, title) = parse_alert_marker(&line)?;
     let alert_type = match kind.as_str() {
         "tip" => AlertType::Tip,
         "important" => AlertType::Important,
@@ -1068,19 +1087,33 @@ pub(crate) fn make_alert<'a>(quote: &'a comrak::nodes::AstNode<'a>) -> bool {
         fence_length: 0,
         fence_offset: 0,
     }));
-    true
+    Some(fold)
 }
 
-/// `[!KIND]`, `[!KIND]-`, `[!kind]+ Title` → (kind lower-cased, title or the default one);
-/// `None` for an unknown kind or another text.
-fn parse_alert_marker(line: &str) -> Option<(String, String)> {
+/// An alert's fold marker (Obsidian): `[!kind]-` starts closed, `[!kind]+` open; without
+/// one it does not fold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Fold {
+    Fixed,
+    Closed,
+    Open,
+}
+
+/// `[!KIND]`, `[!KIND]-`, `[!kind]+ Title` → (kind lower-cased, fold marker, title or the
+/// default one); `None` for an unknown kind or another text (`[!tip]-x`).
+fn parse_alert_marker(line: &str) -> Option<(String, Fold, String)> {
     let rest = line.trim().strip_prefix("[!")?;
     let close = rest.find(']')?;
     let kind = rest[..close].to_ascii_lowercase();
     alert_group(&kind)?;
     let mut rest = &rest[close + 1..];
-    if let Some(r) = rest.strip_prefix(['-', '+']) {
-        rest = r;
+    let fold = match rest.chars().next() {
+        Some('-') => Fold::Closed,
+        Some('+') => Fold::Open,
+        _ => Fold::Fixed,
+    };
+    if fold != Fold::Fixed {
+        rest = &rest[1..];
     }
     if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
         return None;
@@ -1095,7 +1128,7 @@ fn parse_alert_marker(line: &str) -> Option<(String, String)> {
     } else {
         title.to_string()
     };
-    Some((kind, title))
+    Some((kind, fold, title))
 }
 
 /// The alert kinds (as written, lower-cased) and the group whose look each one has. The
@@ -1175,10 +1208,19 @@ fn alert_tags(html: &str) -> String {
         let attrs = &after[quote + 1..title];
         let text = &after[title + TITLE.len()..];
         let end = text.find("</p>").unwrap_or(text.len());
-        let (kind, title_text) = text[..end]
-            .split_once(ALERT)
-            .unwrap_or(("note", &text[..end]));
-        out.push_str("<div class=\"alert alert-");
+        let (fold, written) = match text[..end].chars().next() {
+            Some(FOLD_CLOSED) => (Fold::Closed, &text[FOLD_CLOSED.len_utf8()..end]),
+            Some(FOLD_OPEN) => (Fold::Open, &text[FOLD_OPEN.len_utf8()..end]),
+            _ => (Fold::Fixed, &text[..end]),
+        };
+        let (kind, title_text) = written.split_once(ALERT).unwrap_or(("note", written));
+        let (element, title_element) = match fold {
+            Fold::Fixed => ("div", "p"),
+            _ => ("details", "summary"),
+        };
+        out.push('<');
+        out.push_str(element);
+        out.push_str(" class=\"alert alert-");
         out.push_str(kind);
         match alert_group(kind) {
             Some(group) if !GITHUB_ALERTS.contains(&kind) => {
@@ -1188,10 +1230,111 @@ fn alert_tags(html: &str) -> String {
             _ => {}
         }
         out.push('"');
-        out.push_str(attrs);
-        out.push_str("<p class=\"alert-title\">");
+        // `attrs` is the rest of the tag (`data-sourcepos`) and its `>`.
+        match attrs.rfind('>') {
+            Some(close) if fold == Fold::Open => {
+                out.push_str(&attrs[..close]);
+                out.push_str(" open");
+                out.push_str(&attrs[close..]);
+            }
+            _ => out.push_str(attrs),
+        }
+        out.push('<');
+        out.push_str(title_element);
+        out.push_str(" class=\"alert-title\">");
         out.push_str(title_text);
-        rest = &text[end..];
+        if fold == Fold::Fixed {
+            rest = &text[end..];
+        } else {
+            out.push_str("</summary>");
+            rest = &text[(end + "</p>".len()).min(text.len())..];
+        }
+    }
+    out.push_str(rest);
+    // A folding alert's last child is `FOLD_END` (`fold_alert`), right before its `</div>`.
+    if out.contains(FOLD_END) {
+        out = out
+            .replace(&format!("{FOLD_END}\n</div>"), "</details>")
+            .replace(FOLD_END, "");
+    }
+    out
+}
+
+/// Marks `alert` (made by `make_alert`) to render as a `<details>` (`alert_tags`): its title
+/// starts with `FOLD_CLOSED` or `FOLD_OPEN`, and a last child `FOLD_END` comes right before its
+/// closing tag. Only for HTML: RTF and plain text show every alert open.
+fn fold_alert<'a>(arena: &'a comrak::Arena<'a>, alert: &'a comrak::nodes::AstNode<'a>, fold: Fold) {
+    use comrak::nodes::NodeValue;
+    let mark = if fold == Fold::Closed {
+        FOLD_CLOSED
+    } else {
+        FOLD_OPEN
+    };
+    if let NodeValue::Alert(node) = &mut alert.data_mut().value {
+        node.title = node.title.take().map(|title| format!("{mark}{title}"));
+    }
+    alert.append(arena.alloc(NodeValue::Text(FOLD_END.to_string().into()).into()));
+}
+
+/// Obsidian's image size in standard image syntax: `![Photo|300](a.png)` → width 300,
+/// `![Photo|300x200](a.png)` → width and height, the alt text "Photo" (before the last `|`,
+/// trimmed). The alt becomes one text node ending in `SIZE` + `300x200` + `SIZE_END`, which
+/// `image_sizes` turns into attributes. False (nothing changed) when the text after the last
+/// `|` is no size (`image_size`): the alt stays as written.
+fn size_image<'a>(arena: &'a comrak::Arena<'a>, image: &'a comrak::nodes::AstNode<'a>) -> bool {
+    use comrak::nodes::NodeValue;
+    let mut alt = String::new();
+    for node in image.descendants().skip(1) {
+        match &node.data().value {
+            NodeValue::Text(text) => alt.push_str(text),
+            NodeValue::Code(code) => alt.push_str(&code.literal),
+            NodeValue::Math(math) => alt.push_str(&math.literal),
+            NodeValue::SoftBreak | NodeValue::LineBreak => alt.push(' '),
+            _ => {}
+        }
+    }
+    let Some((text, option)) = alt.rsplit_once('|') else {
+        return false;
+    };
+    let Some((width, height)) = image_size(option) else {
+        return false;
+    };
+    let size = match height {
+        Some(height) => format!("{width}x{height}"),
+        None => width.to_string(),
+    };
+    while let Some(child) = image.first_child() {
+        child.detach();
+    }
+    let text = format!("{}{SIZE}{size}{SIZE_END}", text.trim());
+    image.append(arena.alloc(NodeValue::Text(text.into()).into()));
+    true
+}
+
+/// `<img … alt="text SIZE 300x200 SIZE_END"` (`size_image`) → `<img … alt="text" width="300"
+/// height="200"`, before a `title`.
+fn image_sizes(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(start) = rest.find(SIZE) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + SIZE.len_utf8()..];
+        let Some(end) = after.find(SIZE_END) else {
+            rest = after;
+            continue;
+        };
+        let (width, height) = match after[..end].split_once('x') {
+            Some((width, height)) => (width, Some(height)),
+            None => (&after[..end], None),
+        };
+        out.push_str(&format!("\" width=\"{width}\""));
+        if let Some(height) = height {
+            out.push_str(&format!(" height=\"{height}\""));
+        }
+        // The alt's closing quote was written above.
+        rest = after[end + SIZE_END.len_utf8()..]
+            .strip_prefix('"')
+            .unwrap_or(&after[end + SIZE_END.len_utf8()..]);
     }
     out.push_str(rest);
     out
@@ -1817,13 +1960,21 @@ const EMBED: char = '\u{E008}';
 const EMBED_END: char = '\u{E009}';
 /// Between an alert's kind and title in comrak's alert node (`make_alert`).
 const ALERT: char = '\u{E00A}';
+/// Before a folding alert's kind in its title: starts closed / open; its last child, before its
+/// closing tag (`fold_alert`).
+const FOLD_CLOSED: char = '\u{E00B}';
+const FOLD_OPEN: char = '\u{E00C}';
+const FOLD_END: char = '\u{E00D}';
+/// Around an image's size at the end of its alt text (`size_image`).
+const SIZE: char = '\u{E00E}';
+const SIZE_END: char = '\u{E00F}';
 /// `'0'`…`'9'` of a formula's index.
 const MATH_DIGITS: std::ops::RangeInclusive<char> = '\u{E010}'..='\u{E019}';
 
 /// Whether `c` is one of the private-use chars `body_html` marks the AST with; the note's own
 /// copies are dropped before parsing.
 pub(crate) fn is_marker(c: char) -> bool {
-    matches!(c, TAG_OPEN..=ALERT) || MATH_DIGITS.contains(&c)
+    matches!(c, TAG_OPEN..=SIZE_END) || MATH_DIGITS.contains(&c)
 }
 
 /// `n` in `MATH_DIGITS`.
@@ -2351,7 +2502,7 @@ pub fn rich_text_page(
     image: &dyn Fn(&str) -> Option<String>,
 ) -> String {
     let mut body = inline_images(
-        &portable_body(md, note_dir, wiki, false, false, false),
+        &unfold_alerts(&portable_body(md, note_dir, wiki, false, false, false)),
         image,
     );
     // Inline colours per alert kind: mail apps drop class rules. The note's text is escaped, so
@@ -2391,6 +2542,33 @@ table {{ border-collapse: collapse; }} th, td {{ border: 1px solid #999; padding
 pre, code {{ font-family: monospace; }} .alert {{ border-left: 4px solid #999; padding-left: 8px; }} \
 .alert-title {{ font-weight: bold; }} mark {{ background-color: {MARK_COLOUR}; }}</style></head><body>{body}</body></html>"
     )
+}
+
+/// `html` with folding alerts (`fold_alert`) as open `<div>`s, as alerts without a fold marker
+/// (Copy as Rich Text: word processors and mail can't fold). The note's text is escaped, so
+/// these tags only come from alerts.
+fn unfold_alerts(html: &str) -> String {
+    const DETAILS: &str = "<details class=\"alert ";
+    if !html.contains(DETAILS) {
+        return html.to_string();
+    }
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(at) = rest.find(DETAILS) {
+        out.push_str(&rest[..at]);
+        out.push_str("<div class=\"alert ");
+        let after = &rest[at + DETAILS.len()..];
+        let end = after.find('>').unwrap_or(after.len());
+        out.push_str(after[..end].strip_suffix(" open").unwrap_or(&after[..end]));
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    out.replace(
+        "<summary class=\"alert-title\">",
+        "<p class=\"alert-title\">",
+    )
+    .replace("</summary>", "</p>")
+    .replace("</details>", "</div>")
 }
 
 /// `body` with each `<img>` whose `src` is neither a `data:` nor a web URL replaced: its `src`
@@ -2733,6 +2911,11 @@ html.dark .alert-warning { --alert: #d29922; } html.dark .alert-caution { --aler
 html.dark .alert-group-tip, html.dark .alert-group-success { --alert: #3fb950; } html.dark .alert-group-warning { --alert: #d29922; }
 html.dark .alert-group-abstract, html.dark .alert-group-info, html.dark .alert-group-todo { --alert: #39c5cf; } html.dark .alert-group-question { --alert: #f0883e; }
 html.dark .alert-group-failure, html.dark .alert-group-danger, html.dark .alert-group-bug { --alert: #f85149; } html.dark .alert-group-example { --alert: #ab7df8; } html.dark .alert-group-quote { --alert: #9198a1; }
+summary.alert-title { display: block; cursor: pointer; list-style: none; }
+summary.alert-title::-webkit-details-marker { display: none; }
+summary.alert-title::after { content: \"\"; display: inline-block; width: .35em; height: .35em; margin: 0 0 .1em .5em; vertical-align: middle; border: solid currentColor; border-width: 0 .12em .12em 0; transform: rotate(-45deg); transition: transform .1s; }
+details.alert[open] > summary.alert-title::after { transform: rotate(45deg); }
+details.alert:not([open]) > summary.alert-title { margin-bottom: 0; }
 table { border-collapse: collapse; } th, td { border: 1px solid rgba(127,127,127,.4); padding: 4px 10px; }
 img { max-width: 100%; }
 ul:has(> li > input[type=checkbox]), ul:has(> li > a.task) { list-style: none; padding-left: 1.2em; }
@@ -3132,9 +3315,8 @@ mod tests {
             ("[!bug]", "bug", "bug", "Bug"),
             ("[!example]", "example", "example", "Example"),
             ("[!cite]", "cite", "quote", "Cite"),
-            ("[!info]- Folded", "info", "info", "Folded"),
-            ("[!info]+", "info", "info", "Info"),
             ("[!bug] A & <b>", "bug", "bug", "A &amp;"),
+            ("[!info] - x", "info", "info", "- x"),
         ] {
             let html = render(&format!("> {marker}\n> body\n"));
             assert_eq!(
@@ -3148,9 +3330,13 @@ mod tests {
         }
         // GitHub's kinds take a title and a fold marker too, without a group class.
         assert!(render("> [!tip]- Keep it *short*\n> x\n").starts_with(
-            "<div class=\"alert alert-tip\">\n<p class=\"alert-title\">Keep it short</p>"
+            "<details class=\"alert alert-tip\">\n<summary class=\"alert-title\">Keep it short</summary>"
         ));
-        assert!(render("> [!note]+\n> x\n").contains("<p class=\"alert-title\">Note</p>"));
+        assert!(
+            render("> [!note]+\n> x\n").contains("<summary class=\"alert-title\">Note</summary>")
+        );
+        // The fold marker must end the word.
+        assert!(!render("> [!tip]-x\n").contains("alert"));
         // Rich text keeps the group colour.
         let page = rich_text_page(
             "> [!question] Why\n> x\n",
@@ -3160,6 +3346,119 @@ mod tests {
         );
         assert!(page.contains("<div class=\"alert alert-question alert-group-question\" style=\"border-left: 4px solid #bc4c00;"), "{page}");
         assert!(page.contains("<p class=\"alert-title\" style=\"color: #bc4c00;\">Why</p>"));
+    }
+
+    #[test]
+    fn foldable_callouts() {
+        let render = |md: &str| to_html(md, &|_: &str| None);
+        assert_eq!(
+            render("> [!info]- Folded\n> body\n"),
+            "<details class=\"alert alert-info alert-group-info\">\n\
+<summary class=\"alert-title\">Folded</summary>\n<p>body</p>\n</details>\n"
+        );
+        assert_eq!(
+            render("> [!info]+\n> body\n"),
+            "<details class=\"alert alert-info alert-group-info\" open>\n\
+<summary class=\"alert-title\">Info</summary>\n<p>body</p>\n</details>\n"
+        );
+        // Title only.
+        assert_eq!(
+            render("> [!todo]-\n"),
+            "<details class=\"alert alert-todo alert-group-todo\">\n\
+<summary class=\"alert-title\">Todo</summary>\n</details>\n"
+        );
+        // Nested: a folding callout inside a folded one, and an open one inside that.
+        assert_eq!(
+            render(
+                "> [!faq]- Q\n> a\n>\n> > [!tip]+ T\n> > b\n> >\n> > > [!note]\n> > > c\n>\n> d\n"
+            ),
+            "<details class=\"alert alert-faq alert-group-question\">\n\
+<summary class=\"alert-title\">Q</summary>\n<p>a</p>\n\
+<details class=\"alert alert-tip\" open>\n<summary class=\"alert-title\">T</summary>\n<p>b</p>\n\
+<div class=\"alert alert-note\">\n<p class=\"alert-title\">Note</p>\n<p>c</p>\n</div>\n\
+</details>\n<p>d</p>\n</details>\n"
+        );
+        // The preview keeps the source line on the tag, before `open`.
+        let html = body_html(
+            "text\n\n> [!bug]+ B\n> x\n",
+            &|_: &str| None,
+            false,
+            false,
+            true,
+            false,
+        );
+        assert!(
+            html.contains("<details class=\"alert alert-bug alert-group-bug\" data-sourcepos=\"3:1-4:3\" open>\n<summary class=\"alert-title\">B</summary>"),
+            "{html}"
+        );
+        // HTML export folds; Copy as Rich Text shows it open, as a `<div>`.
+        let md = "> [!example]- Ex\n> x\n";
+        let page = export_page(md, "T", Path::new("/"), &|_: &str| None);
+        assert!(page.contains("<details class=\"alert alert-example alert-group-example\""));
+        assert!(page.contains("summary.alert-title::after"));
+        let page = rich_text_page(md, Path::new("/"), &|_: &str| None, &|_: &str| None);
+        assert!(
+            !page.contains("details") && !page.contains("summary"),
+            "{page}"
+        );
+        assert!(page.contains("<div class=\"alert alert-example alert-group-example\" style=\"border-left: 4px solid #8250df;"), "{page}");
+        assert!(
+            page.contains(
+                "<p class=\"alert-title\" style=\"color: #8250df;\">Ex</p>\n<p>x</p>\n</div>"
+            ),
+            "{page}"
+        );
+        let page = rich_text_page(
+            "> [!tip]+\n> x\n",
+            Path::new("/"),
+            &|_: &str| None,
+            &|_: &str| None,
+        );
+        assert!(
+            page.contains("<div class=\"alert alert-tip\" style="),
+            "{page}"
+        );
+    }
+
+    #[test]
+    fn image_sizes() {
+        let render = |md: &str| to_html(md, &|_: &str| None);
+        assert_eq!(
+            render("![Photo|300](a.png)"),
+            "<p><img src=\"a.png\" alt=\"Photo\" width=\"300\" /></p>\n"
+        );
+        assert_eq!(
+            render("![Photo | 300x200](a.png \"T\")"),
+            "<p><img src=\"a.png\" alt=\"Photo\" width=\"300\" height=\"200\" title=\"T\" /></p>\n"
+        );
+        assert!(render("![a|300X200](a.png)").contains("alt=\"a\" width=\"300\" height=\"200\""));
+        assert!(render("![a|b|300](a.png)").contains("alt=\"a|b\" width=\"300\" />"));
+        assert!(render("![*a* `b`|300](a.png)").contains("alt=\"a b\" width=\"300\" />"));
+        assert!(render("![|300](a.png)").contains("alt=\"\" width=\"300\" />"));
+        // Anything else after `|` stays alt text.
+        for alt in [
+            "a|b", "a|0", "a|+300", "a|300px", "a|", "a|300x", "a|x200", "a|300x0",
+        ] {
+            let html = render(&format!("![{alt}](a.png)"));
+            assert!(html.contains(&format!("alt=\"{alt}\" />")), "{alt}: {html}");
+        }
+        // Rich text and inlined images keep the size.
+        let page = rich_text_page(
+            "![P|300](https://e.com/a.png)",
+            Path::new("/"),
+            &|_: &str| None,
+            &|_: &str| None,
+        );
+        assert!(
+            page.contains("<img src=\"https://e.com/a.png\" alt=\"P\" width=\"300\" />"),
+            "{page}"
+        );
+        // Embeds share the rule.
+        assert_eq!(image_size("300"), Some((300, None)));
+        assert_eq!(image_size(" 300 x 200 "), Some((300, Some(200))));
+        for option in ["0", "+300", "300px", "", "x", "-1"] {
+            assert_eq!(image_size(option), None, "{option}");
+        }
     }
 
     #[test]
@@ -4287,7 +4586,7 @@ mod tests {
             html_fragment(md, Path::new("/n"), &|_: &str| None),
         ] {
             assert!(
-                !out.contains("title:") && !out.contains("front-matter\">"),
+                !out.contains("title: ") && !out.contains("front-matter\">"),
                 "{out}"
             );
             assert!(!out.contains("<hr"), "{out}");
