@@ -64,8 +64,14 @@ pub fn current(lines: &[usize], line: usize) -> Option<usize> {
 /// `## Title ##` → (2, "Title"): at most 3 spaces of indent, 1–6 `#`, then a space/tab or
 /// the line end; an optional closing `#` run (after a space) is dropped.
 fn atx(line: &str) -> Option<(usize, &str)> {
+    atx_title(line).map(|(level, range)| (level, &line[range]))
+}
+
+/// `atx`'s level and the byte range of the title in `line` (Rename Heading keeps the rest).
+pub(crate) fn atx_title(line: &str) -> Option<(usize, std::ops::Range<usize>)> {
     let t = line.trim_start_matches(' ');
-    if line.len() - t.len() > 3 {
+    let indent = line.len() - t.len();
+    if indent > 3 {
         return None;
     }
     let level = t.len() - t.trim_start_matches('#').len();
@@ -73,16 +79,15 @@ fn atx(line: &str) -> Option<(usize, &str)> {
     if !(1..=6).contains(&level) || !(rest.is_empty() || rest.starts_with([' ', '\t'])) {
         return None;
     }
+    let start = indent + level + (rest.len() - rest.trim_start().len());
     let rest = rest.trim();
     let closed = rest.trim_end_matches('#');
-    Some((
-        level,
-        if closed.is_empty() || closed.ends_with([' ', '\t']) {
-            closed.trim_end()
-        } else {
-            rest
-        },
-    ))
+    let len = if closed.is_empty() || closed.ends_with([' ', '\t']) {
+        closed.trim_end().len()
+    } else {
+        rest.len()
+    };
+    Some((level, start..start + len))
 }
 
 /// `===` → 1, `---` → 2 (at most 3 spaces of indent, trailing spaces allowed).

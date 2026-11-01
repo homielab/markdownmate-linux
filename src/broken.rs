@@ -63,6 +63,18 @@ impl<'a> Headings<'a> {
         let Some(ids) = ids else {
             return true;
         };
+        heading_of(ids, fragment).is_some()
+    }
+}
+
+/// The heading of `ids` (`render::heading_ids`) a link's heading part `fragment` reaches, as
+/// following the link finds it: `render::find_heading`, then, for a `%`-escaped part, the way
+/// Ctrl+click decodes it.
+pub(crate) fn heading_of<'a>(
+    ids: &'a [(usize, String)],
+    fragment: &str,
+) -> Option<&'a (usize, String)> {
+    render::find_heading(ids, fragment).or_else(|| {
         let decoded = fragment
             .contains('%')
             .then(|| {
@@ -71,17 +83,15 @@ impl<'a> Headings<'a> {
                     .into_string()
                     .ok()
             })
-            .flatten();
-        std::iter::once(fragment)
-            .chain(decoded.as_deref())
-            .any(|f| render::find_heading(ids, f).is_some())
-    }
+            .flatten()?;
+        render::find_heading(ids, &decoded)
+    })
 }
 
 /// The heading part of the wiki link `name` (as `links::spans` gives it) as following the link
 /// reads it: after the first `#`; trimmed for an embed (the preview embeds that section). None
 /// when there is none or it is empty.
-fn heading_part(name: &str, embed: bool) -> Option<&str> {
+pub(crate) fn heading_part(name: &str, embed: bool) -> Option<&str> {
     let (_, part) = name.split_once('#')?;
     let part = if embed { part.trim() } else { part };
     (!part.is_empty()).then_some(part)

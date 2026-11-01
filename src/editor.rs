@@ -20,8 +20,8 @@ use crate::{
 };
 use crate::{
     aliases, backlinks, complete, extract, favorites, find, images, links, lists, mentions, naming,
-    notes, outline, quick, relink, render, retag, save, sidebar, state, stats, tags, templates,
-    timing, title, url,
+    notes, outline, quick, reheading, relink, render, retag, save, sidebar, state, stats, tags,
+    templates, timing, title, url,
 };
 
 /// Find in Folder's scope setter (`Editor::find_set_scope`).
@@ -486,7 +486,8 @@ impl Editor {
         self.select_outline_at_cursor();
     }
 
-    /// Right-click / long-press on an outline heading: a menu with Copy Link (#109's popover style).
+    /// Right-click / long-press on an outline heading: a menu with Copy Link to Heading and
+    /// Rename Heading….
     pub(crate) fn outline_menu(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
         let show = Rc::new(move |x: f64, y: f64| -> bool {
@@ -501,12 +502,24 @@ impl Editor {
             let Some(line) = line else {
                 return false;
             };
-            let button = gtk::Button::builder()
-                .label("Copy Link")
+            let copy = gtk::Button::builder()
+                .label("Copy Link to Heading")
                 .has_frame(false)
                 .build();
+            let rename = gtk::Button::builder()
+                .label("Rename Heading…")
+                .has_frame(false)
+                .build();
+            for button in [&copy, &rename] {
+                if let Some(label) = button.child().and_downcast::<gtk::Label>() {
+                    label.set_xalign(0.0);
+                }
+            }
+            let items = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            items.append(&copy);
+            items.append(&rename);
             let popover = gtk::Popover::builder()
-                .child(&button)
+                .child(&items)
                 .has_arrow(false)
                 .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
                 .build();
@@ -517,10 +530,17 @@ impl Editor {
                 glib::idle_add_local_once(move || p.unparent());
             });
             let (p, weak) = (popover.clone(), Rc::downgrade(&editor));
-            button.connect_clicked(move |_| {
+            copy.connect_clicked(move |_| {
                 p.popdown();
                 if let Some(editor) = weak.upgrade() {
                     editor.copy_heading_link(line);
+                }
+            });
+            let (p, weak) = (popover.clone(), Rc::downgrade(&editor));
+            rename.connect_clicked(move |_| {
+                p.popdown();
+                if let Some(editor) = weak.upgrade() {
+                    editor.rename_heading(line);
                 }
             });
             popover.popup();
@@ -2638,6 +2658,186 @@ impl Editor {
                 )
             });
             editor.load_tags();
+        });
+    }
+
+    /// Outline ▸ Rename Heading…: asks for the new text of the heading on 1-based `line` of
+    /// the open note (checked as it is typed) and says how many wiki links in the folder's
+    /// notes follow (counted in the background), then `reheading`.
+    pub(crate) fn rename_heading(self: &Rc<Self>, line: usize) {
+        let Some(path) = self.path.borrow().clone() else {
+            return;
+        };
+        let text = self.text();
+        let Some(heading) = reheading::heading(&text, line) else {
+            return;
+        };
+        let entry = gtk::Entry::builder()
+            .text(&heading.written)
+            .activates_default(true)
+            .build();
+        let status = gtk::Label::builder()
+            .label("Counting links…")
+            .xalign(0.0)
+            .wrap(true)
+            .css_classes(["dim-label", "caption"])
+            .build();
+        let notice = gtk::Label::builder()
+            .label("Another heading has this text; links will reach the first")
+            .xalign(0.0)
+            .wrap(true)
+            .visible(false)
+            .css_classes(["caption", "warning"])
+            .build();
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        content.append(&entry);
+        content.append(&status);
+        content.append(&notice);
+        let dialog = adw::AlertDialog::builder()
+            .heading("Rename Heading")
+            .body("Wiki links to it in the folder’s notes follow.")
+            .extra_child(&content)
+            .default_response("rename")
+            .close_response("cancel")
+            .build();
+        dialog.add_responses(&[("cancel", "Cancel"), ("rename", "Rename")]);
+        dialog.set_response_appearance("rename", adw::ResponseAppearance::Suggested);
+        // The links found, once counted; Rename waits for them.
+        let found: Rc<RefCell<Option<Vec<reheading::Found>>>> = Rc::default();
+        let heading = Rc::new(heading);
+        let open = Rc::new((path.clone(), text));
+        let check = {
+            let (dialog, found, heading, open) = (
+                dialog.downgrade(),
+                Rc::clone(&found),
+                Rc::clone(&heading),
+                Rc::clone(&open),
+            );
+            move |entry: &gtk::Entry| {
+                let typed = entry.text();
+                let ok = reheading::line_edit(&open.1, &heading, &typed).is_some();
+                if let Some(dialog) = dialog.upgrade() {
+                    dialog.set_response_enabled("rename", ok && found.borrow().is_some());
+                }
+                if ok || typed.trim() == heading.written {
+                    entry.remove_css_class("error");
+                } else {
+                    entry.add_css_class("error");
+                }
+                notice.set_visible(ok && reheading::shared_text(&open.1, &heading, &typed));
+            }
+        };
+        let check = Rc::new(check);
+        check(&entry);
+        let c = Rc::clone(&check);
+        entry.connect_changed(move |e| c(e));
+        let weak = Rc::downgrade(self);
+        let (h, o, f, e) = (
+            Rc::clone(&heading),
+            Rc::clone(&open),
+            Rc::clone(&found),
+            entry.clone(),
+        );
+        dialog.connect_response(Some("rename"), move |_, _| {
+            if let (Some(editor), Some(found)) = (weak.upgrade(), f.borrow_mut().take()) {
+                editor.reheading(&o, &h, &e.text(), &found);
+            }
+        });
+        dialog.present(Some(&self.window));
+
+        // Count: the notes the link index says link to this note, and the note itself.
+        let (heading, open, first) = ((*heading).clone(), (*open).clone(), heading.first);
+        let root = self.root.borrow().clone();
+        let job: Box<dyn FnOnce() -> Vec<reheading::Found> + Send> = match self.links_job({
+            let (heading, open, root) = (heading.clone(), open.clone(), root.clone());
+            move |index: &backlinks::LinkIndex| {
+                let mut notes = vec![open.0.clone()];
+                notes.extend(index.backlinks(&open.0).into_iter().map(|b| b.path));
+                reheading::find(&notes, root.as_deref(), index.wiki(), &open, &heading)
+            }
+        }) {
+            Some(job) => Box::new(job),
+            None => Box::new(move || {
+                let wiki = render::WikiIndex::new(
+                    vec![open.0.clone()],
+                    open.0.parent().unwrap_or(Path::new("/")),
+                );
+                reheading::find(std::slice::from_ref(&open.0), None, &wiki, &open, &heading)
+            }),
+        };
+        let dialog = dialog.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(links) = gio::spawn_blocking(job).await else {
+                return;
+            };
+            if dialog.upgrade().is_none() {
+                return;
+            }
+            status.set_label(&reheading::summary(&links, first));
+            found.replace(Some(links));
+            check(&entry);
+        });
+    }
+
+    /// Renames the heading of `open` (the note and its text when the dialog opened) to `new`
+    /// and points the links `found` to it: in the editor for the open note (one undo step,
+    /// saved at once), on disk for the others unless they changed meanwhile. A toast tells how
+    /// many links followed.
+    fn reheading(
+        self: &Rc<Self>,
+        open: &(PathBuf, String),
+        heading: &reheading::Heading,
+        new: &str,
+        found: &[reheading::Found],
+    ) {
+        if self.path.borrow().as_ref() != Some(&open.0) || self.text() != open.1 {
+            self.toast("The note changed; rename the heading again");
+            return;
+        }
+        let Some(line) = reheading::line_edit(&open.1, heading, new) else {
+            return;
+        };
+        let renamed = relink::apply(&open.1, std::slice::from_ref(&line));
+        let fragment = reheading::fragment(&renamed, heading.line, new);
+        let own = found.iter().find(|f| f.path == open.0);
+        let links = own.map_or(&[][..], |f| &f.links[..]);
+        self.edit_buffer(&open.1, &reheading::edits(links, &fragment, Some(line)));
+        // Saved now, so Backlinks and Find Broken Links read the new heading.
+        self.save();
+        self.note_changed(open.0.clone());
+        let closed: Vec<reheading::Found> =
+            found.iter().filter(|f| f.path != open.0).cloned().collect();
+        let total: usize = found.iter().map(|f| f.links.len()).sum();
+        let own_links = links.len();
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let counts: Vec<(PathBuf, usize)> = closed
+                .iter()
+                .map(|f| (f.path.clone(), f.links.len()))
+                .collect();
+            let written = gio::spawn_blocking(move || reheading::write(&closed, &fragment))
+                .await
+                .unwrap_or_default();
+            let Some(editor) = weak.upgrade() else { return };
+            let mut done = own_links;
+            for (path, n) in counts {
+                if written.contains(&path) {
+                    done += n;
+                    editor.note_changed(path);
+                }
+            }
+            let plural = |n: usize| format!("{n} link{}", if n == 1 { "" } else { "s" });
+            editor.toast(&if total == 0 {
+                "Heading renamed".to_string()
+            } else if done == total {
+                format!("Heading renamed; {} updated", plural(done))
+            } else {
+                format!(
+                    "Heading renamed; {} of {} updated, the other notes changed meanwhile",
+                    done, total
+                )
+            });
+            editor.refresh_backlinks();
         });
     }
 

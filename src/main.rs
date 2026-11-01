@@ -39,6 +39,7 @@ mod plain;
 mod preview;
 mod previewfind;
 mod quick;
+mod reheading;
 mod relink;
 mod render;
 mod retag;
