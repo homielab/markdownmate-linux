@@ -5,6 +5,7 @@ mod daily;
 mod diagrams;
 mod dialogs;
 mod editor;
+mod extract;
 mod favorites;
 mod find;
 mod focus;

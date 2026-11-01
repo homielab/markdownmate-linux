@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- New Note from Selection… in the main menu (Shift+Ctrl+Alt+N): moves the selected text into a new note, named from its first line or heading, and leaves a `[[wiki link]]` to it in its place, so a long note splits into linked notes in one step. You stay in the note with the link selected; Ctrl+Z brings the text back, Ctrl+click on the link opens the new note. Same as the macOS app.
 - Previous Daily Note / Next Daily Note in the main menu (Ctrl+Alt+[ / Ctrl+Alt+]): from a daily note, jump to the nearest earlier or later one that exists (never creates one); from any other note, Previous opens the most recent. Same as the macOS app.
 - Export Folder as HTML… in the main menu: writes every note of the open folder as a standalone HTML page into an empty folder you pick, with wiki links and links to other notes pointing at their pages, the images they show and every `assets` folder copied along, and an `index.html` listing the notes as a tree by folder. Shows the progress and can be cancelled. Same as the macOS app.
 - Hover a `[[wiki link]]` in the editor to see the linked note's first lines in a tooltip, without leaving the note you are writing: its name and up to 12 lines as plain Markdown (front matter left out), starting at the heading for `[[Note#Heading]]`. Large notes are read only as far as shown. Same as the macOS app.

@@ -19,8 +19,9 @@ use crate::{
     STATUS_DELAY, TABLE_STYLE, TAG_STYLE, UNTITLED, file_name, state_file,
 };
 use crate::{
-    backlinks, complete, favorites, find, images, links, lists, mentions, naming, notes, outline,
-    quick, relink, render, retag, save, sidebar, state, stats, tags, templates, timing, title, url,
+    backlinks, complete, extract, favorites, find, images, links, lists, mentions, naming, notes,
+    outline, quick, relink, render, retag, save, sidebar, state, stats, tags, templates, timing,
+    title, url,
 };
 
 /// The window's widgets and the open note. Shared (Rc) by sidebar buttons, the auto-save
@@ -1370,6 +1371,21 @@ impl Editor {
         }
         self.refresh_preview();
         self.remember();
+        self.update_selection_actions();
+    }
+
+    /// New Note from Selection is enabled only with text selected in an open note's editor
+    /// (not in Preview, where the selection is hidden).
+    pub(crate) fn update_selection_actions(&self) {
+        if let Some(a) = self.window.lookup_action("new-note-from-selection")
+            && let Ok(a) = a.downcast::<gio::SimpleAction>()
+        {
+            a.set_enabled(
+                self.buffer.has_selection()
+                    && self.mode.get() != state::Mode::Preview
+                    && self.path.borrow().is_some(),
+            );
+        }
     }
 
     /// Scans `dir` on a background thread, then shows it in the sidebar and watches it for
@@ -1814,6 +1830,72 @@ impl Editor {
             self.view
                 .scroll_to_mark(&self.buffer.get_insert(), 0.0, true, 0.0, 0.3);
         }
+        self.schedule_rescan();
+    }
+
+    /// Folder for New Note from Selection: New Note's (`current_dir`), or without an open
+    /// folder the open note's own folder.
+    pub(crate) fn extract_dir(&self) -> Option<PathBuf> {
+        self.current_dir().or_else(|| {
+            self.path
+                .borrow()
+                .as_ref()
+                .and_then(|p| p.parent().map(Path::to_path_buf))
+        })
+    }
+
+    /// New Note from Selection, once named: creates `file` in `dir` (numbered if taken
+    /// meanwhile, never overwriting) with the selected text (`extract::note_text`), replaces
+    /// the selection with the wiki link to it (`complete::link_name`) as one undo step and
+    /// leaves the link selected. It stays in this note, so Ctrl+Z brings the text back
+    /// (opening the new note would drop the undo history); Ctrl+click on the link opens it.
+    /// Nothing changes if the note changed under the dialog or the new note cannot be written.
+    pub(crate) fn extract_selection(
+        self: &Rc<Self>,
+        dir: &Path,
+        file: &str,
+        selection: extract::Selection,
+    ) {
+        if self.path.borrow().as_deref() != Some(selection.note.as_path()) {
+            return;
+        }
+        let start = self.buffer.iter_at_offset(selection.start);
+        let end = self.buffer.iter_at_offset(selection.end);
+        if self.buffer.text(&start, &end, true) != selection.text.as_str() {
+            return self.toast("The note changed, so nothing was moved. Select the text again.");
+        }
+        let Some(text) = extract::note_text(&selection.text) else {
+            return;
+        };
+        let path = match naming::create_note(dir, file) {
+            Ok(path) => path,
+            Err(e) => return self.toast(&format!("Cannot create a note: {e}")),
+        };
+        if let Err(e) = std::fs::write(&path, text) {
+            let _ = std::fs::remove_file(&path);
+            return self.toast(&format!("Cannot write {}: {e}", file_name(&path)));
+        }
+        self.update_note_list(None, Some(&path));
+        let root = self
+            .root
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| dir.to_path_buf());
+        let link = extract::link(&complete::link_name(&path, &self.note_list.borrow(), &root));
+        let (mut start, mut end) = (start, end);
+        self.buffer.begin_user_action();
+        self.buffer.delete(&mut start, &mut end);
+        self.buffer
+            .insert(&mut start, &extract::replacement(&selection.text, &link));
+        self.buffer.end_user_action();
+        let link_start = selection.start + extract::link_start(&selection.text) as i32;
+        let link_end = link_start + link.chars().count() as i32;
+        self.buffer.select_range(
+            &self.buffer.iter_at_offset(link_end),
+            &self.buffer.iter_at_offset(link_start),
+        );
+        self.view.grab_focus();
+        self.expand_to(dir);
         self.schedule_rescan();
     }
 

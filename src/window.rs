@@ -84,6 +84,10 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
                 let item = gio::MenuItem::new_submenu(Some("New from Template"), &templates_menu);
                 item.set_attribute_value("action", Some(&"win.templates".to_variant()));
                 section.append_item(&item);
+                section.append(
+                    Some("New Note from Selection…"),
+                    Some("win.new-note-from-selection"),
+                );
             }
         }
         if items.iter().any(|(_, action)| *action == "win.whats-new") {
@@ -589,6 +593,23 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             move |_| editor.fill_templates_menu()
         ));
     }
+
+    // New Note from Selection: enabled with text selected in the editor
+    // (`Editor::update_selection_actions`). GTK and GtkSourceView don't bind Shift+Ctrl+Alt+N.
+    let extract_action = gio::SimpleAction::new("new-note-from-selection", None);
+    extract_action.set_enabled(false);
+    extract_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| crate::extract::ask(&editor)
+    ));
+    window.add_action(&extract_action);
+    app.set_accels_for_action("win.new-note-from-selection", &["<Shift><Control><Alt>n"]);
+    editor.buffer.connect_has_selection_notify(clone!(
+        #[weak]
+        editor,
+        move |_| editor.update_selection_actions()
+    ));
 
     // Disabled until a folder is open (load_folder enables it).
     let folder_html_action = gio::SimpleAction::new("export-folder-html", None);
@@ -1524,6 +1545,7 @@ fn shortcuts_window() -> gtk::ShortcutsWindow {
                     "Files",
                     &[
                         ("<Control>n", "New file"),
+                        ("<Shift><Control><Alt>n", "New note from selection"),
                         ("<Control>d", "Today's note"),
                         ("<Control><Alt>bracketleft", "Previous daily note"),
                         ("<Control><Alt>bracketright", "Next daily note"),
