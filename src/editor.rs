@@ -1167,6 +1167,40 @@ impl Editor {
         links::at(&above, &line, iter.line_offset() as usize)
     }
 
+    /// The `#tag` (without `#`) at a widget position, while a folder is open (`tags::at`).
+    pub(crate) fn tag_at(&self, x: f64, y: f64) -> Option<String> {
+        self.root.borrow().as_ref()?;
+        let (bx, by) =
+            self.view
+                .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+        let iter = self.view.iter_at_location(bx, by)?;
+        let text = self
+            .buffer
+            .text(&self.buffer.start_iter(), &self.buffer.end_iter(), true);
+        tags::at(&text, iter.line() as usize, iter.line_index() as usize)
+    }
+
+    /// Shows `tag` in the sidebar's Tags section: the sidebar opens, the tag's row (or its
+    /// nearest listed parent) is selected and scrolled to, and its notes are listed
+    /// (`sidebar::tag_notes`). Nothing without an open folder.
+    pub(crate) fn show_tag(self: &Rc<Self>, tag: &str) {
+        if self.root.borrow().is_none() {
+            return;
+        }
+        let found = tags::row_of(&self.tag_index.borrow(), tag)
+            .and_then(|i| Some((self.tags_list.row_at_index(i as i32)?, i)));
+        let Some((row, i)) = found else {
+            return self.toast(&format!("No notes listed for #{tag} yet"));
+        };
+        self.split.set_show_sidebar(true);
+        self.tags_list.select_row(Some(&row));
+        row.grab_focus();
+        let entry = self.tag_index.borrow().get(i).cloned();
+        if let Some((tag, notes)) = entry {
+            sidebar::tag_notes(self, &tag, &notes);
+        }
+    }
+
     /// The name of the `[[wiki link]]` at a widget position, without `link_at`'s fenced-code
     /// check (which copies the text above): cheap enough for every pointer move.
     pub(crate) fn wiki_near(&self, x: f64, y: f64) -> Option<String> {
@@ -1323,6 +1357,10 @@ impl Editor {
                 }
             }
             render::Link::Missing(name) => self.open_or_create_wiki_note(&name),
+            render::Link::Tag(tag) => {
+                let editor = self.clone();
+                glib::idle_add_local_once(move || editor.show_tag(&tag));
+            }
             render::Link::External => {
                 let weak = Rc::downgrade(self);
                 gtk::UriLauncher::new(uri).launch(

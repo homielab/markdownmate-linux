@@ -1264,8 +1264,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         editor.sync_timer.replace(Some(id));
     });
 
-    // Ctrl+click on a link in the editor opens it like a click in the preview; the pointer
-    // turns into a hand over links while Ctrl is held.
+    // Ctrl+click on a link in the editor opens it like a click in the preview, on a `#tag`
+    // shows it in the Tags section; the pointer turns into a hand over both while Ctrl is held.
     let click = gtk::GestureClick::new();
     click.set_button(1);
     click.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -1274,11 +1274,15 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         let ctrl = click
             .current_event_state()
             .contains(gtk::gdk::ModifierType::CONTROL_MASK);
-        if let Some(editor) = weak.upgrade().filter(|_| ctrl)
-            && let Some(target) = editor.link_at(x, y)
-        {
+        let Some(editor) = weak.upgrade().filter(|_| ctrl) else {
+            return;
+        };
+        if let Some(target) = editor.link_at(x, y) {
             click.set_state(gtk::EventSequenceState::Claimed);
             editor.open_editor_link(target);
+        } else if let Some(tag) = editor.tag_at(x, y) {
+            click.set_state(gtk::EventSequenceState::Claimed);
+            editor.show_tag(&tag);
         }
     });
     editor.view.add_controller(click);
@@ -1297,7 +1301,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             let ctrl = motion
                 .current_event_state()
                 .contains(gtk::gdk::ModifierType::CONTROL_MASK);
-            let hand = ctrl && editor.link_at(x, y).is_some();
+            let hand = ctrl && (editor.link_at(x, y).is_some() || editor.tag_at(x, y).is_some());
             editor
                 .view
                 .set_cursor_from_name(Some(if hand { "pointer" } else { "text" }));

@@ -346,9 +346,56 @@ pub fn index(notes: &[PathBuf]) -> Vec<(String, Vec<PathBuf>)> {
     map.into_iter().map(|(k, v)| (k.join("/"), v)).collect()
 }
 
+/// The inline tag (without `#`) at byte `col` of 0-based `line` in `text`, as `spans` finds
+/// it (front-matter tags, code and URLs are not tags). The `#` and the end count as on it.
+pub fn at(text: &str, line: usize, col: usize) -> Option<String> {
+    let row = text.lines().nth(line)?;
+    in_line(row)
+        .into_iter()
+        .find(|r| r.start <= col && col <= r.end)
+        .filter(|_| spans(text).iter().any(|(n, _)| *n == line))
+        .map(|r| row[r.start + 1..r.end].to_string())
+}
+
+/// The row of `tag` in `index` (`index`'s tree order), compared case-insensitively: the tag's
+/// own row, else its nearest listed parent (`a/b/c` → `a/b` → `a`).
+pub fn row_of(index: &[(String, Vec<PathBuf>)], tag: &str) -> Option<usize> {
+    let parts: Vec<&str> = tag.split('/').filter(|p| !p.is_empty()).collect();
+    (1..=parts.len()).rev().find_map(|n| {
+        let key = parts[..n].join("/").to_lowercase();
+        index.iter().position(|(t, _)| t.to_lowercase() == key)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tag_at_offset() {
+        let text = "---\ntags: [fm]\n---\nSee #work/project, mail a#b\n```\n#code\n```\n";
+        assert_eq!(at(text, 3, 4).as_deref(), Some("work/project"));
+        assert_eq!(at(text, 3, 10).as_deref(), Some("work/project"));
+        assert_eq!(at(text, 3, 16).as_deref(), Some("work/project"));
+        assert_eq!(at(text, 3, 2), None);
+        assert_eq!(at(text, 3, 26), None);
+        assert_eq!(at(text, 1, 8), None);
+        assert_eq!(at(text, 5, 2), None);
+        assert_eq!(at(text, 99, 0), None);
+    }
+
+    #[test]
+    fn row_of_nested_tag() {
+        let index: Vec<(String, Vec<PathBuf>)> = ["a", "work", "work/project", "work/zz"]
+            .iter()
+            .map(|t| (t.to_string(), Vec::new()))
+            .collect();
+        assert_eq!(row_of(&index, "work/project"), Some(2));
+        assert_eq!(row_of(&index, "Work/Project"), Some(2));
+        assert_eq!(row_of(&index, "work"), Some(1));
+        assert_eq!(row_of(&index, "work/gone/x"), Some(1));
+        assert_eq!(row_of(&index, "none"), None);
+    }
 
     fn tags(text: &str) -> Vec<String> {
         names(text)

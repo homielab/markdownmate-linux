@@ -1837,6 +1837,9 @@ fn math_index(n: usize) -> String {
 /// URI prefix of a task checkbox; the item's 1-based source line follows.
 const TASK: &str = "mm-task:";
 
+/// URI prefix of a click on a tag chip; the percent-encoded tag follows.
+pub(crate) const TAG_URI: &str = "mm-tag:";
+
 /// URI prefix of a code block's Copy button; the block's 1-based first source line follows.
 const COPY: &str = "mm-copy:";
 
@@ -2780,6 +2783,8 @@ pub enum Link {
     Task(usize),
     /// A code block's Copy button: copy the block starting on this 1-based line.
     Copy(usize),
+    /// A tag chip (`preview.rs` turns its click into `mm-tag:`): the tag without `#`.
+    Tag(String),
     /// Do nothing (other files, unknown schemes).
     Ignore,
 }
@@ -2791,6 +2796,11 @@ pub fn link_action(uri: &str, page_uri: &str) -> Link {
         Link::Follow
     } else if let Some(line) = uri.strip_prefix(TASK) {
         line.parse().map_or(Link::Ignore, Link::Task)
+    } else if let Some(tag) = uri.strip_prefix(TAG_URI) {
+        state::unescape(tag)
+            .map(|t| t.to_string_lossy().trim_start_matches('#').to_string())
+            .filter(|t| !t.is_empty())
+            .map_or(Link::Ignore, Link::Tag)
     } else if let Some(line) = uri.strip_prefix(COPY) {
         line.parse().map_or(Link::Ignore, Link::Copy)
     } else if let Some(target) = uri.strip_prefix(MISSING) {
@@ -3017,6 +3027,11 @@ mod tests {
         assert!(!html.contains('\u{E002}') && !html.contains("mm-task:9"));
         assert_eq!(link_action("mm-task:12", "file:///a.md"), Link::Task(12));
         assert_eq!(link_action("mm-task:x", "file:///a.md"), Link::Ignore);
+        assert_eq!(
+            link_action("mm-tag:work%2Fpro%20j", "file:///a.md"),
+            Link::Tag("work/pro j".into())
+        );
+        assert_eq!(link_action("mm-tag:", "file:///a.md"), Link::Ignore);
     }
 
     #[test]

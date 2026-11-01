@@ -29,6 +29,7 @@ impl Editor {
             settings.set_enable_javascript_markup(false);
         }
         diagrams::keep_world(view);
+        tag_clicks(view);
         view.set_vexpand(true);
         view.set_zoom_level(f64::from(self.prefs.borrow().zoom) / 100.0);
         let pane = self
@@ -953,6 +954,30 @@ impl RenderSlot {
 fn parse_position(s: &str) -> Option<(f64, f64)> {
     let (y, line) = s.split_once(' ')?;
     Some((y.parse().ok()?, line.parse().ok()?))
+}
+
+/// A click on a tag chip (`span.tag`) navigates to `mm-tag:<tag>`, which `Editor::follow`
+/// turns into the tag's row in the Tags section. Runs in the app's script world: page
+/// scripts are off.
+fn tag_clicks(view: &webkit6::WebView) {
+    let Some(manager) = view.user_content_manager() else {
+        return;
+    };
+    let script = format!(
+        "document.addEventListener('click',function(e){{\
+var t=e.target&&e.target.closest?e.target.closest('span.tag'):null;\
+if(!t||t.closest('a'))return;e.preventDefault();\
+location.href='{}'+encodeURIComponent(t.textContent.replace(/^#/,''))}},true);",
+        render::TAG_URI
+    );
+    manager.add_script(&webkit6::UserScript::for_world(
+        &script,
+        webkit6::UserContentInjectedFrames::TopFrame,
+        webkit6::UserScriptInjectionTime::End,
+        SCRIPT_WORLD,
+        &[],
+        &[],
+    ));
 }
 
 #[cfg(test)]
