@@ -114,6 +114,20 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
         }
     ));
 
+    let auto_pair = adw::SwitchRow::builder()
+        .title("Auto-Pair Brackets and Quotes")
+        .subtitle("Insert matching brackets, backticks and quotes while typing")
+        .active(prefs.auto_pair)
+        .build();
+    auto_pair.connect_active_notify(clone!(
+        #[strong]
+        update,
+        move |r| {
+            let on = r.is_active();
+            update(&|p| p.auto_pair = on);
+        }
+    ));
+
     let spacing_names: Vec<String> = state::LINE_SPACINGS
         .iter()
         .map(|s| format!("{}", f64::from(*s) / 100.0))
@@ -177,6 +191,7 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
     group.add(&text_width);
     group.add(&typewriter);
     group.add(&spelling);
+    group.add(&auto_pair);
 
     let theme = adw::ComboRow::builder()
         .title("Theme")

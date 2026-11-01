@@ -218,6 +218,8 @@ pub struct Prefs {
     pub hard_breaks: bool,
     /// Underline misspelled words in the editor (`spell`).
     pub spell_check: bool,
+    /// Automatically insert matching brackets, backticks and quotes while typing (`autopair`).
+    pub auto_pair: bool,
 }
 
 pub const ZOOM_MIN: u32 = 50;
@@ -256,6 +258,7 @@ impl Default for Prefs {
             web_images: false,
             hard_breaks: false,
             spell_check: true,
+            auto_pair: true,
         }
     }
 }
@@ -369,6 +372,9 @@ impl State {
                 Some(("spell_check", v)) => {
                     state.prefs.spell_check = v.parse().unwrap_or(state.prefs.spell_check)
                 }
+                Some(("auto_pair", v)) => {
+                    state.prefs.auto_pair = v.parse().unwrap_or(state.prefs.auto_pair)
+                }
                 // Kept as typed (an empty value is a choice: the open folder).
                 Some(("daily_folder", v)) => state.prefs.daily_folder = v.to_string(),
                 Some(("templates_folder", v)) => state.prefs.templates_folder = v.to_string(),
@@ -438,7 +444,7 @@ impl State {
             out += &format!("font={font}\n");
         }
         out += &format!(
-            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\ntemplates_folder={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\nspell_check={}\n",
+            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\ntemplates_folder={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\nspell_check={}\nauto_pair={}\n",
             p.line_numbers,
             p.wrap,
             p.indent,
@@ -458,7 +464,8 @@ impl State {
             p.sidebar_sort.name(),
             p.web_images,
             p.hard_breaks,
-            p.spell_check
+            p.spell_check,
+            p.auto_pair
         );
         out += &format!(
             "find_match_case={}\nfind_whole_word={}\nfind_regex={}\n",
@@ -716,7 +723,7 @@ mod tests {
         };
         let text = state.serialize();
         assert!(text.is_ascii());
-        assert_eq!(text.lines().count(), 27);
+        assert_eq!(text.lines().count(), 28);
         assert_eq!(State::parse(&text), state);
     }
 
@@ -880,6 +887,7 @@ mod tests {
             web_images: true,
             hard_breaks: true,
             spell_check: false,
+            auto_pair: false,
         };
         let state = State {
             prefs: prefs.clone(),
@@ -898,7 +906,7 @@ mod tests {
         assert_eq!(old.prefs.text_width, TextWidth::Medium);
         assert_eq!(old.prefs.sidebar_sort, crate::notes::SortOrder::Name);
         assert!(!old.prefs.web_images && !old.prefs.hard_breaks);
-        assert!(old.prefs.spell_check);
+        assert!(old.prefs.spell_check && old.prefs.auto_pair);
         // An empty daily notes folder (the open folder) stays empty.
         assert_eq!(State::parse("daily_folder=\n").prefs.daily_folder, "");
         assert_eq!(
@@ -907,7 +915,7 @@ mod tests {
         );
         // Broken values keep the default.
         let bad = State::parse(
-            "font= \nline_numbers=yes\nwrap=1\nindent=3\nindent=x\ntheme=neon\nstyle=dim\nsync_scroll=no\ntags=0\nignore_colours=off\ntypewriter=on\nformat_bar=yes\nfocus_mode=1\nline_spacing=1.2\nline_spacing=x\ntext_width=huge\nsidebar_sort=size\nweb_images=yes\nhard_breaks=on\nspell_check=off\n",
+            "font= \nline_numbers=yes\nwrap=1\nindent=3\nindent=x\ntheme=neon\nstyle=dim\nsync_scroll=no\ntags=0\nignore_colours=off\ntypewriter=on\nformat_bar=yes\nfocus_mode=1\nline_spacing=1.2\nline_spacing=x\ntext_width=huge\nsidebar_sort=size\nweb_images=yes\nhard_breaks=on\nspell_check=off\nauto_pair=invalid\n",
         );
         assert_eq!(bad.prefs, Prefs::default());
         for t in Theme::ALL {

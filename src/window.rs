@@ -284,7 +284,6 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     editor_pane.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     editor_pane.append(&status);
     let completer = Completer::new(&view, &overlay);
-    smart_lists(&view, &completer);
 
     // The preview under its find bar (`previewfind`); the mode shows or hides the whole pane.
     // Both are added on first use (`Editor::preview`).
@@ -438,6 +437,10 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     );
     sidebar::tags_menu(&tags_list, &Rc::downgrade(&editor));
     sidebar::connect_favorites(&favorites_list, &Rc::downgrade(&editor));
+    let weak = Rc::downgrade(&editor);
+    smart_lists(&view, &completer, move || {
+        weak.upgrade().is_none_or(|e| e.prefs.borrow().auto_pair)
+    });
     tags_list.connect_row_activated(clone!(
         #[weak]
         editor,

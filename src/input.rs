@@ -299,7 +299,11 @@ impl Completer {
 /// (`lines.rs`); Alt+Left / Right are Back / Forward, not GtkSourceView's move-words; the
 /// `[[` suggestion keys go first. Capture phase so it runs before the view inserts the newline
 /// / tab itself. On the view, so only while the editor has focus.
-pub(crate) fn smart_lists(view: &sourceview5::View, completer: &Rc<Completer>) {
+pub(crate) fn smart_lists(
+    view: &sourceview5::View,
+    completer: &Rc<Completer>,
+    auto_pair: impl Fn() -> bool + 'static,
+) {
     // Enter while an input method is composing must commit the text, not touch the list.
     let preedit = Rc::new(Cell::new(false));
     view.connect_preedit_changed(clone!(
@@ -376,6 +380,15 @@ pub(crate) fn smart_lists(view: &sourceview5::View, completer: &Rc<Completer>) {
                     },
                 )
             }
+            Key::BackSpace
+                if mods.is_empty()
+                    && !preedit.get()
+                    && !buffer.has_selection()
+                    && auto_pair()
+                    && handle_autopair_backspace(&buffer) =>
+            {
+                true
+            }
             Key::BackSpace if mods & !M::SHIFT_MASK == M::ALT_MASK | M::CONTROL_MASK => {
                 table_shortcut(
                     keys,
@@ -403,6 +416,16 @@ pub(crate) fn smart_lists(view: &sourceview5::View, completer: &Rc<Completer>) {
             _ if (mods.is_empty() || mods == M::SHIFT_MASK)
                 && !preedit.get()
                 && key.to_unicode().is_some_and(|c| wrap_selection(&buffer, c)) =>
+            {
+                true
+            }
+            _ if (mods.is_empty() || mods == M::SHIFT_MASK)
+                && !preedit.get()
+                && !buffer.has_selection()
+                && auto_pair()
+                && key
+                    .to_unicode()
+                    .is_some_and(|c| handle_autopair_char(&buffer, c)) =>
             {
                 true
             }
@@ -774,6 +797,69 @@ fn wrap_selection(buffer: &gtk::TextBuffer, c: char) -> bool {
     }
     apply_edit(buffer, edit);
     true
+}
+
+fn handle_autopair_char(buffer: &gtk::TextBuffer, c: char) -> bool {
+    let cursor = buffer.iter_at_mark(&buffer.get_insert());
+    let mut start = cursor;
+    start.set_line_offset(0);
+    let text_before = buffer.text(&start, &cursor, false);
+    let mut end = cursor;
+    if !end.ends_line() {
+        end.forward_to_line_end();
+    }
+    let text_after = buffer.text(&cursor, &end, false);
+
+    match crate::autopair::action(crate::autopair::Typing::Char(c), &text_before, &text_after) {
+        crate::autopair::Action::InsertPair(open, close) => {
+            buffer.begin_user_action();
+            buffer.insert_at_cursor(&format!("{open}{close}"));
+            let mut mid = buffer.iter_at_mark(&buffer.get_insert());
+            mid.backward_chars(1);
+            buffer.place_cursor(&mid);
+            buffer.end_user_action();
+            true
+        }
+        crate::autopair::Action::Skip => {
+            buffer.begin_user_action();
+            let mut next = buffer.iter_at_mark(&buffer.get_insert());
+            next.forward_chars(1);
+            buffer.place_cursor(&next);
+            buffer.end_user_action();
+            true
+        }
+        _ => false,
+    }
+}
+
+fn handle_autopair_backspace(buffer: &gtk::TextBuffer) -> bool {
+    let cursor = buffer.iter_at_mark(&buffer.get_insert());
+    let mut start = cursor;
+    start.set_line_offset(0);
+    let text_before = buffer.text(&start, &cursor, false);
+    let mut end = cursor;
+    if !end.ends_line() {
+        end.forward_to_line_end();
+    }
+    let text_after = buffer.text(&cursor, &end, false);
+
+    if crate::autopair::action(
+        crate::autopair::Typing::Backspace,
+        &text_before,
+        &text_after,
+    ) == crate::autopair::Action::DeletePair
+    {
+        buffer.begin_user_action();
+        let mut start = buffer.iter_at_mark(&buffer.get_insert());
+        start.backward_chars(1);
+        let mut end = buffer.iter_at_mark(&buffer.get_insert());
+        end.forward_chars(1);
+        buffer.delete(&mut start, &mut end);
+        buffer.end_user_action();
+        true
+    } else {
+        false
+    }
 }
 
 /// Applies a `format.rs` edit as one undo step and selects what it says.

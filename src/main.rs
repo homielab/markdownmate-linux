@@ -1,6 +1,7 @@
 mod about;
 mod aliases;
 mod attachments;
+mod autopair;
 mod backlinks;
 mod broken;
 mod cli;
