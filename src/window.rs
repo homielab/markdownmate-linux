@@ -368,6 +368,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         tag_timer: RefCell::new(None),
         preview_view: std::cell::OnceCell::new(),
         preview_find: std::cell::OnceCell::new(),
+        preview_hover: std::cell::OnceCell::new(),
         print_view: RefCell::new(None),
         print_busy: Cell::new(false),
         mode: Cell::new(state::Mode::Edit),

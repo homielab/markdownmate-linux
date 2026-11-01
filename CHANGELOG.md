@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Hover a wiki link in the preview (Preview and Side by side) to see the linked note's name and first lines, as in the editor, so you can peek at a note without opening it. Alias links, embed titles and links to `.md` notes work too; `[[Note#Heading]]` shows the lines from that heading on. Same as the macOS app.
 - Rename Heading… in the Outline: right-click a heading to give it new text, and every `[[Note#Heading]]`, `![[Note#Heading]]`, `[[Alias#Heading]]` and `[[#Heading]]` link to it across the folder follows, so renaming a heading no longer breaks links. The dialog says how many links in how many notes change; in the open note it is one undo step. Copy Link is now Copy Link to Heading. Same as the macOS app.
 - Callouts fold as in Obsidian: `> [!tip]- Title` starts closed and `> [!tip]+ Title` open, and clicking the title opens or closes it in the preview, print, PDF / HTML exports, Copy as HTML and Export Folder as HTML (RTF, Copy as Rich Text and plain text show it open). Images take Obsidian's size: `![Photo|300](a.png)` is 300 pixels wide, `![Photo|300x200](a.png)` 300 × 200. Same as the macOS app.
 - Ctrl+click a `#tag` in the editor, or click its chip in the preview, to jump to it in the sidebar's Tags section with its notes listed, instead of scrolling the Tags list by hand. Works with a folder open. Same as the macOS app.

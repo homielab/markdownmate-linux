@@ -38,6 +38,7 @@ mod perf;
 mod plain;
 mod preview;
 mod previewfind;
+mod previewhover;
 mod quick;
 mod reheading;
 mod relink;

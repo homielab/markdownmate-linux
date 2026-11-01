@@ -67,6 +67,8 @@ pub(crate) struct Editor {
     pub(crate) preview_view: std::cell::OnceCell<webkit6::WebView>,
     /// Find in the preview: its bar above the page (`previewfind`); set with the page.
     pub(crate) preview_find: std::cell::OnceCell<Rc<crate::previewfind::Bar>>,
+    /// The hover preview of note links in the page (`previewhover`); set with the page.
+    pub(crate) preview_hover: std::cell::OnceCell<Rc<crate::previewhover::LinkPeek>>,
     /// Off-screen page being printed or exported, dropped once done (`preview::offscreen`).
     pub(crate) print_view: RefCell<Option<webkit6::WebView>>,
     /// A print page is rendering in the background; another Print/Export PDF is ignored meanwhile.
@@ -1313,7 +1315,7 @@ impl Editor {
         match render::link_action(&uri, &page) {
             // `[x](#heading)` in this note.
             render::Link::Follow => {
-                if let Some(heading) = fragment(&uri) {
+                if let Some(heading) = render::link_fragment(&uri) {
                     self.go_to_heading(&heading, false);
                 }
             }
@@ -1346,7 +1348,7 @@ impl Editor {
                     // After the caller returns: open() reloads the preview web view.
                     Some(note) => {
                         let editor = self.clone();
-                        let heading = fragment(uri);
+                        let heading = render::link_fragment(uri);
                         glib::idle_add_local_once(move || {
                             let reload = editor.path.borrow().as_deref() != Some(&note);
                             editor.open(&note);
@@ -3170,13 +3172,6 @@ pub(crate) fn typewriter_scrolling(editor: &Rc<Editor>, scroll: &gtk::ScrolledWi
         let editor = Rc::clone(&editor);
         glib::idle_add_local_once(move || editor.typewriter_margin());
     });
-}
-
-/// The percent-decoded fragment of a link (`…#frag`), if any.
-fn fragment(uri: &str) -> Option<String> {
-    let (_, fragment) = uri.split_once('#')?;
-    let fragment = glib::Uri::unescape_string(fragment, None::<&str>)?;
-    (!fragment.is_empty()).then(|| fragment.into())
 }
 
 /// Fills a Backlinks-style list: per (note, 1-based line, snippet) a row with the note name

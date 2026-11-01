@@ -41,6 +41,9 @@ impl Editor {
         self.preview_find
             .set(crate::previewfind::find_bar(view, &pane))
             .ok();
+        self.preview_hover
+            .set(crate::previewhover::LinkPeek::new(self, view))
+            .ok();
         crate::window::wire_preview(self, view);
         view
     }
@@ -70,6 +73,7 @@ impl Editor {
     pub(crate) fn refresh_preview(self: &Rc<Self>) {
         self.preview_generation
             .set(self.preview_generation.get().wrapping_add(1));
+        self.close_link_peek();
         if self.mode.get() == state::Mode::Edit {
             return;
         }
@@ -203,6 +207,13 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
         );
     }
 
+    /// The page is about to change: a link preview shown on it closes.
+    fn close_link_peek(&self) {
+        if let Some(peek) = self.preview_hover.get() {
+            peek.close();
+        }
+    }
+
     /// The page changed under an open Find in Preview bar: recount its matches.
     pub(crate) fn refresh_preview_find(&self) {
         if let Some(find) = self.preview_find.get() {
@@ -333,6 +344,7 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
     pub(crate) fn load_preview(self: &Rc<Self>) {
         self.preview_generation
             .set(self.preview_generation.get().wrapping_add(1));
+        self.close_link_peek();
         self.preview_loads
             .set(self.preview_loads.get().wrapping_add(1));
         let generation = self.preview_generation.get();

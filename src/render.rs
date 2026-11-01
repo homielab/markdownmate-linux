@@ -3015,6 +3015,23 @@ pub fn link_action(uri: &str, page_uri: &str) -> Link {
     }
 }
 
+/// The percent-decoded `#fragment` of a link URI (a heading's id or text); None when empty.
+pub fn link_fragment(uri: &str) -> Option<String> {
+    let (_, fragment) = uri.split_once('#')?;
+    let fragment = gtk::glib::Uri::unescape_string(fragment, None::<&str>)?;
+    (!fragment.is_empty()).then(|| fragment.into())
+}
+
+/// The note and heading a preview link points to — a wiki link, alias link, embed title or a
+/// link to a `.md` file — as clicking it opens them (`link_action`, `link_fragment`). None for
+/// links to the page itself (`[[#Heading]]`), missing notes and anything else.
+pub fn note_link(uri: &str, page_uri: &str) -> Option<(PathBuf, Option<String>)> {
+    match link_action(uri, page_uri) {
+        Link::Note(path) => Some((path, link_fragment(uri))),
+        _ => None,
+    }
+}
+
 /// `path` as a note inside `root` to open, or None if it does not exist, is not a file, or
 /// lies outside `root` once `..` and symlinks are resolved. The result keeps `root`'s
 /// spelling (the sidebar's paths) with the canonical rest of the path.
@@ -4306,6 +4323,38 @@ mod tests {
         );
         assert_eq!(link_action("file:///etc/passwd", page_uri), Link::Ignore);
         assert_eq!(link_action("about:blank", page_uri), Link::Ignore);
+    }
+
+    #[test]
+    fn note_links_for_hover_and_click() {
+        let page_uri = "file:///notes/a.md";
+        let note = |p: &str, h: Option<&str>| Some((PathBuf::from(p), h.map(String::from)));
+        // `[[Other]]`, `[[Other#My Part]]` (the heading's id), an embed title, `[x](b.md#…)`.
+        assert_eq!(
+            note_link("file:///notes/Other.md", page_uri),
+            note("/notes/Other.md", None)
+        );
+        assert_eq!(
+            note_link("file:///notes/Sub/Other.md#my-part", page_uri),
+            note("/notes/Sub/Other.md", Some("my-part"))
+        );
+        assert_eq!(
+            note_link("file:///notes/Ghi%20ch%C3%BA.md#ph%E1%BA%A7n", page_uri),
+            note("/notes/Ghi chú.md", Some("phần"))
+        );
+        assert_eq!(
+            note_link("file:///notes/b.md#", page_uri),
+            note("/notes/b.md", None)
+        );
+        // `[[#Heading]]` and `[[This note]]`, missing notes, tags, web links: none.
+        assert_eq!(note_link("file:///notes/a.md#part", page_uri), None);
+        assert_eq!(note_link(page_uri, page_uri), None);
+        assert_eq!(note_link("mm-missing:Nope", page_uri), None);
+        assert_eq!(note_link("mm-tag:work", page_uri), None);
+        assert_eq!(note_link("https://example.com/a.md", page_uri), None);
+        assert_eq!(note_link("file:///notes/pic.png", page_uri), None);
+        assert_eq!(link_fragment("x#a%20b"), Some("a b".into()));
+        assert_eq!(link_fragment("x"), None);
     }
 
     #[test]

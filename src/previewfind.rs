@@ -47,6 +47,16 @@ impl Bar {
         self.widget.is_visible()
     }
 
+    /// The keyboard is in the search field (its text widget inside the entry).
+    pub(crate) fn has_focus(&self) -> bool {
+        self.is_open()
+            && self
+                .entry
+                .root()
+                .and_then(|root| root.focus())
+                .is_some_and(|focus| focus.is_ancestor(&self.entry) || focus == self.entry)
+    }
+
     /// Shows the bar with the field focused and its text selected; Enter searches it again.
     /// Not searched now: the page selecting the match takes PRIMARY, which would drop the
     /// field's selection (typing would then add to the old text instead of replacing it).
