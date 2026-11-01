@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use adw::prelude::*;
 use gtk::gio;
@@ -726,10 +727,10 @@ pub(crate) fn go_to_line(editor: &Rc<Editor>) {
     entry.grab_focus();
 }
 
-/// Ctrl+P: search box over the notes of the open folder and its Favorites (with a star).
-/// Up/Down select, Enter opens the selected note (a favourite folder is shown in the sidebar),
-/// or creates a note named after the query in the folder root when nothing matches. Esc
-/// closes (adw::Dialog default).
+/// Ctrl+P: search box over the notes of the open folder, their front-matter aliases ("Alias →
+/// Note" rows) and its Favorites (with a star). Up/Down select, Enter opens the selected note
+/// (a favourite folder is shown in the sidebar), or creates a note named after the query in
+/// the folder root when no name or alias matches. Esc closes (adw::Dialog default).
 pub(crate) fn open_quickly(editor: &Rc<Editor>) {
     let Some(root) = editor.root.borrow().clone() else {
         return;
@@ -745,9 +746,11 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
         .collect();
     let current = editor.path.borrow().clone();
     let favorites = editor.favorite_paths();
+    // The last alias index (`load_aliases`); no file is read here.
+    let aliases = Arc::clone(&editor.aliases.borrow());
 
     let entry = gtk::SearchEntry::builder()
-        .placeholder_text("Note name")
+        .placeholder_text("Note name or alias")
         // Results update on every key, so Enter never acts on a stale list.
         .search_delay(0)
         .build();
@@ -796,23 +799,28 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
                 &root,
                 &notes,
                 &recent,
+                &aliases,
             );
-            for (path, favourite) in &hits {
+            for hit in &hits {
+                let path = &hit.path;
                 let rel = path.strip_prefix(&root).unwrap_or(path);
                 let row = gtk::Box::new(gtk::Orientation::Vertical, 2);
                 let name = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-                if *favourite {
+                if hit.favorite {
                     let star = gtk::Image::from_icon_name("starred-symbolic");
                     star.set_tooltip_text(Some("Favorite"));
                     star.update_property(&[gtk::accessible::Property::Label("Favorite")]);
                     name.append(&star);
                 }
-                name.append(
-                    &gtk::Label::builder()
-                        .label(file_name(path))
-                        .xalign(0.0)
-                        .build(),
-                );
+                // As `[[` completion words it: "Alias → Note".
+                let label = match &hit.alias {
+                    Some(alias) => {
+                        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+                        format!("{alias} → {stem}")
+                    }
+                    None => file_name(path),
+                };
+                name.append(&gtk::Label::builder().label(label).xalign(0.0).build());
                 row.append(&name);
                 let dim = gtk::Label::builder()
                     .label(rel.to_string_lossy())
@@ -825,7 +833,7 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
                 list.append(&row);
             }
             list.select_row(list.row_at_index(0).as_ref());
-            shown.replace(hits.into_iter().map(|(path, _)| path).collect());
+            shown.replace(hits.into_iter().map(|hit| hit.path).collect());
         }
     };
     fill("");

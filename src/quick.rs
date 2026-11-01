@@ -4,10 +4,12 @@
 //! Ranking, best first: the file name starts with the query > contains it in one piece >
 //! contains its characters in order; then the same three against the path relative to the
 //! open folder. Ties: shorter name, then relative path. The open folder's Favorites are
-//! listed and preferred (`with_favorites`).
+//! listed and preferred, and front-matter aliases match like names (`with_favorites`).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::aliases::Aliases;
 use crate::notes::Node;
 
 /// Most results shown.
@@ -103,11 +105,27 @@ pub fn search<'a>(query: &str, notes: &'a [PathBuf], root: &Path) -> Vec<&'a Pat
     hits.into_iter().take(LIMIT).map(|(_, p)| p).collect()
 }
 
-/// Open Quickly's list, each path with whether it is one of the open folder's `favorites`
-/// (notes and folders that exist). Empty `query`: the `recent` notes, then the favourites not
-/// listed yet (minus `current`); with neither, every note by path. Otherwise favourites
-/// (folders too) and `notes` ranked together like `search`, favourites first within each kind
-/// of match (prefix, in one piece, …). At most `LIMIT`.
+/// Order of Open Quickly's rows: kind of match (`key`), alias row, not a favourite, length,
+/// relative path.
+type Rank = (u8, bool, bool, usize, String);
+
+/// One row of Open Quickly: a note or favourite folder, or a note reached by one of its
+/// front-matter aliases (`alias`, as written; shown "Alias → Note").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    pub path: PathBuf,
+    /// One of the open folder's Favorites (never for an alias row).
+    pub favorite: bool,
+    pub alias: Option<String>,
+}
+
+/// Open Quickly's list. Empty `query`: the `recent` notes, then the open folder's `favorites`
+/// (notes and folders that exist) not listed yet (minus `current`); with neither, every note
+/// by path. Otherwise favourites (folders too), `notes` and the `aliases` of `notes` ranked
+/// together like `search`, an alias matched as a name is; within each kind of match (prefix,
+/// in one piece, …) favourites first, then other notes, then aliases, so a note named like an
+/// alias comes before it. A note listed by its name or path gets no alias row, and a note
+/// whose aliases match gets one row (its best alias). At most `LIMIT`.
 pub fn with_favorites(
     query: &str,
     favorites: &[PathBuf],
@@ -115,14 +133,22 @@ pub fn with_favorites(
     root: &Path,
     notes: &[PathBuf],
     recent: &[&PathBuf],
-) -> Vec<(PathBuf, bool)> {
+    aliases: &Aliases,
+) -> Vec<Row> {
     let query = query.trim().to_lowercase();
+    let row = |path: &PathBuf, favorite| Row {
+        path: path.clone(),
+        favorite,
+        alias: None,
+    };
     if query.is_empty() && !(recent.is_empty() && favorites.is_empty()) {
-        let fav = |p: &PathBuf| favorites.contains(p);
-        let mut out: Vec<(PathBuf, bool)> = recent.iter().map(|p| ((*p).clone(), fav(p))).collect();
+        let mut out: Vec<Row> = recent
+            .iter()
+            .map(|p| row(p, favorites.contains(p)))
+            .collect();
         for f in favorites {
             if Some(f.as_path()) != current && !recent.contains(&f) {
-                out.push((f.clone(), true));
+                out.push(row(f, true));
             }
         }
         out.truncate(LIMIT);
@@ -135,14 +161,50 @@ pub fn with_favorites(
         .chain(others.map(|p| (p, false)))
         .filter_map(|(path, fav)| {
             let (rank, len, rel) = key(&query, path, root)?;
-            Some(((rank, !fav, len, rel), path, fav))
+            Some(((rank, false, !fav, len, rel), row(path, fav)))
         })
         .collect();
+    if !query.is_empty() {
+        let listed: HashSet<&Path> = hits.iter().map(|(_, r)| r.path.as_path()).collect();
+        let known: HashSet<&Path> = notes.iter().map(PathBuf::as_path).collect();
+        // Best alias per note; `all` is in note order, so a note's aliases are adjacent.
+        let mut best: Vec<(Rank, Row)> = Vec::new();
+        for (note, alias) in aliases.all() {
+            if listed.contains(note.as_path()) || !known.contains(note.as_path()) {
+                continue;
+            }
+            let Some(rank) = tier(&query, alias) else {
+                continue;
+            };
+            let rel = note.strip_prefix(root).unwrap_or(note);
+            let rank = (
+                rank,
+                true,
+                true,
+                alias.chars().count(),
+                rel.to_string_lossy().to_lowercase(),
+            );
+            match best.last_mut() {
+                Some((at, r)) if r.path == *note => {
+                    if rank < *at {
+                        *at = rank;
+                        r.alias = Some(alias.clone());
+                    }
+                }
+                _ => best.push((
+                    rank,
+                    Row {
+                        path: note.clone(),
+                        favorite: false,
+                        alias: Some(alias.clone()),
+                    },
+                )),
+            }
+        }
+        hits.extend(best);
+    }
     hits.sort_by(|a, b| a.0.cmp(&b.0));
-    hits.into_iter()
-        .take(LIMIT)
-        .map(|(_, path, fav)| (path.clone(), fav))
-        .collect()
+    hits.into_iter().take(LIMIT).map(|(_, r)| r).collect()
 }
 
 #[cfg(test)]
@@ -155,9 +217,13 @@ mod tests {
         let p = |v: &[&str]| v.iter().map(|s| root.join(s)).collect::<Vec<_>>();
         let favorites = p(&["Daily", "plan.md", "b.md"]);
         let notes = p(&["a.md", "b.md", "plan.md", "Daily/x.md", "pla.md"]);
-        let names = |got: Vec<(PathBuf, bool)>| {
+        let none = Aliases::default();
+        let names = |got: Vec<Row>| {
             got.into_iter()
-                .map(|(path, fav)| (path.strip_prefix(root).unwrap().display().to_string(), fav))
+                .map(|r| {
+                    let rel = r.path.strip_prefix(root).unwrap().display().to_string();
+                    (rel, r.favorite)
+                })
                 .collect::<Vec<_>>()
         };
         let s = |v: &str, fav| (v.to_string(), fav);
@@ -172,27 +238,52 @@ mod tests {
                 Some(&current),
                 root,
                 &notes,
-                &recent
+                &recent,
+                &none
             )),
             [s("a.md", false), s("b.md", true), s("Daily", true)]
         );
         // Nothing opened yet: favourites alone; with no favourites either, every note.
         assert_eq!(
-            names(with_favorites("", &favorites, None, root, &notes, &[])),
+            names(with_favorites(
+                "",
+                &favorites,
+                None,
+                root,
+                &notes,
+                &[],
+                &none
+            )),
             [s("Daily", true), s("plan.md", true), s("b.md", true)]
         );
         assert_eq!(
-            with_favorites("", &[], None, root, &notes, &[]).len(),
+            with_favorites("", &[], None, root, &notes, &[], &none).len(),
             notes.len()
         );
         // A query: ranked like `search`, folders too; within a kind of match a favourite comes
         // first, listed once.
         assert_eq!(
-            names(with_favorites("pla", &favorites, None, root, &notes, &[])),
+            names(with_favorites(
+                "pla",
+                &favorites,
+                None,
+                root,
+                &notes,
+                &[],
+                &none
+            )),
             [s("plan.md", true), s("pla.md", false)]
         );
         assert_eq!(
-            names(with_favorites("a", &favorites, None, root, &notes, &[])),
+            names(with_favorites(
+                "a",
+                &favorites,
+                None,
+                root,
+                &notes,
+                &[],
+                &none
+            )),
             [
                 s("a.md", false),
                 s("Daily", true),
@@ -201,7 +292,103 @@ mod tests {
                 s("Daily/x.md", false)
             ]
         );
-        assert!(with_favorites("zzz", &favorites, None, root, &notes, &[]).is_empty());
+        assert!(with_favorites("zzz", &favorites, None, root, &notes, &[], &none).is_empty());
+    }
+
+    /// Open Quickly rows for `query` as "name" or "alias → name" (relative paths).
+    fn quick(query: &str, notes: &[&str], aliases: &[(&str, &[&str])]) -> Vec<String> {
+        let root = Path::new("/n");
+        let paths: Vec<PathBuf> = notes.iter().map(|n| root.join(n)).collect();
+        let aliases = Aliases::new(
+            aliases
+                .iter()
+                .map(|(n, a)| (root.join(n), a.iter().map(|a| a.to_string()).collect()))
+                .collect(),
+        );
+        with_favorites(query, &[], None, root, &paths, &[], &aliases)
+            .into_iter()
+            .map(|r| {
+                let rel = r.path.strip_prefix(root).unwrap().display().to_string();
+                match r.alias {
+                    Some(alias) => format!("{alias} → {rel}"),
+                    None => rel,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn aliases_match_like_names() {
+        let notes = ["Meeting notes.md", "Daily/2026-11-02.md", "Other.md"];
+        let aliases: &[(&str, &[&str])] = &[
+            ("Meeting notes.md", &["MN", "Standup"]),
+            ("Daily/2026-11-02.md", &["Today", "Monday plan"]),
+            ("Gone.md", &["Today"]),
+        ];
+        // Prefix, any case: the alias row opens the note.
+        assert_eq!(
+            quick("stand", &notes, aliases),
+            ["Standup → Meeting notes.md"]
+        );
+        // Letters in order, as for names; a note listed once, by its best alias. Aliases of
+        // notes no longer in the list (trashed since the alias index) are left out.
+        assert_eq!(
+            quick("tdy", &notes, aliases),
+            ["Today → Daily/2026-11-02.md"]
+        );
+        assert_eq!(
+            quick("mon", &notes, aliases),
+            ["Monday plan → Daily/2026-11-02.md"]
+        );
+        // The empty box is unchanged: notes by path, no alias rows.
+        assert_eq!(
+            quick("", &notes, aliases),
+            ["Other.md", "Daily/2026-11-02.md", "Meeting notes.md"]
+        );
+    }
+
+    #[test]
+    fn note_matching_by_name_gets_no_alias_row() {
+        let notes = ["Meeting notes.md", "Other.md"];
+        let aliases: &[(&str, &[&str])] = &[("Meeting notes.md", &["Meetings", "Weekly sync"])];
+        assert_eq!(quick("meet", &notes, aliases), ["Meeting notes.md"]);
+        assert_eq!(
+            quick("weekly", &notes, aliases),
+            ["Weekly sync → Meeting notes.md"]
+        );
+    }
+
+    #[test]
+    fn note_named_like_an_alias_comes_first() {
+        let notes = ["Project X.md", "Plans/Roadmap.md", "Projects old.md"];
+        let aliases: &[(&str, &[&str])] = &[("Plans/Roadmap.md", &["Project X", "Xylo"])];
+        assert_eq!(
+            quick("project x", &notes, aliases),
+            ["Project X.md", "Project X → Plans/Roadmap.md"]
+        );
+        // Same kind of match: names first; a better kind of match still wins.
+        assert_eq!(
+            quick("proj", &notes, aliases),
+            [
+                "Project X.md",
+                "Projects old.md",
+                "Project X → Plans/Roadmap.md"
+            ]
+        );
+        assert_eq!(
+            quick("x", &notes, aliases),
+            ["Xylo → Plans/Roadmap.md", "Project X.md"]
+        );
+    }
+
+    #[test]
+    fn creates_a_note_only_when_no_name_or_alias_matches() {
+        // Open Quickly's Enter creates a note only when the list is empty.
+        let notes = ["Meeting notes.md"];
+        let aliases: &[(&str, &[&str])] = &[("Meeting notes.md", &["Standup"])];
+        assert!(!quick("standup", &notes, aliases).is_empty());
+        assert!(!quick("meeting", &notes, aliases).is_empty());
+        assert!(quick("retro", &notes, aliases).is_empty());
     }
 
     #[test]

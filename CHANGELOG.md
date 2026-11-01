@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Open Quickly (Ctrl+P) finds notes by their front-matter aliases too: typing an alias lists “Alias → Note”, and Enter opens that note instead of creating a duplicate. A note whose own name matches is listed once, and a note actually named like the alias comes first. Same as the macOS app.
 - Front matter shows as a properties table in the preview: one row per key, with lists like `tags: [a, b]` as “a, b”, so an Obsidian note's date, status or tags read as information instead of code. Preferences ▸ Preview ▸ Front Matter switches between Table, Source (the block as before) and Hidden; Export Folder as HTML follows it, other exports and print are unchanged. Same as the macOS app.
 - Attachments Folder in Preferences ▸ Notes: choose where pasted and dropped images go (`assets` by default; `/attachments` for a folder at the top of the open folder, as Obsidian vaults keep them). Find Unused Attachments and Export Folder as HTML cover both `assets` and that folder. Same as the macOS app.
 - Obsidian callouts: besides GitHub's five alerts, `> [!info]`, `[!abstract]`, `[!todo]`, `[!success]`, `[!question]`, `[!failure]`, `[!danger]`, `[!bug]`, `[!example]`, `[!quote]` and their aliases show as coloured callouts in the preview, print and exports, with a custom title after the kind (`> [!tip] Keep it short`) and fold markers (`-`, `+`) accepted. `%%comments%%` are hidden from the preview and exports but stay in your note. Same as the macOS app.
