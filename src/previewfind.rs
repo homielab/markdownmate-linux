@@ -6,8 +6,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::gdk;
 use gtk::glib::{self, clone};
+use gtk::{gdk, gio};
 use webkit6::prelude::*;
 
 /// Matches counted at most; past it the label says "1000+ results".
@@ -92,7 +92,16 @@ impl Bar {
         } else {
             self.searched.set(true);
             self.steps.set(0);
-            self.controller.search(&text, Self::options(), MAX_MATCHES);
+            // WebKit does not find text inside a closed `<details>`: open the folded callouts
+            // holding the text first (left open, as on macOS), then search.
+            let controller = self.controller.clone();
+            self.preview.evaluate_javascript(
+                &reveal_script(&text),
+                Some(crate::SCRIPT_WORLD),
+                None,
+                gio::Cancellable::NONE,
+                move |_| controller.search(&text, Self::options(), MAX_MATCHES),
+            );
         }
     }
 
@@ -134,6 +143,16 @@ impl Bar {
             self.entry.remove_css_class("error");
         }
     }
+}
+
+/// Opens every closed `<details>` whose body (outside its summary) contains `text`, any case.
+fn reveal_script(text: &str) -> String {
+    format!(
+        "(function(q){{q=q.toLowerCase();for(var d of document.querySelectorAll('details:not([open])')){{\
+var t='';for(var c of d.childNodes)if(c.nodeName!=='SUMMARY')t+=c.textContent;\
+if(t.toLowerCase().includes(q))d.open=true}}return true}})({})",
+        crate::render::js_string(text)
+    )
 }
 
 fn icon_button(icon: &str, tooltip: &str) -> gtk::Button {

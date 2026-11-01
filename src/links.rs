@@ -18,14 +18,18 @@ pub enum Target {
 /// The link covering character `col` (0-based) of `line`; `above` is the text before the line
 /// (to skip fenced code). None outside links and inside code spans or code blocks.
 pub fn at(above: &str, line: &str, col: usize) -> Option<Target> {
-    if lists::in_fence(above) {
-        return None;
-    }
+    at_lazy(line, col, || above.to_string())
+}
+
+/// `at` for pointer motion: only `line` is scanned; the text above it (for code blocks) is
+/// read only when a link covers `col`. Same result.
+pub fn at_lazy(line: &str, col: usize, above: impl FnOnce() -> String) -> Option<Target> {
     let pos = line.char_indices().nth(col)?.0;
-    spans(line)
+    let target = spans(line)
         .into_iter()
         .find(|(r, _)| r.contains(&pos))
-        .map(|(_, t)| t)
+        .map(|(_, t)| t)?;
+    (!lists::in_fence(&above())).then_some(target)
 }
 
 /// The links of one line (outside code spans), with their byte ranges, in order.
@@ -195,6 +199,23 @@ mod tests {
         assert_eq!(
             at("```\n```\n", "[[Idea]]", 2),
             Some(Target::Wiki("Idea".into()))
+        );
+    }
+
+    #[test]
+    fn above_read_only_on_a_link() {
+        let read = std::cell::Cell::new(false);
+        let above = || {
+            read.set(true);
+            "```\n".to_string()
+        };
+        assert_eq!(at_lazy("plain text [[A]]", 2, above), None);
+        assert!(!read.get());
+        assert_eq!(at_lazy("plain text [[A]]", 12, above), None); // in the fence
+        assert!(read.get());
+        assert_eq!(
+            at_lazy("[[A]]", 1, String::new),
+            Some(Target::Wiki("A".into()))
         );
     }
 

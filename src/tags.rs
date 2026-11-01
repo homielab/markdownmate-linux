@@ -348,13 +348,22 @@ pub fn index(notes: &[PathBuf]) -> Vec<(String, Vec<PathBuf>)> {
 
 /// The inline tag (without `#`) at byte `col` of 0-based `line` in `text`, as `spans` finds
 /// it (front-matter tags, code and URLs are not tags). The `#` and the end count as on it.
+#[cfg(test)]
 pub fn at(text: &str, line: usize, col: usize) -> Option<String> {
-    let row = text.lines().nth(line)?;
-    in_line(row)
+    at_row(text.lines().nth(line)?, line, col, || text.to_string())
+}
+
+/// `at` for pointer motion: only `row` (line `line`) is scanned; the whole `text` is read
+/// (for code blocks and front matter) only when the row has a tag under `col`. Same result.
+pub fn at_row(row: &str, line: usize, col: usize, text: impl FnOnce() -> String) -> Option<String> {
+    let r = in_line(row)
         .into_iter()
-        .find(|r| r.start <= col && col <= r.end)
-        .filter(|_| spans(text).iter().any(|(n, _)| *n == line))
-        .map(|r| row[r.start + 1..r.end].to_string())
+        .find(|r| r.start <= col && col <= r.end)?;
+    let text = text();
+    spans(&text)
+        .iter()
+        .any(|(n, _)| *n == line)
+        .then(|| row[r.start + 1..r.end].to_string())
 }
 
 /// The row of `tag` in `index` (`index`'s tree order), compared case-insensitively: the tag's
@@ -540,6 +549,29 @@ mod tests {
             ["abcdeg", "ff", "work"]
         );
         assert_eq!(find("#fff #work").len(), 2);
+    }
+
+    #[test]
+    fn row_scan_reads_the_text_only_on_a_tag() {
+        let text = "```\n#code\n```\nSee #work and more";
+        let read = std::cell::Cell::new(0);
+        let whole = || {
+            read.set(read.get() + 1);
+            text.to_string()
+        };
+        assert_eq!(at_row("See #work and more", 3, 12, whole), None);
+        assert_eq!(read.get(), 0);
+        assert_eq!(
+            at_row("See #work and more", 3, 5, whole).as_deref(),
+            Some("work")
+        );
+        assert_eq!(at_row("#code", 1, 2, whole), None); // inside the fence
+        assert_eq!(read.get(), 2);
+        for (line, row) in text.lines().enumerate() {
+            for col in 0..=row.len() {
+                assert_eq!(at_row(row, line, col, whole), at(text, line, col));
+            }
+        }
     }
 
     #[test]

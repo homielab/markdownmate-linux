@@ -30,6 +30,9 @@ impl Editor {
         }
         diagrams::keep_world(view);
         tag_clicks(view);
+        if self.root.borrow().is_some() {
+            clickable_tags(view);
+        }
         view.set_vexpand(true);
         view.set_zoom_level(f64::from(self.prefs.borrow().zoom) / 100.0);
         let pane = self
@@ -168,16 +171,18 @@ impl Editor {
     }
 
     /// Replaces the shown page's head and body with `html` in place (scroll position kept).
+    /// A folded callout keeps the user's open/closed state when its own block is unchanged.
     /// Diagrams and formulas already drawn are reused; only a changed one is drawn again
     /// (`diagrams`, `math`).
     fn swap_page(self: &Rc<Self>, html: &str) {
         // The class carries light/dark and the head the theme, so style changes apply too.
         let script = format!(
             "(function(h){{var y=scrollY,d=new DOMParser().parseFromString(h,'text/html');{}{}\
-document.documentElement.className=d.documentElement.className;\
+document.documentElement.className=d.documentElement.className;{}\
 document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo(0,y);return true}})({})",
             diagrams::TAKE,
             math::TAKE,
+            KEEP_FOLDS,
             math::APPLY,
             diagrams::APPLY,
             render::js_string(html)
@@ -457,6 +462,8 @@ var mmMathOld=window.mmMath?window.mmMath.take(removed):null;\
 for(var e of edits){{var t=document.createElement('template');t.innerHTML=e[2];\
 added.push(...t.content.childNodes);b.insertBefore(t.content,kids[e[0]]||null);\
 for(var i=e[0];i<e[0]+e[1];i++)kids[i].remove()}}\
+{MARK_FOLDS}for(var a of added)if(a.nodeType===1){{mmMarkFolds(a);\
+if(a.matches('details.alert')&&!a.dataset.written)a.dataset.written=a.hasAttribute('open')?'o':'c'}}\
 if(window.mmMath)window.mmMath.render(mmMathOld);\
 if(window.mmDiagrams)window.mmDiagrams.apply(mmOld,added);\
 scrollTo(0,y);return b.childNodes.length==={}}})({},{},{},[{}])",
@@ -962,6 +969,23 @@ impl RenderSlot {
     }
 }
 
+/// Part of `swap_page`'s script (old body `document.body`, new document `d`): a folded callout
+/// (`details.alert`) the user opened or closed keeps that state when the new page has the same
+/// callout (same written HTML, line numbers aside, the written `open` decides the match);
+/// an edited callout shows its written state. Incremental patches leave untouched blocks'
+/// nodes in place, so they keep it already.
+const KEEP_FOLDS: &str = "var mmFoldKey=function(w,e){return w+'|'+\
+e.innerHTML.replace(/ data-sourcepos=\"[^\"]*\"/g,'')},mmFolds={};\
+for(var e of document.querySelectorAll('details.alert[data-written]')){\
+var k=mmFoldKey(e.dataset.written,e);(mmFolds[k]=mmFolds[k]||[]).push(e.open)}\
+for(var e of d.querySelectorAll('details.alert')){var w=e.hasAttribute('open')?'o':'c',\
+l=mmFolds[mmFoldKey(w,e)];e.dataset.written=w;if(l&&l.length)e.open=l.shift()}";
+
+/// Records each folded callout's written state under `r` (`data-written`, read by
+/// `KEEP_FOLDS`): on page load and for the nodes a patch adds.
+const MARK_FOLDS: &str = "function mmMarkFolds(r){for(var e of r.querySelectorAll('details.alert'))\
+if(!e.dataset.written)e.dataset.written=e.hasAttribute('open')?'o':'c'}";
+
 /// `PREVIEW_LINE_JS`'s result: `(scrollY, line)`.
 fn parse_position(s: &str) -> Option<(f64, f64)> {
     let (y, line) = s.split_once(' ')?;
@@ -970,7 +994,22 @@ fn parse_position(s: &str) -> Option<(f64, f64)> {
 
 /// A click on a tag chip (`span.tag`) navigates to `mm-tag:<tag>`, which `Editor::follow`
 /// turns into the tag's row in the Tags section. Runs in the app's script world: page
-/// scripts are off.
+/// scripts are off. Only chips with a pointer cursor (`clickable_tags`: a folder is open).
+/// Tag chips show a pointer and a hover style (and take clicks, `tag_clicks`): a user style
+/// sheet, added once a folder is open. Without a folder they are plain chips.
+pub(crate) fn clickable_tags(view: &webkit6::WebView) {
+    if let Some(manager) = view.user_content_manager() {
+        manager.add_style_sheet(&webkit6::UserStyleSheet::new(
+            "span.tag { cursor: pointer; } a span.tag { cursor: inherit; } \
+span.tag:hover { text-decoration: underline; }",
+            webkit6::UserContentInjectedFrames::TopFrame,
+            webkit6::UserStyleLevel::User,
+            &[],
+            &[],
+        ));
+    }
+}
+
 fn tag_clicks(view: &webkit6::WebView) {
     let Some(manager) = view.user_content_manager() else {
         return;
@@ -978,8 +1017,9 @@ fn tag_clicks(view: &webkit6::WebView) {
     let script = format!(
         "document.addEventListener('click',function(e){{\
 var t=e.target&&e.target.closest?e.target.closest('span.tag'):null;\
-if(!t||t.closest('a'))return;e.preventDefault();\
-location.href='{}'+encodeURIComponent(t.textContent.replace(/^#/,''))}},true);",
+if(!t||t.closest('a')||getComputedStyle(t).cursor!=='pointer')return;e.preventDefault();\
+location.href='{}'+encodeURIComponent(t.textContent.replace(/^#/,''))}},true);\
+{MARK_FOLDS}mmMarkFolds(document);",
         render::TAG_URI
     );
     manager.add_script(&webkit6::UserScript::for_world(

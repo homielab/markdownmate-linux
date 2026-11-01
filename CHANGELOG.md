@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Preview polish: a folded callout you opened or closed stays that way while you type elsewhere in the note; Find in Preview finds text inside closed callouts and opens them; tag chips look and act clickable only when a folder is open; Ctrl+hover over links and tags stays smooth in very large notes.
 - Daily Note for Date… in the main menu: pick a day on a calendar that marks the days with a daily note, and open its note or create it from Template.md with that date filled in, instead of scrolling the Daily folder. Same as the macOS app.
 - Preferences ▸ Notes ▸ Open Today's Note at Launch (off by default): starting MarkdownMate with your last folder opens today's daily note right away.
 - Hover a wiki link in the preview (Preview and Side by side) to see the linked note's name and first lines, as in the editor, so you can peek at a note without opening it. Alias links, embed titles and links to `.md` notes work too; `[[Note#Heading]]` shows the lines from that heading on. Same as the macOS app.

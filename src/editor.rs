@@ -1184,22 +1184,37 @@ impl Editor {
         let start = self.buffer.iter_at_line(iter.line())?;
         let mut end = start;
         end.forward_to_line_end();
-        let above = self.buffer.text(&self.buffer.start_iter(), &start, true);
         let line = self.buffer.text(&start, &end, true);
-        links::at(&above, &line, iter.line_offset() as usize)
+        links::at_lazy(&line, iter.line_offset() as usize, || {
+            self.buffer
+                .text(&self.buffer.start_iter(), &start, true)
+                .to_string()
+        })
     }
 
-    /// The `#tag` (without `#`) at a widget position, while a folder is open (`tags::at`).
+    /// The `#tag` (without `#`) at a widget position, while a folder is open (`tags::at_row`).
     pub(crate) fn tag_at(&self, x: f64, y: f64) -> Option<String> {
         self.root.borrow().as_ref()?;
         let (bx, by) =
             self.view
                 .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
         let iter = self.view.iter_at_location(bx, by)?;
-        let text = self
-            .buffer
-            .text(&self.buffer.start_iter(), &self.buffer.end_iter(), true);
-        tags::at(&text, iter.line() as usize, iter.line_index() as usize)
+        let start = self.buffer.iter_at_line(iter.line())?;
+        let mut end = start;
+        if !end.ends_line() {
+            end.forward_to_line_end();
+        }
+        let row = self.buffer.text(&start, &end, true);
+        tags::at_row(
+            &row,
+            iter.line() as usize,
+            iter.line_index() as usize,
+            || {
+                self.buffer
+                    .text(&self.buffer.start_iter(), &self.buffer.end_iter(), true)
+                    .to_string()
+            },
+        )
     }
 
     /// Shows `tag` in the sidebar's Tags section: the sidebar opens, the tag's row (or its
@@ -1642,7 +1657,11 @@ impl Editor {
             // Giữ những thư mục bên trong `dir` (khôi phục phiên đặt sẵn trước khi quét xong).
             self.expanded.borrow_mut().retain(|d| d.starts_with(dir));
         }
-        self.root.replace(Some(dir.to_path_buf()));
+        if self.root.replace(Some(dir.to_path_buf())).is_none()
+            && let Some(view) = self.preview_view.get()
+        {
+            crate::preview::clickable_tags(view);
+        }
         // Rescans follow changes on disk: a deleted note may leave nothing to go back to.
         self.update_history_actions();
         for name in [
