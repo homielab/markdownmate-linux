@@ -412,6 +412,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         find_match_case: Cell::new(false),
         find_whole_word: Cell::new(false),
         find_regex: Cell::new(false),
+        find_set_scope: RefCell::new(None),
         prefs: RefCell::default(),
         recent_menu,
         templates_menu,

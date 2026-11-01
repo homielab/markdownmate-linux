@@ -18,6 +18,9 @@
 //! match of each listed line, only in a note whose text is still the one searched (`version`).
 //! Plain text inserts the replacement as typed; Regex expands `$1`…`$9`, `${name}` and `$$` as
 //! `Regex::replace_all` does. Bytes outside the matches (line endings, a BOM) stay.
+//!
+//! Scope: the sidebar's Find in “Folder”… searches only the notes under one folder of the open
+//! folder (`in_scope`, recursive). Replace All replaces the listed matches, so it stays inside.
 
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
@@ -349,6 +352,26 @@ pub fn search(
         }
     }
     Some(found)
+}
+
+/// The notes Find in Folder searches: all of `notes`, or with a `scope` folder only those
+/// under it, at any depth (whole path components: `Work` does not hold `Workout/a.md`).
+pub fn in_scope(notes: &[PathBuf], scope: Option<&Path>) -> Vec<PathBuf> {
+    match scope {
+        None => notes.to_vec(),
+        Some(dir) => notes
+            .iter()
+            .filter(|p| p.starts_with(dir))
+            .cloned()
+            .collect(),
+    }
+}
+
+/// The scope chip's text: "In Folder/Sub", the folder relative to the open folder `root`.
+pub fn scope_label(root: &Path, scope: &Path) -> String {
+    let rel = scope.strip_prefix(root).unwrap_or(scope);
+    let parts: Vec<_> = rel.iter().map(|p| p.to_string_lossy()).collect();
+    format!("In {}", parts.join("/"))
 }
 
 pub fn read_utf8(path: &Path) -> Option<String> {
@@ -727,6 +750,67 @@ mod tests {
         assert_eq!(found.files[0].lines.len(), 1);
         assert_eq!(found.files[0].lines[0].line, 2);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn scope_filters_files_and_replace_all_stays_inside() {
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = std::env::temp_dir().join(format!("mm-find-scope-{}", std::process::id()));
+        let _cleanup = Cleanup(root.clone());
+        let sub = root.join("Work").join("Sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(root.join("Workout")).unwrap();
+        let top = root.join("top.md");
+        let work = root.join("Work").join("a.md");
+        let deep = sub.join("b.md");
+        let workout = root.join("Workout").join("c.md");
+        for path in [&top, &work, &deep, &workout] {
+            std::fs::write(path, "plan\nnothing\nplan again\n").unwrap();
+        }
+        let notes = vec![top.clone(), work.clone(), deep.clone(), workout.clone()];
+        let query = q("plan", Options::default());
+
+        // Scoped: only the notes under Work, recursively; not the sibling Workout.
+        let scope = root.join("Work");
+        let scoped = in_scope(&notes, Some(&scope));
+        assert_eq!(scoped, [work.clone(), deep.clone()]);
+        let found = search(&scoped, None, &query, &|| false).unwrap();
+        let files: Vec<_> = found.files.iter().map(|f| &f.path).collect();
+        assert_eq!(files, [&work, &deep]);
+
+        // Replace All over the listed results changes only those notes.
+        for file in &found.files {
+            let lines: Vec<_> = file.lines.iter().map(|h| h.line).collect();
+            assert_eq!(
+                replace_in_file(&file.path, file.version, &query, &lines, "goal"),
+                Ok(2)
+            );
+        }
+        assert_eq!(read_utf8(&work).unwrap(), "goal\nnothing\ngoal again\n");
+        assert_eq!(read_utf8(&deep).unwrap(), "goal\nnothing\ngoal again\n");
+        assert_eq!(read_utf8(&top).unwrap(), "plan\nnothing\nplan again\n");
+        assert_eq!(read_utf8(&workout).unwrap(), "plan\nnothing\nplan again\n");
+
+        // Clearing the scope searches every note again.
+        assert_eq!(in_scope(&notes, None), notes);
+        let found = search(&in_scope(&notes, None), None, &query, &|| false).unwrap();
+        let files: Vec<_> = found.files.iter().map(|f| &f.path).collect();
+        assert_eq!(files, [&top, &workout]);
+    }
+
+    #[test]
+    fn scope_label_is_relative_to_the_open_folder() {
+        let root = Path::new("/notes");
+        assert_eq!(scope_label(root, Path::new("/notes/Work")), "In Work");
+        assert_eq!(
+            scope_label(root, Path::new("/notes/Work/Sub")),
+            "In Work/Sub"
+        );
     }
 
     const RE: Options = Options {

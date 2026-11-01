@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Find in “Folder”… in the sidebar's right-click menu on a folder: Find in Folder searches only the notes in that folder and its subfolders, and Replace All changes only those. A chip under the search box shows the folder; its ✕ searches everything again. Shift+Ctrl+F still searches the whole folder. Same as the macOS app.
 - Front-matter aliases: list a note's other names under `aliases:` (or `alias:`) in its YAML front matter and `[[Alias]]` links reach it — in the preview, Ctrl+click, the hover tooltip, Backlinks, Unlinked Mentions and Export Folder as HTML. `[[` completion offers them as "Alias → Note". A note actually named like the alias still wins. Same as the macOS app.
 - New Note from Selection… in the main menu (Shift+Ctrl+Alt+N): moves the selected text into a new note, named from its first line or heading, and leaves a `[[wiki link]]` to it in its place, so a long note splits into linked notes in one step. You stay in the note with the link selected; Ctrl+Z brings the text back, Ctrl+click on the link opens the new note. Same as the macOS app.
 - Previous Daily Note / Next Daily Note in the main menu (Ctrl+Alt+[ / Ctrl+Alt+]): from a daily note, jump to the nearest earlier or later one that exists (never creates one); from any other note, Previous opens the most recent. Same as the macOS app.

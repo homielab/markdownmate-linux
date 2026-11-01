@@ -1,8 +1,8 @@
 //! Sidebar: the folder tree as a `gtk::ListView` over a `gtk::TreeListModel`. Virtualized:
 //! only rows on screen get widgets, and a folder's rows are added when it is expanded, so a
-//! folder of thousands of notes stays fast. Right-click: New Note, New Folder…, Rename…,
-//! Duplicate, Add to / Remove from Favorites, Move to Trash, Move to Folder…, Sort By. Drag an
-//! entry onto a folder (or empty space = the open folder) to move it.
+//! folder of thousands of notes stays fast. Right-click: New Note, New Folder…, Find in
+//! “Folder”…, Rename…, Duplicate, Add to / Remove from Favorites, Move to Trash, Move to
+//! Folder…, Sort By. Drag an entry onto a folder (or empty space = the open folder) to move it.
 //! Entries are in the scan's order (`notes::SortOrder`); under a date order a note whose date
 //! changed moves in place (`resort_note`). Above it, the Favorites panel (`favorites_panel`);
 //! below it, the Tags panel (`tags_panel`).
@@ -322,9 +322,9 @@ pub fn reveal(view: &gtk::ListView, path: &Path) {
     }
 }
 
-/// Right-click menu of a sidebar entry: New Note, New Folder… (folders), Rename…, Duplicate,
-/// Add to / Remove from Favorites, Show in Files, Copy Path, Copy Wiki Link (notes), Move to
-/// Trash, Move to Folder…, then Sort By (the current order checked).
+/// Right-click menu of a sidebar entry: New Note, New Folder… and Find in “Folder”… (folders),
+/// Rename…, Duplicate, Add to / Remove from Favorites, Show in Files, Copy Path, Copy Wiki Link
+/// (notes), Move to Trash, Move to Folder…, then Sort By (the current order checked).
 /// The entry is read at click time: list rows are recycled for other entries.
 fn context_menu(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
     let gesture = gtk::GestureClick::builder()
@@ -384,6 +384,12 @@ fn context_menu(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
                         e2.new_folder(&d, name)
                     });
                 }),
+            );
+            // The open folder itself is Find in Folder (Shift+Ctrl+F); it has no entry here.
+            let (e, d) = (Rc::clone(&editor), dir.clone());
+            item(
+                &format!("Find in “{}”…", file_name(&dir)),
+                Box::new(move || crate::dialogs::find_in_scope(&e, &d)),
             );
         }
         let (e, p) = (Rc::clone(&editor), path.clone());

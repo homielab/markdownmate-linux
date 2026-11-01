@@ -24,6 +24,9 @@ use crate::{
     timing, title, url,
 };
 
+/// Find in Folder's scope setter (`Editor::find_set_scope`).
+pub(crate) type SetScope = Rc<dyn Fn(Option<PathBuf>)>;
+
 /// The window's widgets and the open note. Shared (Rc) by sidebar buttons, the auto-save
 /// timer and window handlers.
 pub(crate) struct Editor {
@@ -154,6 +157,8 @@ pub(crate) struct Editor {
     pub(crate) find_match_case: Cell<bool>,
     pub(crate) find_whole_word: Cell<bool>,
     pub(crate) find_regex: Cell<bool>,
+    /// While Find in Folder is open: sets its folder scope and searches again (`None` = all).
+    pub(crate) find_set_scope: RefCell<Option<SetScope>>,
     /// Editor preferences (Ctrl+,) and the CSS that sets the chosen font.
     pub(crate) prefs: RefCell<state::Prefs>,
     pub(crate) font_css: gtk::CssProvider,

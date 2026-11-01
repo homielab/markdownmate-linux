@@ -847,13 +847,43 @@ pub(crate) fn highlight(text: &str, ranges: &[std::ops::Range<usize>]) -> String
 /// under the box and no results. Replace All replaces the listed matches after a confirmation
 /// (`replace_all`). Esc closes.
 pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
+    open_find(editor, None);
+}
+
+/// Sidebar ▸ Find in “Folder”…: Find in Folder limited to the notes under `folder`, shown as
+/// an "In Folder/Sub" chip whose ✕ widens it to the whole folder again. With the dialog
+/// already open, its scope becomes `folder` and the search runs again.
+pub(crate) fn find_in_scope(editor: &Rc<Editor>, folder: &Path) {
+    let set = editor.find_set_scope.borrow().clone();
+    match set {
+        Some(set) => set(Some(folder.to_path_buf())),
+        None => open_find(editor, Some(folder.to_path_buf())),
+    }
+}
+
+fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>) {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     let Some(root) = editor.root.borrow().clone() else {
         return;
     };
-    let notes: Arc<Vec<PathBuf>> = Arc::new(editor.note_list.borrow().to_vec());
+    let all: Arc<Vec<PathBuf>> = Arc::new(editor.note_list.borrow().to_vec());
+    // The notes searched for a scope: all, or those under the folder (`find::in_scope`). The
+    // open folder itself, or a folder outside it, is no scope.
+    let scoped = {
+        let (all, root) = (all.clone(), root.clone());
+        move |scope: Option<PathBuf>| {
+            let scope = scope.filter(|dir| dir != &root && dir.starts_with(&root));
+            let notes = match &scope {
+                Some(dir) => Arc::new(find::in_scope(&all, Some(dir))),
+                None => all.clone(),
+            };
+            (scope, notes)
+        }
+    };
+    let (scope, notes) = scoped(scope);
+    let notes = Rc::new(RefCell::new(notes));
     // The open note is searched as in the buffer (unsaved edits); the dialog is modal, so a
     // snapshot taken now stays current until Replace All edits it.
     let snapshot = {
@@ -924,7 +954,39 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
     let replace_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     replace_row.append(&replacement);
     replace_row.append(&replace);
+    // The scope chip: "In Folder/Sub" and ✕, shown while the search is limited to a folder.
+    let scope_text = gtk::Label::builder()
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .build();
+    scope_text.add_css_class("caption");
+    let scope_clear = gtk::Button::builder()
+        .icon_name("window-close-symbolic")
+        .tooltip_text("Search the whole folder")
+        .valign(gtk::Align::Center)
+        .build();
+    scope_clear.add_css_class("flat");
+    scope_clear.add_css_class("circular");
+    let scope_chip = gtk::Box::builder()
+        .spacing(4)
+        .halign(gtk::Align::Start)
+        .css_classes(["card", "find-scope"])
+        .build();
+    scope_text.set_margin_start(10);
+    scope_chip.append(&scope_text);
+    scope_chip.append(&scope_clear);
+    let show_scope = {
+        let (scope_chip, scope_text, root) = (scope_chip.clone(), scope_text.clone(), root.clone());
+        move |scope: Option<&Path>| {
+            if let Some(dir) = scope {
+                scope_text.set_label(&find::scope_label(&root, dir));
+            }
+            scope_chip.set_visible(scope.is_some());
+        }
+    };
+    show_scope(scope.as_deref());
     content.append(&entry);
+    content.append(&scope_chip);
     content.append(&error);
     content.append(&toggles);
     content.append(&replace_row);
@@ -945,7 +1007,8 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
     let generation = Arc::new(AtomicU64::new(0));
 
     let show = {
-        let (list, status, targets, root) = (list.clone(), status.clone(), targets.clone(), root);
+        let (list, status, targets, root) =
+            (list.clone(), status.clone(), targets.clone(), root.clone());
         let (listed, replace) = (listed.clone(), replace.clone());
         move |found: find::Found, query: find::Query| {
             let matches: usize = found
@@ -1030,7 +1093,7 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
     let show = Rc::new(show);
 
     let run = {
-        let (generation, open_note) = (generation.clone(), open_note.clone());
+        let (generation, open_note, notes) = (generation.clone(), open_note.clone(), notes.clone());
         let (listed, replace) = (listed.clone(), replace.clone());
         let (match_case, whole_word, regex) =
             (match_case.clone(), whole_word.clone(), regex.clone());
@@ -1059,7 +1122,7 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
                 }
             };
             error.set_visible(false);
-            let (notes, open_note) = (notes.clone(), open_note.borrow().clone());
+            let (notes, open_note) = (notes.borrow().clone(), open_note.borrow().clone());
             let (generation, show) = (generation.clone(), show.clone());
             glib::spawn_future_local(async move {
                 let g = generation.clone();
@@ -1079,6 +1142,28 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
         }
     };
     let run = Rc::new(run);
+    // Sets the scope (None = the whole folder) and searches again.
+    let set_scope = {
+        let (notes, entry, run) = (notes.clone(), entry.clone(), run.clone());
+        move |scope: Option<PathBuf>| {
+            let (scope, scoped_notes) = scoped(scope);
+            notes.replace(scoped_notes);
+            show_scope(scope.as_deref());
+            run(entry.text().to_string());
+        }
+    };
+    let set_scope: Rc<dyn Fn(Option<PathBuf>)> = Rc::new(set_scope);
+    scope_clear.connect_clicked(clone!(
+        #[strong]
+        set_scope,
+        #[weak]
+        entry,
+        move |_| {
+            set_scope(None);
+            entry.grab_focus();
+        }
+    ));
+    editor.find_set_scope.replace(Some(set_scope));
     entry.connect_search_changed(clone!(
         #[strong]
         run,
@@ -1153,8 +1238,11 @@ pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
     dialog.connect_closed(clone!(
         #[strong]
         generation,
+        #[weak]
+        editor,
         move |_| {
             generation.fetch_add(1, Ordering::SeqCst);
+            editor.find_set_scope.replace(None);
         }
     ));
 
