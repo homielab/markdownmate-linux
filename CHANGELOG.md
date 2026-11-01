@@ -6,9 +6,10 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+## 0.9.0
+
 - Smart punctuation (Preferences ▸ Preview, off by default): the preview, print, PDF / HTML / RTF exports and Copy as HTML / Rich Text show “curly quotes”, it’s, – and — for `--` and `---`, and … for `...`, while your note keeps the straight characters you typed. Code, URLs, tags and backslash-escaped characters are left as written. Line Breaks moved to the same Preview group.
 - Auto-pair brackets, backticks and quotes while typing: (, [, {, ` and " insert matching pairs and place the cursor between them; typing a closing character steps over it, and Backspace inside an empty pair deletes both. Can be turned off in Preferences ▸ Editor. Same as the macOS app.
-
 - Drag a note from the sidebar or Files into the editor to insert a `[[wiki link]]` to it at the drop point (`[[Folder/Name]]` when another note has the same name), so backlinks and rename updates work for it. The note stays where it is; notes outside the open folder and other files are still linked by relative path. Same as the macOS app.
 - Formatted dates and times in templates and Today's Note's `Template.md`: write `{{date:FORMAT}}` and `{{time:FORMAT}}` (e.g. `{{date:dddd, MMMM D, YYYY}}` → Sunday, November 1, 2026, `{{time:h:mm A}}` → 9:05 AM, `{{date:[Week] YY}}` → Week 26; `[…]` escapes literal text) so notes get dates the way you write them. Plain `{{date}}` and `{{time}}` work as before. Same as the macOS app.
 - The PPA now has builds for Ubuntu 26.04 LTS and 26.10 besides 24.04 LTS, so `sudo apt install markdownmate` works on each of them.

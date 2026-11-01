@@ -5,6 +5,17 @@
 # ignored, so the next release's entry can be written ahead.
 
 [[release]]
+version = "0.9.0"
+show = true
+notes = [
+    "Find Broken Links, Find Open Tasks and Find Unused Attachments in the main menu; Find in Folder from a folder's right-click menu.",
+    "Export Folder as HTML, and a preview of the linked note when you hover a [[wiki link]].",
+    "Tags and aliases in YAML front matter; New Note from Selection; Previous and Next Daily Note.",
+    "Templates: starter templates, {{time}}, {{cursor}} and formatted dates; auto-pairing of brackets and quotes; smart punctuation.",
+    "New Note and Today's Note in the dock icon's menu; drag a note into the editor to link it.",
+]
+
+[[release]]
 version = "0.8.0"
 show = true
 notes = [
