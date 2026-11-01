@@ -153,14 +153,39 @@ pub fn all_spans(text: &str) -> Vec<(usize, Range<usize>)> {
 }
 
 /// (0-based line, byte range in that line) of each tag value of the front matter's `tags:` /
-/// `tag:` keys (top level): flow list `[a, "b/c"]` (may span lines), block list (`- a` lines below the key) or
-/// string (`a, b` / `a b`). A range covers the value inside its quotes, with its `#` if
-/// written. Values that are not a whole tag (`#value` read by `in_line`) are skipped, and a
-/// YAML comment (`#` then a space) ends a value. `lines`: the front matter's line count
+/// `tag:` keys (top level), read by `front_matter_list` with values split at spaces too. A
+/// range covers the value inside its quotes, with its `#` if written. Values that are not a
+/// whole tag (`#value` read by `in_line`) are skipped. `lines`: the front matter's line count
 /// (`lists::front_matter_lines`).
 fn front_matter_values(text: &str, lines: usize) -> Vec<(usize, Range<usize>)> {
+    if !enabled() {
+        return Vec::new();
+    }
+    let rows: Vec<&str> = text.lines().take(lines).collect();
+    front_matter_list(text, lines, &["tags:", "tag:"], true)
+        .into_iter()
+        .filter(|(row, r)| {
+            let value = &rows[*row][r.clone()];
+            let tag = format!("#{}", value.strip_prefix('#').unwrap_or(value));
+            in_line(&tag).first() == Some(&(0..tag.len()))
+        })
+        .collect()
+}
+
+/// (0-based line, byte range in that line) of each value of the front matter's top-level
+/// `keys` (each with its `:`, as `"tags:"`): flow list `[a, "b c"]` (may span lines up to its
+/// `]`; unclosed within the front matter → none), block list (`- a` lines below the key) or
+/// string (split at commas, and at spaces if `spaces`). A range covers the value trimmed and
+/// inside its quotes; empty values are skipped, and a YAML comment (`#` then a space) ends a
+/// value. `lines`: the front matter's line count (`lists::front_matter_lines`).
+pub(crate) fn front_matter_list(
+    text: &str,
+    lines: usize,
+    keys: &[&str],
+    spaces: bool,
+) -> Vec<(usize, Range<usize>)> {
     let mut out = Vec::new();
-    if lines == 0 || !enabled() {
+    if lines == 0 {
         return out;
     }
     // The lines between the two `---`.
@@ -169,7 +194,7 @@ fn front_matter_values(text: &str, lines: usize) -> Vec<(usize, Range<usize>)> {
     while n < body.len() {
         let (row, line) = (n, body[n]);
         n += 1;
-        let Some(start) = tags_key(line) else {
+        let Some(start) = list_key(line, keys) else {
             continue;
         };
         let end = uncommented(line, start);
@@ -216,10 +241,12 @@ fn front_matter_values(text: &str, lines: usize) -> Vec<(usize, Range<usize>)> {
                 n += 1;
             }
         } else {
-            // String: quotes around the whole value dropped, then comma / space separated.
+            // String: quotes around the whole value dropped, then split.
             let (from, to) = unquoted(line, start, end);
             let mut at = from;
-            for part in line[from..to].split(|c: char| c == ',' || c.is_ascii_whitespace()) {
+            for part in
+                line[from..to].split(|c: char| c == ',' || spaces && c.is_ascii_whitespace())
+            {
                 push_value(&mut out, row, line, at, at + part.len());
                 at += part.len() + 1;
             }
@@ -228,11 +255,9 @@ fn front_matter_values(text: &str, lines: usize) -> Vec<(usize, Range<usize>)> {
     out
 }
 
-/// Where the value of a top-level `tags:` / `tag:` key starts in `line` (after the `:`).
-fn tags_key(line: &str) -> Option<usize> {
-    let rest = line
-        .strip_prefix("tags:")
-        .or_else(|| line.strip_prefix("tag:"))?;
+/// Where the value of a top-level key of `keys` starts in `line` (after the `:`).
+fn list_key(line: &str, keys: &[&str]) -> Option<usize> {
+    let rest = keys.iter().find_map(|k| line.strip_prefix(k))?;
     (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| line.len() - rest.len())
 }
 
@@ -264,7 +289,7 @@ fn unquoted(line: &str, from: usize, to: usize) -> (usize, usize) {
     }
 }
 
-/// Adds `line[from..to]` (trimmed, unquoted) as a tag value of line `row` if it is a whole tag.
+/// Adds `line[from..to]` (trimmed, unquoted) as a value of line `row` unless it is empty.
 fn push_value(
     out: &mut Vec<(usize, Range<usize>)>,
     row: usize,
@@ -273,10 +298,7 @@ fn push_value(
     to: usize,
 ) {
     let (from, to) = unquoted(line, from, to);
-    let value = &line[from..to];
-    let name = value.strip_prefix('#').unwrap_or(value);
-    let tag = format!("#{name}");
-    if in_line(&tag).first() == Some(&(0..tag.len())) {
+    if from < to {
         out.push((row, from..to));
     }
 }

@@ -36,18 +36,23 @@ pub struct Mention {
     pub spot: Spot,
 }
 
-/// The notes among `notes` (other than `target`) mentioning `target`'s name, one entry per
-/// note (its first mention), in `notes` order. Unreadable or non-UTF-8 notes are skipped.
-/// Returns None as soon as `cancelled()` is true.
+/// The notes among `notes` (other than `target`) mentioning `target`'s name or one of its
+/// front-matter `aliases`, one entry per note (its first mention of any of them), in `notes`
+/// order. Names and aliases shorter than MIN_NAME_CHARS are not looked for. Unreadable or
+/// non-UTF-8 notes are skipped. Returns None as soon as `cancelled()` is true.
 pub fn find(
     notes: &[PathBuf],
     target: &Path,
+    aliases: &[String],
     cancelled: &dyn Fn() -> bool,
 ) -> Option<Vec<Mention>> {
-    let Some(name) = target.file_stem().and_then(|s| s.to_str()) else {
-        return Some(Vec::new());
-    };
-    if name.chars().count() < MIN_NAME_CHARS {
+    let stem = target.file_stem().and_then(|s| s.to_str());
+    let names: Vec<&str> = stem
+        .into_iter()
+        .chain(aliases.iter().map(String::as_str))
+        .filter(|n| n.trim().chars().count() >= MIN_NAME_CHARS)
+        .collect();
+    if names.is_empty() {
         return Some(Vec::new());
     }
     let mut out = Vec::new();
@@ -58,7 +63,11 @@ pub fn find(
         let Some(text) = find::read_utf8(note) else {
             continue;
         };
-        if let Some(spot) = first_mention(name, &text) {
+        let first = names
+            .iter()
+            .filter_map(|name| first_mention(name, &text))
+            .min_by_key(|s| (s.line, s.column, std::cmp::Reverse(s.text.len())));
+        if let Some(spot) = first {
             out.push(Mention {
                 path: note.clone(),
                 version: find::version(&text),
@@ -252,7 +261,7 @@ mod tests {
         std::fs::write(&b, "[[Plan]] only\n").unwrap();
         std::fs::write(&ab, [0xff, 0xfe]).unwrap();
         let notes = vec![a.clone(), b, plan.clone(), ab.clone()];
-        let found = find(&notes, &plan, &|| false).unwrap();
+        let found = find(&notes, &plan, &[], &|| false).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(
             (found[0].path.as_path(), found[0].spot.line),
@@ -263,8 +272,47 @@ mod tests {
             found[0].version,
             find::version("intro\n[[Plan]]\nour plan, and ab\n")
         );
-        assert_eq!(find(&notes, &ab, &|| false), Some(Vec::new()));
-        assert_eq!(find(&notes, &plan, &|| true), None);
+        assert_eq!(find(&notes, &ab, &[], &|| false), Some(Vec::new()));
+        assert_eq!(find(&notes, &plan, &[], &|| true), None);
+    }
+
+    #[test]
+    fn find_looks_for_aliases_too() {
+        let tmp = TempDir::new("aliases");
+        let dir = &tmp.0;
+        let (note, a, b, c) = (
+            dir.join("Note.md"),
+            dir.join("A.md"),
+            dir.join("B.md"),
+            dir.join("C.md"),
+        );
+        std::fs::write(&note, "---\naliases: [MN, Meeting notes]\n---\n").unwrap();
+        std::fs::write(&a, "x\nafter the meeting notes and the note\n").unwrap();
+        std::fs::write(&b, "MN only, and [[Meeting notes]]\n").unwrap();
+        std::fs::write(&c, "Meeting notes, in short: notes\n").unwrap();
+        let notes = vec![a.clone(), b, c.clone(), note.clone()];
+        let aliases = ["MN".to_string(), "Meeting notes".to_string()];
+        let found = find(&notes, &note, &aliases, &|| false).unwrap();
+        let spots: Vec<(&Path, usize, &str)> = found
+            .iter()
+            .map(|m| (m.path.as_path(), m.spot.line, m.spot.text.as_str()))
+            .collect();
+        // The first mention of the name or an alias; "MN" is too short; links skipped.
+        assert_eq!(
+            spots,
+            [
+                (a.as_path(), 2, "meeting notes"),
+                (c.as_path(), 1, "Meeting notes")
+            ]
+        );
+        assert_eq!(
+            link_text(&found[0].spot.text, &note, &notes, dir),
+            "[[Note|meeting notes]]"
+        );
+        // A short stem still lets the aliases be found.
+        let ab = dir.join("Ab.md");
+        let found = find(&notes[..3], &ab, &aliases, &|| false).unwrap();
+        assert_eq!(found.len(), 2);
     }
 
     #[test]

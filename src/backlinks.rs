@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
+use crate::aliases::Aliases;
 use crate::links::{self, Target};
 use crate::render::WikiIndex;
 use crate::{lists, state};
@@ -26,8 +27,8 @@ pub struct Backlink {
 /// Lines of `notes` (other than `target`) linking to `target`, in `notes` order, reading
 /// every note: the reference the index is checked against.
 #[cfg(test)]
-pub fn find(notes: Vec<PathBuf>, root: &Path, target: &Path) -> Vec<Backlink> {
-    let index = WikiIndex::new(notes, root);
+pub fn find(notes: Vec<PathBuf>, aliases: &Aliases, root: &Path, target: &Path) -> Vec<Backlink> {
+    let index = WikiIndex::with_aliases(notes, root, aliases);
     let mut out = Vec::new();
     for note in index.notes().iter().filter(|n| n.as_path() != target) {
         let Some(text) = read(note) else {
@@ -91,12 +92,15 @@ fn link_lines(text: &str, note: &Path) -> Vec<LinkLine> {
 
 /// Every note's links, read once and kept up to date, so the Backlinks of a note are a lookup
 /// instead of a read of the whole folder. Wiki links are resolved through a `WikiIndex` of the
-/// current note list; when that list changes (a note created, renamed, moved or deleted) every
-/// link is resolved again, from memory.
+/// current note list and its front-matter aliases; when either changes (a note created,
+/// renamed, moved or deleted, an alias added or removed) every link is resolved again, from
+/// memory.
 #[derive(Debug, Default)]
 pub struct LinkIndex {
     root: PathBuf,
     wiki: WikiIndex,
+    /// `Aliases::fingerprint` of the aliases `wiki` resolves with.
+    aliases: u64,
     /// Position of each note in the note list (Backlinks keep that order).
     order: HashMap<PathBuf, usize>,
     /// The link lines of each note of the list (none if unreadable).
@@ -106,18 +110,25 @@ pub struct LinkIndex {
 }
 
 impl LinkIndex {
-    /// Brings the index in line with the note list `notes` of the folder `root`: notes new to
-    /// it are read, notes no longer in it dropped, and `changed` notes read again (their text
-    /// changed on disk). Reads nothing else.
-    pub fn sync(&mut self, notes: &[PathBuf], root: &Path, changed: &HashSet<PathBuf>) {
+    /// Brings the index in line with the note list `notes` of the folder `root` and their
+    /// `aliases`: notes new to it are read, notes no longer in it dropped, and `changed` notes
+    /// read again (their text changed on disk). Reads nothing else.
+    pub fn sync(
+        &mut self,
+        notes: &[PathBuf],
+        aliases: &Aliases,
+        root: &Path,
+        changed: &HashSet<PathBuf>,
+    ) {
         if self.root != root {
             *self = LinkIndex {
                 root: root.to_path_buf(),
                 ..LinkIndex::default()
             };
         }
-        if notes != self.wiki.notes() {
-            self.wiki = WikiIndex::new(notes.to_vec(), root);
+        if notes != self.wiki.notes() || aliases.fingerprint() != self.aliases {
+            self.wiki = WikiIndex::with_aliases(notes.to_vec(), root, aliases);
+            self.aliases = aliases.fingerprint();
             self.order = notes.iter().cloned().zip(0..).collect();
             let order = &self.order;
             self.lines.retain(|note, _| order.contains_key(note));
@@ -305,7 +316,7 @@ mod tests {
         let long = format!("  see [[Name]] {}", "x".repeat(200));
         std::fs::write(&a, format!("intro\n{long}\n")).unwrap();
         let notes = vec![a.clone(), name.clone()];
-        let found = find(notes, &dir, &name);
+        let found = find(notes, &Aliases::default(), &dir, &name);
         assert_eq!(found.len(), 1);
         assert_eq!((found[0].path.as_path(), found[0].line), (a.as_path(), 2));
         assert!(found[0].snippet.starts_with("see [[Name]] x"));
@@ -342,8 +353,12 @@ mod tests {
     }
 
     fn same_as_scan(index: &LinkIndex, notes: &[PathBuf], dir: &Path) {
+        same_with_aliases(index, notes, &Aliases::default(), dir);
+    }
+
+    fn same_with_aliases(index: &LinkIndex, notes: &[PathBuf], aliases: &Aliases, dir: &Path) {
         for target in notes {
-            let scan = find(notes.to_vec(), dir, target);
+            let scan = find(notes.to_vec(), aliases, dir, target);
             assert_eq!(index.backlinks(target), scan, "{}", target.display());
         }
     }
@@ -354,24 +369,32 @@ mod tests {
         let mut notes = sample(&dir);
         let mut index = LinkIndex::default();
         let none = HashSet::new();
-        index.sync(&notes, &dir, &none);
+        index.sync(&notes, &Aliases::default(), &dir, &none);
         same_as_scan(&index, &notes, &dir);
         assert!(!index.backlinks(&dir.join("Name.md")).is_empty());
 
         // An edit on disk, reported as changed.
         let a = dir.join("A.md");
         std::fs::write(&a, "[[Sub/Name]]\n\n[[My Note]]\n").unwrap();
-        index.sync(&notes, &dir, &HashSet::from([a.clone()]));
+        index.sync(
+            &notes,
+            &Aliases::default(),
+            &dir,
+            &HashSet::from([a.clone()]),
+        );
         same_as_scan(&index, &notes, &dir);
 
         // A rename: `[[Name]]` from the root now resolves to Sub/Name.md.
         let (old, new) = (dir.join("Name.md"), dir.join("Renamed.md"));
         std::fs::rename(&old, &new).unwrap();
         notes[0] = new.clone();
-        index.sync(&notes, &dir, &none);
+        index.sync(&notes, &Aliases::default(), &dir, &none);
         same_as_scan(&index, &notes, &dir);
         // Markdown links to the old path still point there, as in the scan.
-        assert_eq!(index.backlinks(&old), find(notes.clone(), &dir, &old));
+        assert_eq!(
+            index.backlinks(&old),
+            find(notes.clone(), &Aliases::default(), &dir, &old)
+        );
 
         // A move into a folder, a new note and a deleted one.
         let moved = dir.join("Sub/Deep/A.md");
@@ -382,7 +405,7 @@ mod tests {
         notes.push(added);
         std::fs::remove_file(&notes[2]).unwrap();
         notes.remove(2);
-        index.sync(&notes, &dir, &none);
+        index.sync(&notes, &Aliases::default(), &dir, &none);
         same_as_scan(&index, &notes, &dir);
 
         // Another folder starts over.
@@ -392,8 +415,49 @@ mod tests {
             .filter(|n| n.starts_with(&other))
             .cloned()
             .collect();
-        index.sync(&inside, &other, &none);
+        index.sync(&inside, &Aliases::default(), &other, &none);
         same_as_scan(&index, &inside, &other);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn alias_links_are_backlinks() {
+        let dir = std::env::temp_dir().join(format!("mm-aliaslinks-{}", std::process::id()));
+        struct Clean(PathBuf);
+        impl Drop for Clean {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _clean = Clean(dir.clone());
+        std::fs::create_dir_all(&dir).unwrap();
+        let (note, a, mn) = (dir.join("Note.md"), dir.join("A.md"), dir.join("MN.md"));
+        std::fs::write(&note, "---\naliases: [MN, Meeting notes]\n---\n# Note\n").unwrap();
+        std::fs::write(
+            &a,
+            "[[Meeting notes#Agenda]]\n[[MN|x]]\n[[meeting NOTES|y]]\n",
+        )
+        .unwrap();
+        let notes = vec![note.clone(), a.clone()];
+        let aliases = crate::aliases::index(&notes);
+        let mut index = LinkIndex::default();
+        let none = HashSet::new();
+        // Synced before the aliases were read: no alias resolves yet.
+        index.sync(&notes, &Aliases::default(), &dir, &none);
+        assert!(index.backlinks(&note).is_empty());
+        index.sync(&notes, &aliases, &dir, &none);
+        let lines: Vec<usize> = index.backlinks(&note).iter().map(|b| b.line).collect();
+        assert_eq!(lines, [1, 2, 3]);
+        same_with_aliases(&index, &notes, &aliases, &dir);
+
+        // A note named MN takes `[[MN]]` over the alias.
+        std::fs::write(&mn, "# MN\n").unwrap();
+        let notes = vec![note.clone(), a.clone(), mn.clone()];
+        let aliases = crate::aliases::index(&notes);
+        index.sync(&notes, &aliases, &dir, &none);
+        let lines: Vec<usize> = index.backlinks(&note).iter().map(|b| b.line).collect();
+        assert_eq!(lines, [1, 3]);
+        assert_eq!(index.backlinks(&mn).len(), 1);
+        same_with_aliases(&index, &notes, &aliases, &dir);
     }
 }

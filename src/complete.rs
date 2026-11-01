@@ -4,11 +4,15 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::render::HeadingTarget;
-use crate::{lists, tags};
+use crate::aliases::Aliases;
+use crate::render::{self, HeadingTarget};
+use crate::{lists, quick, tags};
 
 /// Most suggestions shown.
 pub const LIMIT: usize = 8;
+
+/// Rows of `[[` completion kept for aliases when enough of them match.
+const ALIAS_ROWS: usize = 3;
 
 /// The query typed after an unclosed `[[` on the cursor's line: `line` is the line up to the
 /// cursor, `above` the text before the line (to skip fenced code). `None` when the link is
@@ -32,6 +36,50 @@ pub fn link_name(path: &Path, notes: &[PathBuf], root: &Path) -> String {
         PathBuf::from(path.file_stem().unwrap_or_default())
     };
     name.to_string_lossy().into_owned()
+}
+
+/// `[[` completion for `query`: (label, text to insert). Note names first (`quick::search`,
+/// as `link_name`), then the aliases matching the query (starting with it, then holding its
+/// letters in order) as "alias → Note", inserting the alias; up to `ALIAS_ROWS` of the
+/// `LIMIT` rows go to aliases. An alias some note is named after, or that resolves to another
+/// note from `current` (several notes with one alias), is left out. No aliases for an empty
+/// query.
+pub fn note_suggestions(
+    query: &str,
+    notes: &[PathBuf],
+    aliases: &Aliases,
+    root: &Path,
+    current: Option<&Path>,
+) -> Vec<(String, String)> {
+    let all = aliases.all();
+    let found: Vec<(String, String)> = if query.trim().is_empty() {
+        Vec::new()
+    } else {
+        matching(query, &all, |(_, alias)| alias.as_str())
+            .into_iter()
+            .filter(|(note, alias)| {
+                render::resolve_wiki(alias, notes, root, current).is_none()
+                    && render::resolve_wiki_with(alias, notes, aliases, root, current)
+                        == Some(*note)
+            })
+            .map(|(note, alias)| {
+                let name = link_name(note, notes, root);
+                (format!("{alias} → {name}"), alias.to_string())
+            })
+            .collect()
+    };
+    let names = LIMIT - found.len().min(ALIAS_ROWS);
+    let mut out: Vec<(String, String)> = quick::search(query, notes, root)
+        .into_iter()
+        .take(names)
+        .map(|p| {
+            let name = link_name(p, notes, root);
+            (name.clone(), name)
+        })
+        .collect();
+    let left = LIMIT - out.len();
+    out.extend(found.into_iter().take(left));
+    out
 }
 
 /// Text replacing the query: the name, then `]]` unless `after` (the line after the cursor)
@@ -201,6 +249,72 @@ pub fn heading_suggestions<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn suggests_aliases_after_names() {
+        let root = PathBuf::from("/r");
+        let note = root.join("Note.md");
+        let mn = root.join("MN.md");
+        let other = root.join("Other.md");
+        let mut notes = vec![note.clone(), other.clone()];
+        let aliases = Aliases::new(
+            [
+                (
+                    note.clone(),
+                    vec!["MN".to_string(), "Meeting notes".to_string()],
+                ),
+                (other.clone(), vec!["Minutes".to_string()]),
+            ]
+            .into(),
+        );
+        let got = note_suggestions("m", &notes, &aliases, &root, None);
+        // Names first ("m" in order in both), then the aliases.
+        assert_eq!(
+            got[2..],
+            [
+                ("MN → Note".to_string(), "MN".to_string()),
+                (
+                    "Meeting notes → Note".to_string(),
+                    "Meeting notes".to_string()
+                ),
+                ("Minutes → Other".to_string(), "Minutes".to_string()),
+            ]
+        );
+        let got = note_suggestions("no", &notes, &aliases, &root, None);
+        assert_eq!(got[0], ("Note".to_string(), "Note".to_string()));
+        assert!(got.contains(&(
+            "Meeting notes → Note".to_string(),
+            "Meeting notes".to_string()
+        )));
+        // A note named MN wins: its alias is not offered.
+        notes.push(mn);
+        let got = note_suggestions("mn", &notes, &aliases, &root, None);
+        assert_eq!(got[0], ("MN".to_string(), "MN".to_string()));
+        assert!(!got.iter().any(|(label, _)| label.starts_with("MN →")));
+        // Nothing typed: names only.
+        let got = note_suggestions("", &notes, &aliases, &root, None);
+        assert!(got.iter().all(|(label, _)| !label.contains('→')));
+    }
+
+    #[test]
+    fn keeps_rows_for_aliases() {
+        let root = PathBuf::from("/r");
+        let notes: Vec<PathBuf> = (0..12)
+            .map(|i| root.join(format!("Alpha {i}.md")))
+            .collect();
+        let aliases = Aliases::new(
+            (0..5)
+                .map(|i| (notes[i].clone(), vec![format!("Al{i}")]))
+                .collect(),
+        );
+        let got = note_suggestions("al", &notes, &aliases, &root, None);
+        assert_eq!(got.len(), LIMIT);
+        assert_eq!(
+            got.iter().filter(|(l, _)| l.contains('→')).count(),
+            ALIAS_ROWS
+        );
+        assert_eq!(got[LIMIT - ALIAS_ROWS].1, "Al0");
+    }
 
     fn idx(tags: &[(&str, usize)]) -> Vec<(String, Vec<PathBuf>)> {
         tags.iter()

@@ -382,6 +382,17 @@ mod tests {
     }
 
     #[test]
+    fn front_matter_alias_links_are_left_alone() {
+        // Name.md goes by "Nick" (an alias, not a note name): renaming it keeps `[[Nick]]`.
+        let p = plan("/n/Name.md", "/n/New Name.md");
+        let text = "[[Nick]] [[nick#Part|x]] [[Name]]\n";
+        assert_eq!(
+            rewrite(&p, text, "/n/A.md"),
+            "[[Nick]] [[nick#Part|x]] [[New Name]]\n"
+        );
+    }
+
+    #[test]
     fn wiki_links_keep_alias_and_heading() {
         let p = plan("/n/Name.md", "/n/New Name.md");
         assert_eq!(

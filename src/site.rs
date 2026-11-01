@@ -27,7 +27,7 @@ use gtk::glib;
 
 use crate::editor::Editor;
 use crate::notes::{self, Node, SortOrder};
-use crate::{file_name, preview, quick, render, state};
+use crate::{aliases, file_name, preview, quick, render, state};
 
 /// The tree page at the destination's root.
 pub const INDEX: &str = "index.html";
@@ -91,7 +91,8 @@ pub fn export(
         .collect();
     let pages = page_paths(&rels);
     progress.total.store(paths.len(), Ordering::Relaxed);
-    let wiki = render::WikiIndex::new(paths.clone(), root);
+    let aliases = aliases::index(&paths);
+    let wiki = render::WikiIndex::with_aliases(paths.clone(), root, &aliases);
     let job = Job {
         root,
         real_root: root.canonicalize()?,
@@ -853,6 +854,23 @@ mod tests {
         t.write("x.txt", "x");
         assert!(check_destination(&t.0).is_err());
         assert!(check_destination(&t.0.join("missing")).is_err());
+    }
+
+    #[test]
+    fn rewrites_alias_links_to_the_note_page() {
+        let src = TempDir::new("src-aliases");
+        let dest = TempDir::new("dest-aliases");
+        src.write(
+            "Notes/Note.md",
+            "---\naliases: [MN, Meeting notes]\n---\n# Note\n\n## Agenda\n",
+        );
+        src.write("Home.md", "[[MN]] [[meeting notes#Agenda|x]] [[Gone]]\n");
+        let progress = Progress::default();
+        export(&src.0, &dest.0, SortOrder::Name, &progress).unwrap();
+        let home = dest.read("Home.html");
+        assert!(home.contains("href=\"Notes/Note.html\""), "{home}");
+        assert!(home.contains("href=\"Notes/Note.html#agenda\""), "{home}");
+        assert!(!home.contains("href=\"Gone"), "{home}");
     }
 
     #[test]

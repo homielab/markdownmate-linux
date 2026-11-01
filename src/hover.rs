@@ -277,8 +277,9 @@ impl Hover {
             key.note.clone()
         } else {
             let notes = editor.note_list.borrow().clone();
+            let aliases = editor.aliases.borrow().clone();
             let root = editor.root.borrow().clone().unwrap_or_default();
-            render::resolve_wiki(note, &notes, &root, key.note.as_deref()).cloned()
+            render::resolve_wiki_with(note, &notes, &aliases, &root, key.note.as_deref()).cloned()
         };
         let Some(path) = path else {
             return State::Ready {

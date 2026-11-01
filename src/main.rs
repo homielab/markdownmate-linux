@@ -1,4 +1,5 @@
 mod about;
+mod aliases;
 mod backlinks;
 mod complete;
 mod daily;

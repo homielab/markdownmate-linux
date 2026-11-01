@@ -7,7 +7,7 @@ use gtk::glib::{self, clone};
 use sourceview5::prelude::*;
 
 use crate::editor::Editor;
-use crate::{complete, format, images, lines, lists, paste, quick, relink, render, table};
+use crate::{complete, format, images, lines, lists, paste, relink, render, table};
 
 /// What the completion list offers.
 #[derive(Clone, Copy, PartialEq)]
@@ -130,11 +130,9 @@ impl Completer {
                 .collect(),
             Kind::Note => {
                 let (notes, root) = (editor.note_list.borrow().clone(), root.unwrap_or_default());
-                quick::search(&query, &notes, &root)
-                    .into_iter()
-                    .take(complete::LIMIT)
-                    .map(|p| same(&complete::link_name(p, &notes, &root)))
-                    .collect()
+                let aliases = editor.aliases.borrow().clone();
+                let current = editor.path.borrow().clone();
+                complete::note_suggestions(&query, &notes, &aliases, &root, current.as_deref())
             }
             Kind::Heading => {
                 let text = self.heading_source(editor, &note, root.as_deref());
@@ -184,7 +182,10 @@ impl Completer {
             None
         } else {
             let notes = editor.note_list.borrow().clone();
-            let path = render::resolve_wiki(note, &notes, root?, current.as_deref())?.clone();
+            let aliases = editor.aliases.borrow().clone();
+            let path =
+                render::resolve_wiki_with(note, &notes, &aliases, root?, current.as_deref())?
+                    .clone();
             Some(path).filter(|p| current.as_ref() != Some(p))
         };
         match path {

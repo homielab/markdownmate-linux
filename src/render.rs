@@ -5,6 +5,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, PoisonError};
 
+use crate::aliases::{self, Aliases};
 use crate::state::{TextWidth, Theme};
 use crate::{state, tags};
 
@@ -1178,7 +1179,7 @@ pub fn resolve_wiki<'a>(
 
 /// `target` as `resolve_wiki` compares it: no `#heading`, no outer `/`, no extension, lower
 /// case; None when nothing is left.
-fn wiki_key(target: &str) -> Option<String> {
+pub(crate) fn wiki_key(target: &str) -> Option<String> {
     let target = target
         .split('#')
         .next()
@@ -1207,40 +1208,83 @@ fn best_wiki_match<'a>(
     root: &Path,
     current: Option<&Path>,
 ) -> Option<&'a PathBuf> {
-    let here = current.and_then(Path::parent);
     let suffix = format!("/{target}");
-    notes
-        .filter(|p| {
+    nearest(
+        notes.filter(|p| {
             let rel = note_key(p, root);
             rel == target || rel.ends_with(&suffix)
-        })
-        .min_by_key(|p| (p.parent() != here, p.as_os_str().len(), p.as_os_str()))
+        }),
+        current,
+    )
 }
 
-/// `resolve_wiki` for many links against the same notes (Backlinks, link updates): the notes
-/// grouped by the last part of their name, so a link only compares the notes of its name
-/// instead of every note of the folder. Same results as `resolve_wiki`.
+/// Of several notes a link may mean, the one in `current`'s folder, else the shortest path.
+fn nearest<'a>(
+    notes: impl Iterator<Item = &'a PathBuf>,
+    current: Option<&Path>,
+) -> Option<&'a PathBuf> {
+    let here = current.and_then(Path::parent);
+    notes.min_by_key(|p| (p.parent() != here, p.as_os_str().len(), p.as_os_str()))
+}
+
+/// `resolve_wiki`, then, when no note has that name, the note of `notes` with that front-matter
+/// alias (several: the same rule as for names).
+pub fn resolve_wiki_with<'a>(
+    target: &str,
+    notes: &'a [PathBuf],
+    aliases: &Aliases,
+    root: &Path,
+    current: Option<&Path>,
+) -> Option<&'a PathBuf> {
+    resolve_wiki(target, notes, root, current).or_else(|| {
+        let found = aliases.notes(target);
+        if found.is_empty() {
+            return None;
+        }
+        nearest(notes.iter().filter(|n| found.contains(n)), current)
+    })
+}
+
+/// `resolve_wiki` for many links against the same notes (Backlinks, link updates, Export
+/// Folder): the notes grouped by the last part of their name, so a link only compares the
+/// notes of its name instead of every note of the folder. Same results as `resolve_wiki`, or
+/// `resolve_wiki_with` when made `with_aliases`.
 #[derive(Debug, Clone, Default)]
 pub struct WikiIndex {
     root: PathBuf,
     notes: Vec<PathBuf>,
     by_name: HashMap<String, Vec<usize>>,
+    /// Alias key (`aliases::key`) → the notes with that alias.
+    by_alias: HashMap<String, Vec<usize>>,
 }
 
 impl WikiIndex {
+    /// Names only: link updates leave `[[alias]]` links alone.
     pub fn new(notes: Vec<PathBuf>, root: &Path) -> Self {
+        Self::with_aliases(notes, root, &Aliases::default())
+    }
+
+    pub fn with_aliases(notes: Vec<PathBuf>, root: &Path, aliases: &Aliases) -> Self {
         let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut by_alias: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, note) in notes.iter().enumerate() {
             let key = note_key(note, root);
             by_name
                 .entry(last_part(&key).to_string())
                 .or_default()
                 .push(i);
+            for key in aliases.of(note).iter().filter_map(|a| aliases::key(a)) {
+                let found = by_alias.entry(key).or_default();
+                if found.last() != Some(&i) {
+                    found.push(i);
+                }
+            }
         }
         WikiIndex {
             root: root.to_path_buf(),
             notes,
             by_name,
+            by_alias,
         }
     }
 
@@ -1249,14 +1293,19 @@ impl WikiIndex {
     }
 
     pub fn resolve(&self, target: &str, current: Option<&Path>) -> Option<&PathBuf> {
-        let target = wiki_key(target)?;
-        let found = self.by_name.get(last_part(&target))?;
-        best_wiki_match(
-            found.iter().map(|&i| &self.notes[i]),
-            &target,
-            &self.root,
-            current,
-        )
+        let key = wiki_key(target)?;
+        let named = self.by_name.get(last_part(&key)).and_then(|found| {
+            best_wiki_match(
+                found.iter().map(|&i| &self.notes[i]),
+                &key,
+                &self.root,
+                current,
+            )
+        });
+        named.or_else(|| {
+            let found = self.by_alias.get(&aliases::key(target)?)?;
+            nearest(found.iter().map(|&i| &self.notes[i]), current)
+        })
     }
 }
 
@@ -2947,6 +2996,62 @@ mod tests {
             }
         }
         assert_eq!(index.notes(), &notes[..]);
+    }
+
+    #[test]
+    fn aliases_resolve_when_no_note_has_the_name() {
+        let root = Path::new("/r");
+        let notes: Vec<PathBuf> = [
+            "/r/Note.md",
+            "/r/MN.md",
+            "/r/Work/Plan.md",
+            "/r/Work/Deep/Other.md",
+            "/r/Elsewhere/Third.md",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+        let of =
+            |n: &str, a: &[&str]| (PathBuf::from(n), a.iter().map(|s| s.to_string()).collect());
+        let aliases = Aliases::new(HashMap::from([
+            of("/r/Note.md", &["MN", "Meeting notes", "Café"]),
+            of("/r/Work/Deep/Other.md", &["Shared"]),
+            of("/r/Elsewhere/Third.md", &["Shared"]),
+            of("/r/Gone.md", &["Gone alias"]),
+        ]));
+        let index = WikiIndex::with_aliases(notes.clone(), root, &aliases);
+        let plain = WikiIndex::new(notes.clone(), root);
+        for (target, cur, want) in [
+            // A real note name wins over an alias.
+            ("mn", None, Some("/r/MN.md")),
+            ("Meeting notes#Agenda", None, Some("/r/Note.md")),
+            ("MEETING NOTES", None, Some("/r/Note.md")),
+            ("Cafe\u{301}", None, Some("/r/Note.md")),
+            // Several notes with one alias: this folder first, then the shortest path.
+            ("Shared", None, Some("/r/Elsewhere/Third.md")),
+            (
+                "Shared",
+                Some("/r/Work/Deep/x.md"),
+                Some("/r/Work/Deep/Other.md"),
+            ),
+            // Only notes of the list; folders don't apply to aliases.
+            ("Gone alias", None, None),
+            ("Work/Meeting notes", None, None),
+            ("Plan", None, Some("/r/Work/Plan.md")),
+        ] {
+            let cur = cur.map(Path::new);
+            let got = resolve_wiki_with(target, &notes, &aliases, root, cur);
+            assert_eq!(got.map(|p| p.to_str().unwrap()), want, "{target}");
+            assert_eq!(index.resolve(target, cur), got, "{target}");
+        }
+        assert_eq!(plain.resolve("Meeting notes", None), None);
+        // A link to an alias is not missing in the preview.
+        let wiki = |t: &str| resolve_wiki_with(t, &notes, &aliases, root, None).cloned();
+        let p = page("[[Meeting notes|x]]", false, Theme::Default, false, &wiki);
+        assert!(
+            p.contains("/r/Note.md") && !p.contains("href=\"mm-missing"),
+            "{p}"
+        );
     }
 
     #[test]

@@ -19,9 +19,9 @@ use crate::{
     STATUS_DELAY, TABLE_STYLE, TAG_STYLE, UNTITLED, file_name, state_file,
 };
 use crate::{
-    backlinks, complete, extract, favorites, find, images, links, lists, mentions, naming, notes,
-    outline, quick, relink, render, retag, save, sidebar, state, stats, tags, templates, timing,
-    title, url,
+    aliases, backlinks, complete, extract, favorites, find, images, links, lists, mentions, naming,
+    notes, outline, quick, relink, render, retag, save, sidebar, state, stats, tags, templates,
+    timing, title, url,
 };
 
 /// The window's widgets and the open note. Shared (Rc) by sidebar buttons, the auto-save
@@ -128,6 +128,10 @@ pub(crate) struct Editor {
     pub(crate) favorites: RefCell<Vec<PathBuf>>,
     /// Every note from the last scan, for Open Quickly.
     pub(crate) note_list: RefCell<Rc<Vec<PathBuf>>>,
+    /// The front-matter aliases of those notes (`load_aliases`; `[[alias]]` links resolve
+    /// through them), and the number of the last listing started.
+    pub(crate) aliases: RefCell<Arc<aliases::Aliases>>,
+    pub(crate) aliases_gen: Cell<u64>,
     /// Sidebar Tags panel and its list; the tags shown (row i = tag_index[i]); the number of
     /// the last tag listing started and the pending one.
     pub(crate) tags_panel: gtk::Box,
@@ -584,12 +588,13 @@ impl Editor {
     ) -> Option<impl FnOnce() -> T + Send + 'static> {
         let root = self.root.borrow().clone()?;
         let notes = self.note_list.borrow().to_vec(); // the Rc cannot cross threads
+        let aliases = Arc::clone(&self.aliases.borrow());
         let changed = self.links_changed.take();
         let index = Arc::clone(&self.link_index);
         Some(move || {
             // A sync that panicked left at worst a partly updated index; the next one fixes it.
             let mut index = index.lock().unwrap_or_else(|e| e.into_inner());
-            index.sync(&notes, &root, &changed);
+            index.sync(&notes, &aliases, &root, &changed);
             then(&index)
         })
     }
@@ -633,12 +638,13 @@ impl Editor {
             return;
         }
         let notes = self.note_list.borrow().to_vec(); // the Rc cannot cross threads
+        let names = self.aliases.borrow().of(&target).to_vec();
         let current = self.mentions_gen.clone();
         let weak = Rc::downgrade(self);
         let searched = target.clone();
         glib::spawn_future_local(async move {
             let Ok(Some(found)) = gio::spawn_blocking(move || {
-                mentions::find(&notes, &searched, &|| {
+                mentions::find(&notes, &searched, &names, &|| {
                     current.load(Ordering::SeqCst) != generation
                 })
             })
@@ -1195,7 +1201,14 @@ impl Editor {
                 let notes = self.note_list.borrow().clone();
                 let root = self.root.borrow().clone().unwrap_or_default();
                 let current = self.path.borrow().clone();
-                let link = match render::resolve_wiki(&name, &notes, &root, current.as_deref()) {
+                let aliases = self.aliases.borrow().clone();
+                let link = match render::resolve_wiki_with(
+                    &name,
+                    &notes,
+                    &aliases,
+                    &root,
+                    current.as_deref(),
+                ) {
                     Some(path) => render::Link::Note(path.clone()),
                     None => render::Link::Missing(name),
                 };
@@ -1472,8 +1485,37 @@ impl Editor {
         });
     }
 
-    /// Re-lists tags (and Backlinks, if shown) RESCAN_DELAY after a note's content changed on
-    /// disk.
+    /// Reads the front-matter aliases of the last scan's notes on a background thread; a
+    /// result older than the last request is dropped. When they changed, wiki links resolve
+    /// again: the preview, Backlinks and Unlinked Mentions are refreshed.
+    pub(crate) fn load_aliases(self: &Rc<Self>) {
+        let generation = self.aliases_gen.get() + 1;
+        self.aliases_gen.set(generation);
+        let notes = self.note_list.borrow().clone();
+        let weak = Rc::downgrade(self);
+        let start = Instant::now();
+        glib::spawn_future_local(async move {
+            let list = notes.to_vec();
+            let Ok(found) = gio::spawn_blocking(move || aliases::index(&list)).await else {
+                return;
+            };
+            let Some(editor) = weak.upgrade() else { return };
+            if editor.aliases_gen.get() != generation {
+                return;
+            }
+            timing::took(start, "aliases indexed");
+            if **editor.aliases.borrow() == found {
+                return;
+            }
+            editor.aliases.replace(Arc::new(found));
+            editor.refresh_preview();
+            editor.refresh_backlinks();
+            editor.refresh_mentions();
+        });
+    }
+
+    /// Re-lists tags and aliases (and Backlinks, if shown) RESCAN_DELAY after a note's content
+    /// changed on disk.
     pub(crate) fn schedule_tags_index(self: &Rc<Self>) {
         if let Some(id) = self.tags_timer.take() {
             id.remove();
@@ -1482,6 +1524,7 @@ impl Editor {
         let id = glib::timeout_add_local_once(RESCAN_DELAY, move || {
             editor.tags_timer.take();
             editor.load_tags();
+            editor.load_aliases();
             editor.refresh_backlinks();
         });
         self.tags_timer.replace(Some(id));
@@ -1548,6 +1591,7 @@ impl Editor {
         }
         self.split.set_sidebar(Some(&side));
         self.load_tags();
+        self.load_aliases();
         // Show it at once, not animated: libadwaita 1.5 starts the slide-in with velocity
         // 0 / (hidden sidebar width 0) = NaN, which on x86 gives the content a width near i32::MIN
         // (Gtk-WARNING size_allocate). The animation is skipped while animations are off.

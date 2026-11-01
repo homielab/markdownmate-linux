@@ -396,6 +396,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         applied_gen: Cell::new(0),
         scan_dir: RefCell::new(None),
         note_list: RefCell::default(),
+        aliases: RefCell::default(),
+        aliases_gen: Cell::new(0),
         tags_panel,
         tags_list: tags_list.clone(),
         tag_index: RefCell::default(),
