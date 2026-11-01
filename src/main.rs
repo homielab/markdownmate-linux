@@ -8,6 +8,7 @@ mod complete;
 mod daily;
 mod diagrams;
 mod dialogs;
+mod droplink;
 mod editor;
 mod extract;
 mod favorites;

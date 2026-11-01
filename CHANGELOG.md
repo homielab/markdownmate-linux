@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Drag a note from the sidebar or Files into the editor to insert a `[[wiki link]]` to it at the drop point (`[[Folder/Name]]` when another note has the same name), so backlinks and rename updates work for it. The note stays where it is; notes outside the open folder and other files are still linked by relative path. Same as the macOS app.
 - Formatted dates and times in templates and Today's Note's `Template.md`: write `{{date:FORMAT}}` and `{{time:FORMAT}}` (e.g. `{{date:dddd, MMMM D, YYYY}}` → Sunday, November 1, 2026, `{{time:h:mm A}}` → 9:05 AM, `{{date:[Week] YY}}` → Week 26; `[…]` escapes literal text) so notes get dates the way you write them. Plain `{{date}}` and `{{time}}` work as before. Same as the macOS app.
 - The PPA now has builds for Ubuntu 26.04 LTS and 26.10 besides 24.04 LTS, so `sudo apt install markdownmate` works on each of them.
 - Find Unused Attachments… in the main menu (also an Unused Attachments toggle in Find in Folder): lists the files in your `assets` folders that no note links to or shows anymore, with their size, so you can tidy up after removing images from your notes. Enter or a double-click shows the file in Files; MarkdownMate never deletes anything. Same as the macOS app.

@@ -7,7 +7,7 @@ use gtk::glib::{self, clone};
 use sourceview5::prelude::*;
 
 use crate::editor::Editor;
-use crate::{complete, format, images, lines, lists, paste, relink, render, table};
+use crate::{complete, droplink, format, images, lines, lists, paste, relink, render, table};
 
 /// What the completion list offers.
 #[derive(Clone, Copy, PartialEq)]
@@ -637,8 +637,8 @@ fn place_drop(widget: Option<&gtk::Widget>, editor: &Editor, x: f64, y: f64) {
 }
 
 /// Dropped files at the cursor, one per line, as one undo step: images copied into the
-/// note's `assets/` (`images.rs`), other files and folders as relative links
-/// (`relink::dropped_links`).
+/// note's `assets/` (`images.rs`), notes inside the open folder as `[[wiki links]]`, other
+/// files and folders as relative links (`droplink::dropped_link`).
 fn insert_dropped(editor: &Editor, paths: &[PathBuf]) {
     let Some(note) = editor.path.borrow().clone() else {
         return;
@@ -657,7 +657,13 @@ fn insert_dropped(editor: &Editor, paths: &[PathBuf]) {
                 .as_deref()
                 .map_or_else(|| path.clone(), |r| relink::rebase(path, r));
             let is_dir = path.is_dir();
-            lines.push(relink::dropped_links(&[(path, is_dir)], note.parent()));
+            lines.push(droplink::dropped_link(
+                &path,
+                is_dir,
+                root.as_deref(),
+                &editor.note_list.borrow(),
+                note.parent(),
+            ));
         }
     }
     if lines.is_empty() {
