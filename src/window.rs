@@ -11,7 +11,7 @@ use sourceview5::prelude::*;
 use webkit6::prelude::*;
 
 use crate::dialogs::{
-    bookmarks_dialog, find_broken_links, find_in_folder, go_to_line, open_quickly,
+    FindMode, bookmarks_dialog, find_in_folder, find_in_mode, go_to_line, open_quickly,
     preferences_dialog, reload_note,
 };
 use crate::editor::{Editor, FolderScan};
@@ -63,6 +63,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         &[
             ("Find in Folder…", "win.find-in-folder"),
             ("Find Broken Links…", "win.find-broken-links"),
+            ("Find Open Tasks…", "win.find-open-tasks"),
         ],
         &[("Back", "win.go-back"), ("Forward", "win.go-forward")],
         &[
@@ -419,7 +420,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         find_whole_word: Cell::new(false),
         find_regex: Cell::new(false),
         find_set_scope: RefCell::new(None),
-        find_broken: RefCell::new(None),
+        find_mode: RefCell::new(None),
         prefs: RefCell::default(),
         recent_menu,
         templates_menu,
@@ -683,9 +684,19 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     broken_action.connect_activate(clone!(
         #[strong]
         editor,
-        move |_, _| find_broken_links(&editor)
+        move |_, _| find_in_mode(&editor, FindMode::BrokenLinks)
     ));
     window.add_action(&broken_action);
+
+    // Find in Folder in its Open Tasks mode; enabled with the folder like Find in Folder.
+    let tasks_action = gio::SimpleAction::new("find-open-tasks", None);
+    tasks_action.set_enabled(false);
+    tasks_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| find_in_mode(&editor, FindMode::OpenTasks)
+    ));
+    window.add_action(&tasks_action);
 
     // Ctrl+L is not bound by GTK or GtkSourceView; does nothing without an open note.
     let goto_action = gio::SimpleAction::new("go-to-line", None);

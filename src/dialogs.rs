@@ -8,7 +8,7 @@ use gtk::glib::{self, clone};
 
 use crate::editor::Editor;
 use crate::file_name;
-use crate::{broken, find, goto, naming, quick, render, state};
+use crate::{broken, find, goto, naming, quick, render, state, tasks};
 
 /// Desktop id of `packaging/com.homielab.MarkdownMate.desktop`.
 const DESKTOP_ID: &str = "com.homielab.MarkdownMate.desktop";
@@ -847,18 +847,29 @@ pub(crate) fn highlight(text: &str, ranges: &[std::ops::Range<usize>]) -> String
 /// under the box and no results. Replace All replaces the listed matches after a confirmation
 /// (`replace_all`). Esc closes.
 pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
-    open_find(editor, None, false);
+    open_find(editor, None, FindMode::Text);
 }
 
-/// Main menu ▸ Find Broken Links…: Find in Folder in its Broken Links mode, which lists the
-/// links of the folder's notes that lead nowhere (`broken.rs`) instead of searching text. The
-/// search box gives way to a "Broken links" chip whose ✕ (or the Broken Links toggle) returns
-/// to text search. Scanned when shown or switched on again, not live.
-pub(crate) fn find_broken_links(editor: &Rc<Editor>) {
-    let set = editor.find_broken.borrow().clone();
+/// What Find in Folder lists: text matches, or the result of one of its scans. The scan modes
+/// exclude each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FindMode {
+    Text,
+    /// The links of the folder's notes that lead nowhere (`broken.rs`).
+    BrokenLinks,
+    /// The unchecked `- [ ]` tasks of the folder's notes (`tasks.rs`).
+    OpenTasks,
+}
+
+/// Main menu ▸ Find Broken Links… / Find Open Tasks…: Find in Folder in that scan mode instead
+/// of searching text. The search box gives way to a chip ("Broken links" / "Open tasks") whose
+/// ✕ (or the mode's toggle) returns to text search. Scanned when shown, when the toggle is
+/// switched on or the menu entry chosen again; not live.
+pub(crate) fn find_in_mode(editor: &Rc<Editor>, mode: FindMode) {
+    let set = editor.find_mode.borrow().clone();
     match set {
-        Some(set) => set(),
-        None => open_find(editor, None, true),
+        Some(set) => set(mode),
+        None => open_find(editor, None, mode),
     }
 }
 
@@ -869,11 +880,11 @@ pub(crate) fn find_in_scope(editor: &Rc<Editor>, folder: &Path) {
     let set = editor.find_set_scope.borrow().clone();
     match set {
         Some(set) => set(Some(folder.to_path_buf())),
-        None => open_find(editor, Some(folder.to_path_buf()), false),
+        None => open_find(editor, Some(folder.to_path_buf()), FindMode::Text),
     }
 }
 
-fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, broken_links: bool) {
+fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -938,6 +949,11 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, broken_links: bool) {
         )
         .build();
     toggles.append(&broken_toggle);
+    let tasks_toggle = gtk::CheckButton::builder()
+        .label("Open Tasks")
+        .tooltip_text("List the unchecked tasks (- [ ]) in the notes, instead of searching text")
+        .build();
+    toggles.append(&tasks_toggle);
     // An invalid pattern's reason, under the box.
     let error = gtk::Label::builder()
         .xalign(0.0)
@@ -1007,28 +1023,26 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, broken_links: bool) {
         }
     };
     show_scope(scope.as_deref());
-    // Broken Links mode: this chip stands in for the search box; ✕ returns to text search.
-    let broken_text = gtk::Label::builder()
-        .label("Broken links")
-        .margin_start(10)
-        .build();
-    broken_text.add_css_class("caption");
-    let broken_clear = gtk::Button::builder()
+    // A scan mode (Broken Links, Open Tasks): this chip stands in for the search box; ✕
+    // returns to text search.
+    let mode_text = gtk::Label::builder().margin_start(10).build();
+    mode_text.add_css_class("caption");
+    let mode_clear = gtk::Button::builder()
         .icon_name("window-close-symbolic")
         .tooltip_text("Search text again")
         .valign(gtk::Align::Center)
         .build();
-    broken_clear.add_css_class("flat");
-    broken_clear.add_css_class("circular");
-    let broken_chip = gtk::Box::builder()
+    mode_clear.add_css_class("flat");
+    mode_clear.add_css_class("circular");
+    let mode_chip = gtk::Box::builder()
         .spacing(4)
         .halign(gtk::Align::Start)
         .visible(false)
         .css_classes(["card", "find-scope"])
         .build();
-    broken_chip.append(&broken_text);
-    broken_chip.append(&broken_clear);
-    content.append(&broken_chip);
+    mode_chip.append(&mode_text);
+    mode_chip.append(&mode_clear);
+    content.append(&mode_chip);
     content.append(&entry);
     content.append(&scope_chip);
     content.append(&error);
@@ -1197,25 +1211,89 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, broken_links: bool) {
         }
     };
     let scan_broken = Rc::new(scan_broken);
-    // Searches again in the current mode (after a scope change).
-    let refresh = {
-        let (broken_toggle, entry, run, scan_broken) = (
-            broken_toggle.clone(),
-            entry.clone(),
-            run.clone(),
-            scan_broken.clone(),
-        );
+    // Open Tasks: reads the (scoped) notes on a background thread, cancelled like a search.
+    let scan_tasks = {
+        let (generation, notes, snapshot) = (generation.clone(), notes.clone(), snapshot.clone());
+        let (listed, replace, error) = (listed.clone(), replace.clone(), error.clone());
+        let (list, status, targets, root) =
+            (list.clone(), status.clone(), targets.clone(), root.clone());
         move || {
-            if broken_toggle.is_active() {
-                scan_broken();
-            } else {
-                run(entry.text().to_string());
-            }
+            listed.replace(None);
+            replace.set_sensitive(false);
+            error.set_visible(false);
+            targets.replace(result_rows(&list, &root, Vec::new()));
+            status.set_label("Looking for open tasks…");
+            let mine = generation.fetch_add(1, Ordering::SeqCst) + 1;
+            let (notes, open) = (notes.borrow().clone(), snapshot());
+            let (generation, list, status, targets, root) = (
+                generation.clone(),
+                list.clone(),
+                status.clone(),
+                targets.clone(),
+                root.clone(),
+            );
+            glib::spawn_future_local(async move {
+                let g = generation.clone();
+                let found = gio::spawn_blocking(move || {
+                    tasks::find(&notes, open.as_ref().as_ref(), find::LIMIT, &|| {
+                        g.load(Ordering::SeqCst) != mine
+                    })
+                })
+                .await;
+                let Ok(Some(found)) = found else {
+                    return;
+                };
+                if generation.load(Ordering::SeqCst) != mine {
+                    return;
+                }
+                let files = found.notes.iter().map(|n| {
+                    let rows = n.tasks.iter().map(|t| {
+                        let text = match t.text.as_str() {
+                            "" => "(empty task)".to_string(),
+                            text => glib::markup_escape_text(text).to_string(),
+                        };
+                        (t.line, text)
+                    });
+                    (n.path.clone(), rows.collect())
+                });
+                targets.replace(result_rows(&list, &root, files.collect()));
+                status.set_label(&tasks::summary(&found, find::LIMIT));
+                if let Some(row) = list.row_at_index(0) {
+                    row.grab_focus();
+                }
+            });
         }
+    };
+    let scan_tasks = Rc::new(scan_tasks);
+    // The mode the toggles select. Weak: the toggles' own handlers hold this.
+    let mode_now = {
+        let (broken, tasks) = (broken_toggle.downgrade(), tasks_toggle.downgrade());
+        Rc::new(move || {
+            let on =
+                |t: &glib::WeakRef<gtk::CheckButton>| t.upgrade().is_some_and(|t| t.is_active());
+            if on(&broken) {
+                FindMode::BrokenLinks
+            } else if on(&tasks) {
+                FindMode::OpenTasks
+            } else {
+                FindMode::Text
+            }
+        })
+    };
+    // Searches or scans again in the current mode (after a scope change, or the menu again).
+    let refresh = {
+        let (mode_now, entry, run) = (mode_now.clone(), entry.clone(), run.clone());
+        let (scan_broken, scan_tasks) = (scan_broken.clone(), scan_tasks.clone());
+        Rc::new(move || match mode_now() {
+            FindMode::Text => run(entry.text().to_string()),
+            FindMode::BrokenLinks => scan_broken(),
+            FindMode::OpenTasks => scan_tasks(),
+        })
     };
     // Sets the scope (None = the whole folder) and searches again.
     let set_scope = {
-        let (notes, current_scope) = (notes.clone(), current_scope.clone());
+        let (notes, current_scope, refresh) =
+            (notes.clone(), current_scope.clone(), refresh.clone());
         move |scope: Option<PathBuf>| {
             let (scope, scoped_notes) = scoped(scope);
             notes.replace(scoped_notes);
@@ -1269,57 +1347,86 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, broken_links: bool) {
         on_toggle,
         move |_| on_toggle()
     ));
-    // Broken Links on: the chip replaces the search box, the text options and Replace are off,
-    // and the folder is scanned; off: the text search runs again.
-    broken_toggle.connect_toggled(clone!(
-        #[strong]
-        run,
-        #[strong]
-        scan_broken,
-        #[weak]
-        entry,
-        #[weak]
-        broken_chip,
-        #[weak]
-        match_case,
-        #[weak]
-        whole_word,
-        #[weak]
-        regex,
-        #[weak]
-        replace_row,
-        move |toggle| {
-            let on = toggle.is_active();
-            entry.set_visible(!on);
-            broken_chip.set_visible(on);
+    // A scan mode on: the chip replaces the search box, the text options and Replace are off,
+    // and the folder is scanned; all off: the text search runs again.
+    let apply_mode = {
+        let (mode_now, refresh) = (mode_now.clone(), refresh.clone());
+        let (entry, mode_chip, mode_text, replace_row) = (
+            entry.clone(),
+            mode_chip.clone(),
+            mode_text.clone(),
+            replace_row.clone(),
+        );
+        let (match_case, whole_word, regex) =
+            (match_case.clone(), whole_word.clone(), regex.clone());
+        Rc::new(move || {
+            let mode = mode_now();
+            let text = mode == FindMode::Text;
+            entry.set_visible(text);
+            mode_chip.set_visible(!text);
+            mode_text.set_label(match mode {
+                FindMode::Text => "",
+                FindMode::BrokenLinks => "Broken links",
+                FindMode::OpenTasks => "Open tasks",
+            });
             for option in [&match_case, &whole_word, &regex] {
-                option.set_sensitive(!on);
+                option.set_sensitive(text);
             }
-            replace_row.set_sensitive(!on);
-            if on {
-                scan_broken();
-            } else {
-                run(entry.text().to_string());
+            replace_row.set_sensitive(text);
+            refresh();
+            if text {
                 entry.grab_focus();
             }
+        })
+    };
+    // The scan modes exclude each other: turning one on turns the other off first, whose
+    // handler then shows the new mode.
+    for (toggle, other) in [
+        (&broken_toggle, &tasks_toggle),
+        (&tasks_toggle, &broken_toggle),
+    ] {
+        toggle.connect_toggled(clone!(
+            #[strong]
+            apply_mode,
+            #[weak]
+            other,
+            move |toggle| {
+                if toggle.is_active() && other.is_active() {
+                    other.set_active(false);
+                } else {
+                    apply_mode();
+                }
+            }
+        ));
+    }
+    mode_clear.connect_clicked(clone!(
+        #[weak]
+        broken_toggle,
+        #[weak]
+        tasks_toggle,
+        move |_| {
+            broken_toggle.set_active(false);
+            tasks_toggle.set_active(false);
         }
     ));
-    broken_clear.connect_clicked(clone!(
+    // The menu entries while the dialog is open: switch to that mode, or scan again.
+    editor.find_mode.replace(Some(Rc::new(clone!(
         #[weak]
         broken_toggle,
-        move |_| broken_toggle.set_active(false)
-    ));
-    // The menu entry while the dialog is open: switch to Broken Links, or scan again.
-    editor.find_broken.replace(Some(Rc::new(clone!(
         #[weak]
-        broken_toggle,
+        tasks_toggle,
         #[strong]
-        scan_broken,
-        move || {
-            if broken_toggle.is_active() {
-                scan_broken();
+        refresh,
+        move |mode| {
+            let toggle = match mode {
+                FindMode::Text => return,
+                FindMode::BrokenLinks => &broken_toggle,
+                FindMode::OpenTasks => &tasks_toggle,
+            };
+            if toggle.is_active() {
+                refresh();
             } else {
-                broken_toggle.set_active(true);
+                toggle.set_active(true);
             }
         }
     ))));
@@ -1369,7 +1476,7 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, broken_links: bool) {
         move |_| {
             generation.fetch_add(1, Ordering::SeqCst);
             editor.find_set_scope.replace(None);
-            editor.find_broken.replace(None);
+            editor.find_mode.replace(None);
         }
     ));
 
@@ -1416,10 +1523,12 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, broken_links: bool) {
     entry.add_controller(keys);
 
     dialog.present(Some(&editor.window));
-    if broken_links {
-        broken_toggle.set_active(true);
-    } else {
-        entry.grab_focus();
+    match mode {
+        FindMode::Text => {
+            entry.grab_focus();
+        }
+        FindMode::BrokenLinks => broken_toggle.set_active(true),
+        FindMode::OpenTasks => tasks_toggle.set_active(true),
     }
 }
 

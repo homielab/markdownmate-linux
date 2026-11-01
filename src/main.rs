@@ -49,6 +49,7 @@ mod stats;
 mod table;
 mod tablebar;
 mod tags;
+mod tasks;
 mod templates;
 mod timing;
 mod title;

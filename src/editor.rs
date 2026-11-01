@@ -26,6 +26,8 @@ use crate::{
 
 /// Find in Folder's scope setter (`Editor::find_set_scope`).
 pub(crate) type SetScope = Rc<dyn Fn(Option<PathBuf>)>;
+/// Switches the open Find in Folder dialog to a mode (`Editor::find_mode`).
+pub(crate) type SetMode = Rc<dyn Fn(crate::dialogs::FindMode)>;
 
 /// The window's widgets and the open note. Shared (Rc) by sidebar buttons, the auto-save
 /// timer and window handlers.
@@ -161,8 +163,9 @@ pub(crate) struct Editor {
     pub(crate) find_regex: Cell<bool>,
     /// While Find in Folder is open: sets its folder scope and searches again (`None` = all).
     pub(crate) find_set_scope: RefCell<Option<SetScope>>,
-    /// While Find in Folder is open: switches it to Broken Links and scans again.
-    pub(crate) find_broken: RefCell<Option<Rc<dyn Fn()>>>,
+    /// While Find in Folder is open: switches it to a scan mode (Broken Links, Open Tasks), or
+    /// scans again if it is in that mode.
+    pub(crate) find_mode: RefCell<Option<SetMode>>,
     /// Editor preferences (Ctrl+,) and the CSS that sets the chosen font.
     pub(crate) prefs: RefCell<state::Prefs>,
     pub(crate) font_css: gtk::CssProvider,
@@ -1564,6 +1567,7 @@ impl Editor {
             "open-quickly",
             "find-in-folder",
             "find-broken-links",
+            "find-open-tasks",
             "export-folder-html",
         ] {
             if let Some(a) = self.window.lookup_action(name)

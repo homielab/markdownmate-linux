@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Find Open Tasks… in the main menu (also an Open Tasks toggle in Find in Folder): lists every unchecked `- [ ]` task across the folder's notes (nested or quoted too, not in code or front matter) with its note and line, so everything still to do is in one list. Each row opens the note at that line. Same as the macOS app.
 - Create Starter Templates… in the New from Template submenu: when the templates folder is missing or has no `.md` notes, creates the folder with four ready-made templates (Meeting Notes, Project, Book Notes, Weekly Review) that show the `{{date}}` and `{{title}}` placeholders, reveals it in the sidebar and lists them in the menu. Same as the macOS app.
 
 - New Note and Today's Note in the dock icon's right-click menu and the app grid, so a thought is captured without switching to the app first. Also from a terminal: `markdownmate --new` and `markdownmate --today` reach the running window or start one. Same as the macOS Dock menu.
