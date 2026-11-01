@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Find Broken Links also lists `[[Note#Heading]]`, `![[Note#Heading]]` and `[[#Heading]]` links whose heading no longer exists, as “Note#Heading — no such heading”, so a renamed or removed heading no longer breaks links silently. Headings match as when following the link (any case, aliases too). Same as the macOS app.
 - Open Quickly (Ctrl+P) finds notes by their front-matter aliases too: typing an alias lists “Alias → Note”, and Enter opens that note instead of creating a duplicate. A note whose own name matches is listed once, and a note actually named like the alias comes first. Same as the macOS app.
 - Front matter shows as a properties table in the preview: one row per key, with lists like `tags: [a, b]` as “a, b”, so an Obsidian note's date, status or tags read as information instead of code. Preferences ▸ Preview ▸ Front Matter switches between Table, Source (the block as before) and Hidden; Export Folder as HTML follows it, other exports and print are unchanged. Same as the macOS app.
 - Attachments Folder in Preferences ▸ Notes: choose where pasted and dropped images go (`assets` by default; `/attachments` for a folder at the top of the open folder, as Obsidian vaults keep them). Find Unused Attachments and Export Folder as HTML cover both `assets` and that folder. Same as the macOS app.

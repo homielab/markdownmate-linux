@@ -1,20 +1,22 @@
 //! Find Broken Links (main menu, or the Broken Links toggle of Find in Folder): the links in
 //! the open folder's notes that lead nowhere. A `[[wiki link]]` is broken when its name
-//! resolves to no note and no alias (the resolver of Ctrl+click and the preview; `[[#Heading]]`
-//! and heading parts are not checked), an `![[name.png]]` embed when no image of the folder has
-//! that name (`[[name.png]]` without `!` is a note link); a relative Markdown link or image (`[t](a.md)`,
-//! `![](assets/x.png)`, `<raw path>`, percent-decoded) when its file does not exist relative to
-//! the note. URLs with a scheme (`mailto:` too), absolute paths, `#anchor`-only links, fenced
-//! code, code spans and the front matter are skipped. Pure logic, no GTK; the dialog runs
-//! `find` on a background thread.
+//! resolves to no note and no alias (the resolver of Ctrl+click and the preview), or when its
+//! heading part (`[[Note#Heading]]`, `![[Note#Heading]]`, `[[#Heading]]` in the note itself)
+//! names no heading of that note (`render::find_heading`, the rule following the link uses);
+//! an `![[name.png]]` embed when no image of the folder has that name (`[[name.png]]` without
+//! `!` is a note link); a relative Markdown link or image (`[t](a.md)`, `![](assets/x.png)`,
+//! `<raw path>`, percent-decoded) when its file does not exist relative to the note (its
+//! `#fragment` is not checked). URLs with a scheme (`mailto:` too), absolute paths,
+//! `#anchor`-only links, fenced code, code spans and the front matter are skipped. Pure logic,
+//! no GTK; the dialog runs `find` on a background thread.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::backlinks::{self, LinkIndex};
 use crate::links::{self, Target};
-use crate::lists;
-use crate::render::{WikiIndex, is_embed_image, wiki_key};
+use crate::render::{self, WikiIndex, is_embed_image, wiki_key};
+use crate::{lists, state};
 
 /// A broken link.
 #[derive(Debug, Clone, PartialEq)]
@@ -32,13 +34,68 @@ pub struct NoteLinks {
     pub links: Vec<Link>,
 }
 
+/// The headings of the notes that links name a heading of, each note read once per scan.
+pub struct Headings<'a> {
+    /// A note's text (the editor's for the open note); None if it can't be read.
+    read: &'a dyn Fn(&Path) -> Option<String>,
+    /// `render::heading_ids` of each note read; None when it couldn't be.
+    notes: HashMap<PathBuf, Option<Vec<(usize, String)>>>,
+}
+
+impl<'a> Headings<'a> {
+    pub fn new(read: &'a dyn Fn(&Path) -> Option<String>) -> Self {
+        Headings {
+            read,
+            notes: HashMap::new(),
+        }
+    }
+
+    /// Whether `note` (whose text is `own`, when the caller has it) has a heading `fragment`
+    /// names, as following the link finds it: by id or title, and, for a `%`-escaped part, the
+    /// way Ctrl+click decodes it. True for a note that can't be read (nothing to check).
+    fn has(&mut self, note: &Path, own: Option<&str>, fragment: &str) -> bool {
+        let read = self.read;
+        let ids = self.notes.entry(note.to_path_buf()).or_insert_with(|| {
+            own.map(str::to_string)
+                .or_else(|| read(note))
+                .map(|text| render::heading_ids(&text))
+        });
+        let Some(ids) = ids else {
+            return true;
+        };
+        let decoded = fragment
+            .contains('%')
+            .then(|| {
+                state::unescape(fragment)?
+                    .into_os_string()
+                    .into_string()
+                    .ok()
+            })
+            .flatten();
+        std::iter::once(fragment)
+            .chain(decoded.as_deref())
+            .any(|f| render::find_heading(ids, f).is_some())
+    }
+}
+
+/// The heading part of the wiki link `name` (as `links::spans` gives it) as following the link
+/// reads it: after the first `#`; trimmed for an embed (the preview embeds that section). None
+/// when there is none or it is empty.
+fn heading_part(name: &str, embed: bool) -> Option<&str> {
+    let (_, part) = name.split_once('#')?;
+    let part = if embed { part.trim() } else { part };
+    (!part.is_empty()).then_some(part)
+}
+
 /// The broken links of `text` (the note at `note`). Wiki names resolve through `wiki`, embedded
-/// images through `images`; `exists` tells whether a linked file is there.
+/// images through `images`, heading parts against `headings`; `exists` tells whether a linked
+/// file is there.
 pub fn in_text(
     text: &str,
     note: &Path,
     wiki: &WikiIndex,
     images: &WikiIndex,
+    headings: &mut Headings,
     exists: &dyn Fn(&Path) -> bool,
 ) -> Vec<Link> {
     let skip = lists::front_matter_lines(text);
@@ -50,21 +107,44 @@ pub fn in_text(
         }
         for (range, target) in links::spans(line) {
             let embed = links::is_embed(line, &range);
-            let broken = match &target {
+            // An embed as written: with its `!`.
+            let start = if embed { range.start - 1 } else { range.start };
+            let as_written = || line[start..range.end].to_string();
+            let found = match &target {
                 Target::Wiki(name) if embed && is_embed_image(name) => {
-                    images.resolve(name, Some(note)).is_none()
+                    images.resolve(name, Some(note)).is_none().then(as_written)
                 }
                 Target::Wiki(name) => {
-                    wiki_key(name).is_some() && wiki.resolve(name, Some(note)).is_none()
+                    // A missing note is listed as written, its heading unchecked; `[[#Heading]]`
+                    // names a heading of this note.
+                    let into = match wiki_key(name) {
+                        None => Some(note),
+                        Some(_) => match wiki.resolve(name, Some(note)) {
+                            Some(found) => Some(found.as_path()),
+                            None => {
+                                out.push(Link {
+                                    line: i + 1,
+                                    text: as_written(),
+                                });
+                                continue;
+                            }
+                        },
+                    };
+                    into.zip(heading_part(name, embed))
+                        .filter(|(into, part)| {
+                            let own = (*into == note).then_some(text);
+                            !headings.has(into, own, part)
+                        })
+                        .map(|_| format!("{name} — no such heading"))
                 }
-                Target::Href(href) => file_target(href, note).is_some_and(|f| !exists(&f)),
+                Target::Href(href) => file_target(href, note)
+                    .is_some_and(|f| !exists(&f))
+                    .then(as_written),
             };
-            if broken {
-                // An embed as written: with its `!`.
-                let start = if embed { range.start - 1 } else { range.start };
+            if let Some(shown) = found {
                 out.push(Link {
                     line: i + 1,
-                    text: line[start..range.end].to_string(),
+                    text: shown,
                 });
             }
         }
@@ -84,8 +164,8 @@ fn file_target(href: &str, note: &Path) -> Option<PathBuf> {
 
 /// The broken links of the notes `index` was synced with (only those under `scope`, if any), in
 /// note list order; `images` are the folder's embeddable images. The open note (path, editor text) is checked as in the editor; other notes
-/// are read only when the index lists a link of theirs that leads nowhere. None if
-/// `cancelled` turned true.
+/// are read only when the index lists a link of theirs that may lead nowhere, and those a heading
+/// part names once each. None if `cancelled` turned true.
 pub fn find(
     index: &LinkIndex,
     images: &WikiIndex,
@@ -96,6 +176,11 @@ pub fn find(
     let exists = |p: &Path| p.exists();
     let wiki = index.wiki();
     let suspects: HashSet<PathBuf> = index.suspects(&exists).into_iter().collect();
+    let read = |p: &Path| match open {
+        Some((path, text)) if path == p => Some(text.clone()),
+        _ => crate::find::read_utf8(p),
+    };
+    let mut headings = Headings::new(&read);
     let mut out = Vec::new();
     for note in wiki.notes() {
         if cancelled() {
@@ -105,9 +190,11 @@ pub fn find(
             continue;
         }
         let links = match open {
-            Some((path, text)) if path == note => in_text(text, note, wiki, images, &exists),
+            Some((path, text)) if path == note => {
+                in_text(text, note, wiki, images, &mut headings, &exists)
+            }
             _ if suspects.contains(note) => match crate::find::read_utf8(note) {
-                Some(text) => in_text(&text, note, wiki, images, &exists),
+                Some(text) => in_text(&text, note, wiki, images, &mut headings, &exists),
                 None => continue,
             },
             _ => continue,
@@ -177,11 +264,28 @@ mod tests {
         files.iter().any(|f| Path::new(f) == p)
     }
 
+    /// The texts of the folder's notes other than `/n/A.md` (the one checked).
+    fn read(p: &Path) -> Option<String> {
+        let text = match p.to_str()? {
+            "/n/Name.md" => {
+                "# Intro\n\nSetext Part\n---\n\n## Plan\n\n## Plan\n\n```\n# Fenced\n```\n"
+            }
+            "/n/Sub/Other.md" => "---\ntitle: x\n# yaml\n---\n## Ideas & Plans\n",
+            "/n/Sub/Name.md" | "/n/A.md" => "",
+            _ => return None,
+        };
+        Some(text.to_string())
+    }
+
+    /// `in_text` of `text` as the note `/n/A.md`.
+    fn check(text: &str) -> Vec<Link> {
+        let mut headings = Headings::new(&read);
+        let note = Path::new("/n/A.md");
+        in_text(text, note, &wiki(), &images(), &mut headings, &exists)
+    }
+
     fn broken(text: &str) -> Vec<String> {
-        in_text(text, Path::new("/n/A.md"), &wiki(), &images(), &exists)
-            .into_iter()
-            .map(|l| l.text)
-            .collect()
+        check(text).into_iter().map(|l| l.text).collect()
     }
 
     #[test]
@@ -189,7 +293,7 @@ mod tests {
         // An image by name among the folder's images; `[[x.png]]` is a link to a note.
         assert_eq!(
             broken(
-                "![[x.png|300]] ![[ASSETS/X.PNG]] ![[gone.png]] [[x.png]]\n![[Name#Part]] ![[Gone]]"
+                "![[x.png|300]] ![[ASSETS/X.PNG]] ![[gone.png]] [[x.png]]\n![[Name#Setext Part]] ![[Gone]]"
             ),
             ["![[gone.png]]", "[[x.png]]", "![[Gone]]"]
         );
@@ -203,9 +307,106 @@ mod tests {
             broken("[[Gone|shown]] [[Gone#Part]]"),
             ["[[Gone|shown]]", "[[Gone#Part]]"]
         );
-        // Heading parts are not checked; a heading-only link is not a note link.
-        assert!(broken("[[Name#No such heading]] [[#Somewhere]]").is_empty());
         assert!(broken("[[name.md]] [[NAME]]").is_empty());
+    }
+
+    #[test]
+    fn missing_heading() {
+        // By title in any case, by id (`plan-1`: the second "Plan"), ATX or setext.
+        assert!(
+            broken("[[Name#Intro]] [[Name#INTRO|x]] [[Name#setext part]] [[Name#plan-1]]")
+                .is_empty()
+        );
+        assert_eq!(
+            broken("[[Name#Gone]] [[Name#Gone|text]] ![[Name#Gone]] [[Name#plan-2]]"),
+            [
+                "Name#Gone — no such heading",
+                "Name#Gone — no such heading",
+                "Name#Gone — no such heading",
+                "Name#plan-2 — no such heading",
+            ]
+        );
+        // A heading inside a fence or the front matter does not count.
+        assert_eq!(
+            broken("[[Name#Fenced]] [[Other#yaml]]"),
+            [
+                "Name#Fenced — no such heading",
+                "Other#yaml — no such heading"
+            ]
+        );
+        // An empty part opens the note; the line is reported where the link is.
+        assert!(broken("[[Name#]] ![[Name# ]]").is_empty());
+        assert_eq!(
+            check("x\n[[Name#Gone]]"),
+            [Link {
+                line: 2,
+                text: "Name#Gone — no such heading".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn heading_part_follows_the_link_rule() {
+        // Ctrl+click jumps with the part as written (spaces count) and decodes `%` escapes; an
+        // embed shows the section of its trimmed part.
+        assert_eq!(broken("[[Name# Intro]]"), ["Name# Intro — no such heading"]);
+        assert!(broken("![[Name# Intro ]] [[Name#Setext%20Part]] [[Name#intro ]]").is_empty());
+        // Markdown links: only the file is checked.
+        assert!(broken("[a](Name.md#gone) [b](#gone)").is_empty());
+    }
+
+    #[test]
+    fn heading_in_this_note() {
+        assert_eq!(
+            broken("# Top\n\n[[#Top]] [[#top|up]] [[#Gone]] [[A#Gone]] [[A#top]]"),
+            ["#Gone — no such heading", "A#Gone — no such heading"]
+        );
+    }
+
+    #[test]
+    fn note_missing_is_reported_once() {
+        assert_eq!(
+            broken("[[Gone#Part]] ![[Gone#Part]]"),
+            ["[[Gone#Part]]", "![[Gone#Part]]"]
+        );
+    }
+
+    #[test]
+    fn alias_then_heading() {
+        // The note through its alias first, then its headings.
+        assert!(broken("[[Nickname#Ideas & Plans]] [[nickname#ideas--plans|x]]").is_empty());
+        assert_eq!(
+            broken("[[Nickname#Intro]]"),
+            ["Nickname#Intro — no such heading"]
+        );
+    }
+
+    #[test]
+    fn headings_read_once_per_note() {
+        let reads = std::cell::RefCell::new(Vec::new());
+        let counting = |p: &Path| {
+            reads.borrow_mut().push(p.to_path_buf());
+            read(p)
+        };
+        let mut headings = Headings::new(&counting);
+        let note = Path::new("/n/A.md");
+        for text in ["[[Name#A]] [[Name#B]]", "![[Name#C]]\n[[A#X]] [[#Y]]"] {
+            in_text(text, note, &wiki(), &images(), &mut headings, &exists);
+        }
+        // The checked note's own headings come from its text, not a read.
+        assert_eq!(*reads.borrow(), [PathBuf::from("/n/Name.md")]);
+        // A note that can't be read has nothing to check.
+        let none = |_: &Path| None;
+        let mut headings = Headings::new(&none);
+        let found = in_text(
+            "[[Name#Gone]]",
+            note,
+            &wiki(),
+            &images(),
+            &mut headings,
+            &exists,
+        );
+        assert!(found.is_empty());
     }
 
     #[test]
@@ -233,6 +434,7 @@ mod tests {
             Path::new("/n/Sub/Other.md"),
             &wiki(),
             &images(),
+            &mut Headings::new(&read),
             &exists,
         );
         assert_eq!(
@@ -250,13 +452,7 @@ mod tests {
             broken("![ok](assets/x.png)\n![gone](assets/y.png)"),
             ["![gone](assets/y.png)"]
         );
-        let found = in_text(
-            "x\n\n![a](<img/a b.png>)",
-            Path::new("/n/A.md"),
-            &wiki(),
-            &images(),
-            &exists,
-        );
+        let found = check("x\n\n![a](<img/a b.png>)");
         assert_eq!(
             found,
             [Link {
@@ -277,7 +473,7 @@ mod tests {
     #[test]
     fn code_is_skipped() {
         let text = "`[[Missing]]` ``[a](gone.md)``\n```\n[[Missing]]\n```\n~~~\n![x](gone.png)\n~~~\n[[Missing]]";
-        let found = in_text(text, Path::new("/n/A.md"), &wiki(), &images(), &exists);
+        let found = check(text);
         assert_eq!(
             found,
             [Link {
@@ -290,7 +486,7 @@ mod tests {
     #[test]
     fn front_matter_is_skipped() {
         let text = "---\nup: \"[[Missing]]\"\nimage: [x](gone.png)\n---\n[[Missing]]";
-        let found = in_text(text, Path::new("/n/A.md"), &wiki(), &images(), &exists);
+        let found = check(text);
         assert_eq!(
             found,
             [Link {
@@ -328,6 +524,7 @@ mod tests {
                 "[[Nowhere]]\n[up](../B.md) [x](../Missing.md)\n",
             ),
             ("D.md", "---\nup: \"[[Gone]]\"\n---\nno links\n"),
+            ("E.md", "# Here\n[[E#Here]] [[B#Nowhere]] [[Sub/C#Gone]]\n"),
         ];
         let notes: Vec<PathBuf> = files.iter().map(|(n, _)| root.join(n)).collect();
         for (note, (_, text)) in notes.iter().zip(files) {
@@ -357,9 +554,16 @@ mod tests {
                     notes[2].clone(),
                     vec![(1, "[[Nowhere]]"), (2, "[x](../Missing.md)")]
                 ),
+                (
+                    notes[4].clone(),
+                    vec![
+                        (2, "B#Nowhere — no such heading"),
+                        (2, "Sub/C#Gone — no such heading")
+                    ]
+                ),
             ]
         );
-        assert_eq!(summary(&found), "4 broken links in 2 notes");
+        assert_eq!(summary(&found), "6 broken links in 3 notes");
 
         // The image appears; the open note is checked from the editor's text, unsaved edits too.
         std::fs::create_dir_all(root.join("img")).unwrap();
@@ -367,7 +571,12 @@ mod tests {
         let open = (notes[1].clone(), "[[Typo]]\n".to_string());
         let found = find(&index, &images(), Some(&open), None, &never).unwrap();
         let paths: Vec<&PathBuf> = found.iter().map(|n| &n.path).collect();
-        assert_eq!(paths, [&notes[0], &notes[1], &notes[2]]);
+        assert_eq!(paths, [&notes[0], &notes[1], &notes[2], &notes[4]]);
+        assert_eq!(summary(&found), "6 broken links in 4 notes");
+
+        // A heading added in the editor counts before it is saved.
+        let open = (notes[1].clone(), "# Nowhere\n".to_string());
+        let found = find(&index, &images(), Some(&open), None, &never).unwrap();
         assert_eq!(summary(&found), "4 broken links in 3 notes");
 
         // A scope keeps the notes under that folder.

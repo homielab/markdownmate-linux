@@ -212,8 +212,8 @@ impl LinkIndex {
     }
 
     /// The notes with a link that may lead nowhere: a wiki name that resolves to no note or
-    /// a file that `exists` says is missing. Find Broken Links reads only these (and checks
-    /// what this does not know: front matter, absolute paths).
+    /// has a heading part, or a file that `exists` says is missing. Find Broken Links reads
+    /// only these (and checks what this does not know: front matter, absolute paths, headings).
     pub fn suspects(&self, exists: &dyn Fn(&Path) -> bool) -> Vec<PathBuf> {
         let mut out = Vec::new();
         for note in self.wiki.notes() {
@@ -223,7 +223,7 @@ impl LinkIndex {
             let suspect = lines.iter().any(|l| {
                 l.wiki
                     .iter()
-                    .any(|n| self.wiki.resolve(n, Some(note)).is_none())
+                    .any(|n| n.contains('#') || self.wiki.resolve(n, Some(note)).is_none())
                     || l.files.iter().any(|f| !exists(f))
             });
             if suspect {

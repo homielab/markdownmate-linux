@@ -1451,11 +1451,16 @@ fn options_with(hard_breaks: bool) -> comrak::Options<'static> {
 /// the `-1` of repeated titles) or, failing that, its text (`[[Note#Heading]]`). None if no
 /// heading matches.
 pub fn heading_at(md: &str, fragment: &str) -> Option<(usize, String)> {
+    find_heading(&heading_ids(md), fragment).cloned()
+}
+
+/// The 1-based line and id of each heading of `md` (outside code blocks and front matter), as
+/// `heading_at` matches link fragments against them; read once, matched with `find_heading`.
+pub fn heading_ids(md: &str) -> Vec<(usize, String)> {
     let arena = comrak::Arena::new();
     let root = comrak::parse_document(&arena, md, &options());
     let mut ids = comrak::Anchorizer::new();
-    let headings: Vec<_> = root
-        .descendants()
+    root.descendants()
         .filter(|n| matches!(n.data().value, comrak::nodes::NodeValue::Heading(_)))
         .map(|n| {
             (
@@ -1463,12 +1468,19 @@ pub fn heading_at(md: &str, fragment: &str) -> Option<(usize, String)> {
                 ids.anchorize(&n.collect_text()),
             )
         })
-        .collect();
+        .collect()
+}
+
+/// `heading_at` over headings `heading_ids` read: the one whose id is `fragment` or, failing
+/// that, the id of `fragment` as a title.
+pub fn find_heading<'a>(
+    headings: &'a [(usize, String)],
+    fragment: &str,
+) -> Option<&'a (usize, String)> {
     let text = comrak::Anchorizer::new().anchorize(fragment);
     [fragment, text.as_str()]
         .iter()
         .find_map(|want| headings.iter().find(|(_, id)| id == want))
-        .cloned()
 }
 
 /// The text of the heading `src` is (an ATX line, or a Setext text line and its underline),
