@@ -6,6 +6,8 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Obsidian-style embeds in the preview, print and exports: `![[photo.png]]` shows an image of the open folder (`|300` sets its width, `|300x200` width and height), and `![[Note]]` or `![[Note#Heading]]` shows that note or section inside the current one, so Obsidian folders render as they do there. Missing targets show dimmed and are listed by Find Broken Links; embedded images count as used in Find Unused Attachments, and embedding notes appear in Backlinks. Same as the macOS app.
+
 ## 0.9.0
 
 - Smart punctuation (Preferences ▸ Preview, off by default): the preview, print, PDF / HTML / RTF exports and Copy as HTML / Rich Text show “curly quotes”, it’s, – and — for `--` and `---`, and … for `...`, while your note keeps the straight characters you typed. Code, URLs, tags and backslash-escaped characters are left as written. Line Breaks moved to the same Preview group.

@@ -365,6 +365,8 @@ mod tests {
         assert_eq!(query("", "see [[abc"), Some("abc"));
         assert_eq!(query("", "[["), Some(""));
         assert_eq!(query("", "[[a]] and [[Pro/x y"), Some("Pro/x y"));
+        // Embeds complete the same names.
+        assert_eq!(query("", "![[abc"), Some("abc"));
     }
 
     #[test]

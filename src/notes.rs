@@ -179,7 +179,18 @@ impl Node {
 /// Tree of `root`'s contents in `order`. Only an unreadable `root` is an error; unreadable
 /// subfolders are skipped. Notes' dates are read only when `order` sorts by one (under Name a
 /// plain file costs no `stat`, only the folder listing).
+#[cfg(test)]
 pub fn scan(root: &Path, order: SortOrder) -> io::Result<Vec<Node>> {
+    scan_with_images(root, order, &mut Vec::new())
+}
+
+/// `scan`, also adding to `images` the images `![[name.png]]` can embed (`is_embed_image`),
+/// found in the same walk.
+pub fn scan_with_images(
+    root: &Path,
+    order: SortOrder,
+    images: &mut Vec<PathBuf>,
+) -> io::Result<Vec<Node>> {
     let mut nodes = Vec::new();
     for entry in fs::read_dir(root)?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -191,7 +202,7 @@ pub fn scan(root: &Path, order: SortOrder) -> io::Result<Vec<Node>> {
             continue;
         };
         if kind.is_dir() {
-            let children = scan(&path, order).unwrap_or_default();
+            let children = scan_with_images(&path, order, images).unwrap_or_default();
             if !children.is_empty() {
                 nodes.push(Node::Dir { name, children });
             }
@@ -208,6 +219,8 @@ pub fn scan(root: &Path, order: SortOrder) -> io::Result<Vec<Node>> {
                 }
             };
             nodes.push(Node::Note { name, path, date });
+        } else if crate::render::is_embed_image(&name) {
+            images.push(path);
         }
     }
     nodes.sort_by(|a, b| compare(order, a.key(), b.key()));

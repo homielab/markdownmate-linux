@@ -135,6 +135,8 @@ pub(crate) struct Editor {
     pub(crate) favorites: RefCell<Vec<PathBuf>>,
     /// Every note from the last scan, for Open Quickly.
     pub(crate) note_list: RefCell<Rc<Vec<PathBuf>>>,
+    /// Every image `![[name.png]]` can embed, from the same scan (`notes::scan_with_images`).
+    pub(crate) image_list: RefCell<Rc<Vec<PathBuf>>>,
     /// The front-matter aliases of those notes (`load_aliases`; `[[alias]]` links resolve
     /// through them), and the number of the last listing started.
     pub(crate) aliases: RefCell<Arc<aliases::Aliases>>,
@@ -1181,6 +1183,18 @@ impl Editor {
         }
     }
 
+    /// The image of the open folder a wiki name like `photo.png` (`![[photo.png]]`) shows,
+    /// nearest to the note first.
+    pub(crate) fn embed_image(&self, name: &str) -> Option<PathBuf> {
+        if !render::is_embed_image(name) {
+            return None;
+        }
+        let root = self.root.borrow().clone()?;
+        let images = self.image_list.borrow().clone();
+        let current = self.path.borrow().clone();
+        render::resolve_wiki(name, &images, &root, current.as_deref()).cloned()
+    }
+
     /// The image file in the open folder that `href` (as written in the note) points to, if
     /// any; web URLs and anything outside the folder give None.
     pub(crate) fn image_path(&self, href: &str) -> Option<PathBuf> {
@@ -1201,6 +1215,14 @@ impl Editor {
     /// the open folder open in the default app.
     pub(crate) fn open_editor_link(self: &Rc<Self>, target: links::Target) {
         let page = self.page_uri();
+        // `![[photo.png]]`: the image it embeds.
+        let target = match target {
+            links::Target::Wiki(name) => match self.embed_image(&name) {
+                Some(path) => links::Target::Href(gio::File::for_path(path).uri().to_string()),
+                None => links::Target::Wiki(name),
+            },
+            href => href,
+        };
         let href = match target {
             links::Target::Wiki(name) => {
                 if let Some(heading) = name.strip_prefix('#') {
@@ -1460,7 +1482,10 @@ impl Editor {
         self.applied_gen.set(scan_gen);
         timing::took(start, "folder scanned");
         match result {
-            Ok(Ok((tree, folders))) => return self.show_folder(dir, &tree, &folders),
+            Ok(Ok((tree, folders, images))) => {
+                self.image_list.replace(Rc::new(images));
+                return self.show_folder(dir, &tree, &folders);
+            }
             Ok(Err(e)) => self.toast(&format!("Cannot open {}: {e}", dir.display())),
             Err(_) => self.toast(&format!("Cannot open {}", dir.display())),
         }
@@ -2958,9 +2983,9 @@ fn fill_note_rows(
     rows.into_iter().map(|(p, l, _)| (p, l)).collect()
 }
 
-/// What a folder scan gives: the sidebar's tree (`notes::scan`) and the folders to watch
-/// (`notes::folders`).
-type ScanResult = std::io::Result<(Vec<notes::Node>, Vec<PathBuf>)>;
+/// What a folder scan gives: the sidebar's tree (`notes::scan`), the folders to watch
+/// (`notes::folders`) and the images embeds can show.
+type ScanResult = std::io::Result<(Vec<notes::Node>, Vec<PathBuf>, Vec<PathBuf>)>;
 
 /// A folder scan running on its own thread; `Editor::load_scan` shows it.
 pub(crate) struct FolderScan {
@@ -2975,7 +3000,9 @@ impl FolderScan {
     pub(crate) fn start(dir: &Path, order: notes::SortOrder) -> FolderScan {
         let d = dir.to_path_buf();
         let job = std::thread::spawn(move || {
-            notes::scan(&d, order).map(|tree| (tree, notes::folders(&d)))
+            let mut images = Vec::new();
+            notes::scan_with_images(&d, order, &mut images)
+                .map(|tree| (tree, notes::folders(&d), images))
         });
         FolderScan {
             dir: dir.to_path_buf(),

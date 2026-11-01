@@ -10,9 +10,10 @@
 //! matter, through a relative link or image as Find Broken Links reads them (`[t](path)`,
 //! `![a](path)`, `[t](<path>)`) or a `[ref]: path` definition (`#…` and `?…` dropped,
 //! percent-decoded and also as written, relative to the note), or a raw HTML `<img src="path">`
-//! with a relative path. `[[wiki links]]` don't count. Paths compare ignoring case and Unicode
-//! normalization, so a doubt keeps a file off the list. Pure logic, no GTK; the dialog runs
-//! `find` on a background thread.
+//! with a relative path, or an `![[name.png]]` embed (every attachment whose path ends with that
+//! name). `[[wiki links]]` don't count. Paths compare ignoring case and Unicode normalization, so
+//! a doubt keeps a file off the list. Pure logic, no GTK; the dialog runs `find` on a background
+//! thread.
 
 use std::collections::HashSet;
 use std::fs;
@@ -150,6 +151,50 @@ pub fn references(text: &str, note: &Path) -> HashSet<String> {
     keys
 }
 
+/// The images `text` embeds (`![[name.png]]`, `![[Folder/name.png|300]]`) outside fenced code,
+/// code spans and the front matter, as `embed_key`s.
+pub fn embeds(text: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    if !text.contains("![[") {
+        return names;
+    }
+    let skip = lists::front_matter_lines(text);
+    let mut open = None;
+    for (i, line) in text.lines().enumerate() {
+        if i < skip || lists::fence_step(&mut open, line) || open.is_some() {
+            continue;
+        }
+        if !line.contains("![[") {
+            continue;
+        }
+        for (range, target) in links::spans(line) {
+            if let Target::Wiki(name) = target
+                && links::is_embed(line, &range)
+                && crate::render::is_embed_image(name.split('#').next().unwrap_or(""))
+                && let Some(name) = embed_key(&name)
+            {
+                names.insert(name);
+            }
+        }
+    }
+    names
+}
+
+/// An embed's name as `embeds` keeps it: no `#…`, no leading or trailing `/`, NFC, lowercased.
+fn embed_key(name: &str) -> Option<String> {
+    let name = name.split('#').next()?.trim().trim_matches('/');
+    let name = name.nfc().collect::<String>().to_lowercase();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Whether an `embeds` name may mean the file with this `key`: the key ends with `/` + it.
+fn embedded(key: &str, names: &HashSet<String>) -> bool {
+    !names.is_empty()
+        && key
+            .match_indices('/')
+            .any(|(i, _)| names.contains(&key[i + 1..]))
+}
+
 /// `<img … src="…">`, `src='…'` or `src=…`; groups 1–3: the value.
 static IMG_SRC: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))"#)
@@ -218,17 +263,22 @@ pub fn unused(
         return Some(found);
     }
     let mut used = HashSet::new();
+    let mut names = HashSet::new();
     for note in notes {
         if cancelled() {
             return None;
         }
         match read(note) {
-            Some(text) => used.extend(references(&text, note)),
+            Some(text) => {
+                used.extend(references(&text, note));
+                names.extend(embeds(&text));
+            }
             None => found.unread += 1,
         }
     }
     for file in attachments {
-        if !used.contains(&key(&file.path)) {
+        let key = key(&file.path);
+        if !used.contains(&key) && !embedded(&key, &names) {
             found.total += file.size;
             found.files.push(file);
         }
@@ -314,6 +364,32 @@ mod tests {
         assert_eq!(
             unused_of(&["assets/a.png", "assets/b.png"], &notes),
             ["assets/b.png"]
+        );
+    }
+
+    #[test]
+    fn embedded_image_is_kept_out() {
+        let notes = [(
+            "Notes/Home.md",
+            "![[a.png]] ![[Sub/B.PNG|300]] [[c.png]] `![[d.png]]`\n```\n![[e.png]]\n```\n",
+        )];
+        let files = [
+            "assets/a.png",
+            "other/assets/a.png",
+            "assets/Sub/b.png",
+            "assets/b.png",
+            "assets/c.png",
+            "assets/d.png",
+            "assets/e.png",
+        ];
+        assert_eq!(
+            unused_of(&files, &notes),
+            [
+                "assets/b.png",
+                "assets/c.png",
+                "assets/d.png",
+                "assets/e.png"
+            ]
         );
     }
 

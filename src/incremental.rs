@@ -23,13 +23,12 @@
 //! `perf::large_notes`).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use crate::render;
 use crate::state::{TextWidth, Theme};
 
 /// Resolves a wiki link's target (`render::resolve_wiki`); shared by the threads of a render.
-pub(crate) type Wiki<'a> = dyn Fn(&str) -> Option<PathBuf> + Sync + 'a;
+pub(crate) type Wiki<'a> = dyn crate::render::Links + Sync + 'a;
 
 /// What a rendered chunk depends on besides its text: light/dark, the theme, the text width,
 /// whether web images load (the page's CSP), whether every newline is a line break, smart
@@ -768,7 +767,7 @@ fn heading_ids(html: &str) -> Vec<String> {
 
 /// Where each heading's id value is in `html`. The note's text is escaped, so `<h` + digit
 /// only starts a heading.
-fn heading_id_ranges(html: &str) -> Vec<std::ops::Range<usize>> {
+pub(crate) fn heading_id_ranges(html: &str) -> Vec<std::ops::Range<usize>> {
     let mut found = Vec::new();
     let mut from = 0;
     while let Some(i) = html[from..].find("<h").map(|i| from + i) {
@@ -868,6 +867,7 @@ fn node_starts(html: &str) -> Option<Vec<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     const STYLE: Style = Style {
         dark: false,
@@ -936,17 +936,22 @@ mod tests {
     /// Renders `texts` one after the other as the preview would, checking each page (built
     /// from the chunks, and patched) against a whole render. Returns how many were patches.
     fn check(texts: &[String]) -> usize {
+        check_with(texts, &wiki)
+    }
+
+    /// `check` with the links `wiki`.
+    fn check_with(texts: &[String], wiki: &Wiki) -> usize {
         let mut state = None;
         let mut dom: Vec<String> = Vec::new();
         let mut patches = 0;
         for (n, md) in texts.iter().enumerate() {
-            let (next, update) = render(state.take(), md, STYLE, &wiki);
+            let (next, update) = render(state.take(), md, STYLE, wiki);
             let whole = render::preview_page(
                 false,
                 Theme::Default,
                 Some(STYLE.width),
                 false,
-                &render::body_html(md, &wiki, true, true, true, true),
+                &render::body_html(md, wiki, true, true, true, true),
             );
             match update {
                 Update::Page(page) => {
@@ -979,6 +984,34 @@ mod tests {
 - three\n\n1. a\n2. b\n\n> quote\n> more\n\n```rust\nfn main() {}\n```\n\n```mermaid\ngraph TD\n  A-->B\n```\n\n\
     indented\n    code\n\n| a | b |\n|---|:-:|\n| 1 | 2 |\n\n<div>\nraw\n</div>\n\nafter html\n\n\
 ## Sum $a+b$\n\n$$\n\\sum_i i\n$$\n\n```math\nx = 1\n```\n\n---\n\n## Same\n\nSetext\n===\n\nend\n";
+
+    #[test]
+    fn embeds_render_and_patch_as_the_whole_note() {
+        let folder = render::TestFolder::new(
+            "incremental",
+            &[
+                ("Home.md", ""),
+                (
+                    "Note.md",
+                    "# Note\n\n## Part\n\ntext ![[pic.png]]\n\n# End\n",
+                ),
+                ("pic.png", "png"),
+            ],
+        );
+        let links = folder.links("Home.md");
+        let note = "# Home\n\nintro ![[Note]] after\n\n## Same\n\n![[Note#Part]]\n\n\
+- item ![[Note]]\n\n![[pic.png|20]] ![[Gone]]\n\n## Same\n\nend\n";
+        let texts: Vec<String> = [
+            note,
+            &note.replace("intro", "intro more"),
+            &note.replace("end\n", "end\n\nnew ![[Note]]\n"),
+            &note.replace("![[Note#Part]]", "![[Note#End]]"),
+        ]
+        .iter()
+        .map(|t| t.to_string())
+        .collect();
+        assert!(check_with(&texts, &links) > 0);
+    }
 
     #[test]
     fn chunks_render_as_the_whole_note() {

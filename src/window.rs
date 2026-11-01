@@ -404,6 +404,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         scan_dir: RefCell::new(None),
         pending_quick: Cell::new(None),
         note_list: RefCell::default(),
+        image_list: RefCell::default(),
         aliases: RefCell::default(),
         aliases_gen: Cell::new(0),
         tags_panel,
@@ -1326,25 +1327,32 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             let Some(editor) = weak.upgrade().filter(|_| !keyboard) else {
                 return false;
             };
-            let href = match editor.link_at(f64::from(x), f64::from(y)) {
-                Some(links::Target::Wiki(name)) => {
-                    let Some(peek) = hover.peek(&editor, &name) else {
-                        return false;
-                    };
-                    tooltip.set_custom(Some(&hover::widget(&peek)));
-                    return true;
-                }
+            let path = match editor.link_at(f64::from(x), f64::from(y)) {
+                // `![[photo.png]]`: the image it embeds.
+                Some(links::Target::Wiki(name)) => match editor.embed_image(&name) {
+                    Some(path) => {
+                        hover.forget();
+                        path
+                    }
+                    None => {
+                        let Some(peek) = hover.peek(&editor, &name) else {
+                            return false;
+                        };
+                        tooltip.set_custom(Some(&hover::widget(&peek)));
+                        return true;
+                    }
+                },
                 Some(links::Target::Href(href)) => {
                     hover.forget();
-                    href
+                    let Some(path) = editor.image_path(&href) else {
+                        return false;
+                    };
+                    path
                 }
                 None => {
                     hover.forget();
                     return false;
                 }
-            };
-            let Some(path) = editor.image_path(&href) else {
-                return false;
             };
             let mut last = last.borrow_mut();
             if last.as_ref().is_none_or(|(p, _)| *p != path) {

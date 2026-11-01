@@ -33,6 +33,11 @@ pub fn spans(line: &str) -> Vec<(Range<usize>, Target)> {
     scan(line, &mut Vec::new())
 }
 
+/// Whether the wiki link at `range` of `line` (from `spans`) is an embed: `![[name]]`.
+pub fn is_embed(line: &str, range: &Range<usize>) -> bool {
+    line[..range.start].ends_with('!')
+}
+
 /// Byte ranges of `line` covered by a code span, in order.
 pub fn code_spans(line: &str) -> Vec<Range<usize>> {
     let mut code = Vec::new();
@@ -190,6 +195,23 @@ mod tests {
         assert_eq!(
             at("```\n```\n", "[[Idea]]", 2),
             Some(Target::Wiki("Idea".into()))
+        );
+    }
+
+    #[test]
+    fn embeds() {
+        let line = "![[a.png|300]] [[b]] ![x](y.png)";
+        let found: Vec<_> = spans(line)
+            .into_iter()
+            .map(|(r, t)| (is_embed(line, &r), t))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (true, Target::Wiki("a.png".into())),
+                (false, Target::Wiki("b".into())),
+                (false, Target::Href("y.png".into())),
+            ]
         );
     }
 }

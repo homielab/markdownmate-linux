@@ -1,7 +1,8 @@
 //! Find Broken Links (main menu, or the Broken Links toggle of Find in Folder): the links in
 //! the open folder's notes that lead nowhere. A `[[wiki link]]` is broken when its name
 //! resolves to no note and no alias (the resolver of Ctrl+click and the preview; `[[#Heading]]`
-//! and heading parts are not checked); a relative Markdown link or image (`[t](a.md)`,
+//! and heading parts are not checked), an `![[name.png]]` embed when no image of the folder has
+//! that name (`[[name.png]]` without `!` is a note link); a relative Markdown link or image (`[t](a.md)`,
 //! `![](assets/x.png)`, `<raw path>`, percent-decoded) when its file does not exist relative to
 //! the note. URLs with a scheme (`mailto:` too), absolute paths, `#anchor`-only links, fenced
 //! code, code spans and the front matter are skipped. Pure logic, no GTK; the dialog runs
@@ -13,7 +14,7 @@ use std::path::{Path, PathBuf};
 use crate::backlinks::{self, LinkIndex};
 use crate::links::{self, Target};
 use crate::lists;
-use crate::render::{WikiIndex, wiki_key};
+use crate::render::{WikiIndex, is_embed_image, wiki_key};
 
 /// A broken link.
 #[derive(Debug, Clone, PartialEq)]
@@ -31,12 +32,13 @@ pub struct NoteLinks {
     pub links: Vec<Link>,
 }
 
-/// The broken links of `text` (the note at `note`). Wiki names resolve through `wiki`; `exists`
-/// tells whether a linked file is there.
+/// The broken links of `text` (the note at `note`). Wiki names resolve through `wiki`, embedded
+/// images through `images`; `exists` tells whether a linked file is there.
 pub fn in_text(
     text: &str,
     note: &Path,
     wiki: &WikiIndex,
+    images: &WikiIndex,
     exists: &dyn Fn(&Path) -> bool,
 ) -> Vec<Link> {
     let skip = lists::front_matter_lines(text);
@@ -47,16 +49,22 @@ pub fn in_text(
             continue;
         }
         for (range, target) in links::spans(line) {
+            let embed = links::is_embed(line, &range);
             let broken = match &target {
+                Target::Wiki(name) if embed && is_embed_image(name) => {
+                    images.resolve(name, Some(note)).is_none()
+                }
                 Target::Wiki(name) => {
                     wiki_key(name).is_some() && wiki.resolve(name, Some(note)).is_none()
                 }
                 Target::Href(href) => file_target(href, note).is_some_and(|f| !exists(&f)),
             };
             if broken {
+                // An embed as written: with its `!`.
+                let start = if embed { range.start - 1 } else { range.start };
                 out.push(Link {
                     line: i + 1,
-                    text: line[range].to_string(),
+                    text: line[start..range.end].to_string(),
                 });
             }
         }
@@ -75,11 +83,12 @@ fn file_target(href: &str, note: &Path) -> Option<PathBuf> {
 }
 
 /// The broken links of the notes `index` was synced with (only those under `scope`, if any), in
-/// note list order. The open note (path, editor text) is checked as in the editor; other notes
+/// note list order; `images` are the folder's embeddable images. The open note (path, editor text) is checked as in the editor; other notes
 /// are read only when the index lists a link of theirs that leads nowhere. None if
 /// `cancelled` turned true.
 pub fn find(
     index: &LinkIndex,
+    images: &WikiIndex,
     open: Option<&(PathBuf, String)>,
     scope: Option<&Path>,
     cancelled: &dyn Fn() -> bool,
@@ -96,9 +105,9 @@ pub fn find(
             continue;
         }
         let links = match open {
-            Some((path, text)) if path == note => in_text(text, note, wiki, &exists),
+            Some((path, text)) if path == note => in_text(text, note, wiki, images, &exists),
             _ if suspects.contains(note) => match crate::find::read_utf8(note) {
-                Some(text) => in_text(&text, note, wiki, &exists),
+                Some(text) => in_text(&text, note, wiki, images, &exists),
                 None => continue,
             },
             _ => continue,
@@ -148,6 +157,11 @@ mod tests {
         WikiIndex::with_aliases(notes, Path::new("/n"), &aliases)
     }
 
+    /// The images of the folder `/n`.
+    fn images() -> WikiIndex {
+        WikiIndex::new(vec![PathBuf::from("/n/assets/x.png")], Path::new("/n"))
+    }
+
     /// The files of the folder besides its notes.
     fn exists(p: &Path) -> bool {
         let files = [
@@ -164,10 +178,22 @@ mod tests {
     }
 
     fn broken(text: &str) -> Vec<String> {
-        in_text(text, Path::new("/n/A.md"), &wiki(), &exists)
+        in_text(text, Path::new("/n/A.md"), &wiki(), &images(), &exists)
             .into_iter()
             .map(|l| l.text)
             .collect()
+    }
+
+    #[test]
+    fn missing_embeds() {
+        // An image by name among the folder's images; `[[x.png]]` is a link to a note.
+        assert_eq!(
+            broken(
+                "![[x.png|300]] ![[ASSETS/X.PNG]] ![[gone.png]] [[x.png]]\n![[Name#Part]] ![[Gone]]"
+            ),
+            ["![[gone.png]]", "[[x.png]]", "![[Gone]]"]
+        );
+        assert!(broken("`![[gone.png]]`\n```\n![[Gone]]\n```\n").is_empty());
     }
 
     #[test]
@@ -206,6 +232,7 @@ mod tests {
             "[up](../Name.md) [x](Name2.md)",
             Path::new("/n/Sub/Other.md"),
             &wiki(),
+            &images(),
             &exists,
         );
         assert_eq!(
@@ -227,6 +254,7 @@ mod tests {
             "x\n\n![a](<img/a b.png>)",
             Path::new("/n/A.md"),
             &wiki(),
+            &images(),
             &exists,
         );
         assert_eq!(
@@ -249,7 +277,7 @@ mod tests {
     #[test]
     fn code_is_skipped() {
         let text = "`[[Missing]]` ``[a](gone.md)``\n```\n[[Missing]]\n```\n~~~\n![x](gone.png)\n~~~\n[[Missing]]";
-        let found = in_text(text, Path::new("/n/A.md"), &wiki(), &exists);
+        let found = in_text(text, Path::new("/n/A.md"), &wiki(), &images(), &exists);
         assert_eq!(
             found,
             [Link {
@@ -262,7 +290,7 @@ mod tests {
     #[test]
     fn front_matter_is_skipped() {
         let text = "---\nup: \"[[Missing]]\"\nimage: [x](gone.png)\n---\n[[Missing]]";
-        let found = in_text(text, Path::new("/n/A.md"), &wiki(), &exists);
+        let found = in_text(text, Path::new("/n/A.md"), &wiki(), &images(), &exists);
         assert_eq!(
             found,
             [Link {
@@ -310,7 +338,7 @@ mod tests {
         index.sync(&notes, &Aliases::default(), &root, &HashSet::new());
         let never = || false;
 
-        let found = find(&index, None, None, &never).unwrap();
+        let found = find(&index, &images(), None, None, &never).unwrap();
         let shape: Vec<(PathBuf, Vec<(usize, &str)>)> = found
             .iter()
             .map(|n| {
@@ -337,20 +365,20 @@ mod tests {
         std::fs::create_dir_all(root.join("img")).unwrap();
         std::fs::write(root.join("img/x.png"), b"png").unwrap();
         let open = (notes[1].clone(), "[[Typo]]\n".to_string());
-        let found = find(&index, Some(&open), None, &never).unwrap();
+        let found = find(&index, &images(), Some(&open), None, &never).unwrap();
         let paths: Vec<&PathBuf> = found.iter().map(|n| &n.path).collect();
         assert_eq!(paths, [&notes[0], &notes[1], &notes[2]]);
         assert_eq!(summary(&found), "4 broken links in 3 notes");
 
         // A scope keeps the notes under that folder.
-        let found = find(&index, None, Some(&root.join("Sub")), &never).unwrap();
+        let found = find(&index, &images(), None, Some(&root.join("Sub")), &never).unwrap();
         assert_eq!(summary(&found), "2 broken links in 1 note");
         let one = NoteLinks {
             path: notes[0].clone(),
             links: vec![found[0].links[0].clone()],
         };
         assert_eq!(summary(&[one]), "1 broken link in 1 note");
-        assert!(find(&index, None, None, &|| true).is_none());
+        assert!(find(&index, &images(), None, None, &|| true).is_none());
         assert_eq!(summary(&[]), "No broken links");
     }
 }

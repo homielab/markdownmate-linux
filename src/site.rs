@@ -82,7 +82,8 @@ pub fn export(
     order: SortOrder,
     progress: &Progress,
 ) -> io::Result<Outcome> {
-    let tree = notes::scan(root, order)?;
+    let mut images = Vec::new();
+    let tree = notes::scan_with_images(root, order, &mut images)?;
     let mut paths = Vec::new();
     quick::note_paths(&tree, &mut paths);
     let rels: Vec<PathBuf> = paths
@@ -93,12 +94,14 @@ pub fn export(
     progress.total.store(paths.len(), Ordering::Relaxed);
     let aliases = aliases::index(&paths);
     let wiki = render::WikiIndex::with_aliases(paths.clone(), root, &aliases);
+    let images = render::WikiIndex::new(images, root);
     let job = Job {
         root,
         real_root: root.canonicalize()?,
         dest,
         pages: &pages,
         wiki: &wiki,
+        images: &images,
         copied: Mutex::new(HashSet::new()),
     };
     let next = AtomicUsize::new(0);
@@ -187,6 +190,44 @@ fn assets(root: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// The links of `note`'s page: notes as their pages (absolute paths in the folder's tree,
+/// which `render` makes relative to the note), embedded notes and images as files.
+struct PageLinks<'a> {
+    job: &'a Job<'a>,
+    note: &'a Path,
+}
+
+impl render::Links for PageLinks<'_> {
+    fn note(&self, target: &str) -> Option<PathBuf> {
+        self.note_from(target, self.note)
+    }
+    fn note_from(&self, target: &str, from: &Path) -> Option<PathBuf> {
+        let found = self.job.wiki.resolve(target, Some(from))?;
+        let page = self
+            .job
+            .pages
+            .get(found.strip_prefix(self.job.root).ok()?)?;
+        Some(self.job.root.join(page))
+    }
+    fn embeds(&self) -> render::Embeds {
+        render::Embeds::All
+    }
+    fn file(&self, target: &str) -> Option<PathBuf> {
+        self.job.wiki.resolve(target, Some(self.note)).cloned()
+    }
+    fn image(&self, target: &str, from: Option<&Path>) -> Option<PathBuf> {
+        let from = from.unwrap_or(self.note);
+        self.job.images.resolve(target, Some(from)).cloned()
+    }
+    fn read(&self, note: &Path) -> Option<String> {
+        let bytes = fs::read(note).ok()?;
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    }
+    fn current(&self) -> Option<&Path> {
+        Some(self.note)
+    }
+}
+
 /// What every export thread shares.
 struct Job<'a> {
     root: &'a Path,
@@ -195,6 +236,8 @@ struct Job<'a> {
     dest: &'a Path,
     pages: &'a HashMap<PathBuf, PathBuf>,
     wiki: &'a render::WikiIndex,
+    /// The images `![[name.png]]` can embed.
+    images: &'a render::WikiIndex,
     /// Files already copied (or being copied), relative to `root`.
     copied: Mutex<HashSet<PathBuf>>,
 }
@@ -211,12 +254,7 @@ impl Job<'_> {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        // Absolute page paths in the folder's tree: `render` makes them relative to the note.
-        let link = |target: &str| {
-            let found = self.wiki.resolve(target, Some(note))?;
-            let page = self.pages.get(found.strip_prefix(self.root).ok()?)?;
-            Some(self.root.join(page))
-        };
+        let link = PageLinks { job: self, note };
         let note_dir = note.parent().unwrap_or(self.root);
         let html = render::folder_export_page(&text, &title, note_dir, &link);
         let dir = rel.parent().unwrap_or(Path::new(""));
@@ -945,6 +983,46 @@ mod tests {
         assert!(index.contains("<a href=\"Guides/Guide.html\">Guide</a>"));
         assert!(index.contains("<a href=\"Home.html\">Home</a>"));
         assert!(index.find("Guides/Guide.html") < index.find("Home.html"));
+    }
+
+    #[test]
+    fn inlines_embeds() {
+        let src = TempDir::new("src-embeds");
+        let dest = TempDir::new("dest-embeds");
+        src.write(
+            "Home.md",
+            "![[logo.png|120]]\n\n![[Guide#Step]]\n\n![[Gone]]\n",
+        );
+        src.write(
+            "Guides/Guide.md",
+            "# Guide\n\n## Step\n\nDo it ![[shot.png]] [[Home]] ![[Home]]\n\n## Other\n\nnot shown\n",
+        );
+        src.write("Guides/img/shot.png", "png");
+        src.write("logo.png", "png");
+        let progress = Progress::default();
+        export(&src.0, &dest.0, SortOrder::Name, &progress).unwrap();
+        let home = dest.read("Home.html");
+        assert!(
+            home.contains("<img src=\"logo.png\" alt=\"logo.png\" width=\"120\" />"),
+            "{home}"
+        );
+        assert!(home.contains("data-embed=\"Guide#Step\""), "{home}");
+        assert!(home.contains("href=\"Guides/Guide.html#step\""), "{home}");
+        assert!(
+            home.contains("Do it <img src=\"Guides/img/shot.png\""),
+            "{home}"
+        );
+        assert!(
+            home.contains("<a href=\"Home.html\" data-wikilink=\"true\">Home</a>"),
+            "{home}"
+        );
+        assert!(!home.contains("not shown"), "{home}");
+        assert!(
+            home.contains("<span class=\"embed-missing\">![[Gone]]</span>"),
+            "{home}"
+        );
+        assert_eq!(dest.read("logo.png"), "png");
+        assert_eq!(dest.read("Guides/img/shot.png"), "png");
     }
 
     #[test]

@@ -1221,10 +1221,15 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
             let mine = generation.fetch_add(1, Ordering::SeqCst) + 1;
             let (open, scope) = (snapshot(), current_scope.borrow().clone());
             let g = generation.clone();
+            let images = render::WikiIndex::new(editor.image_list.borrow().to_vec(), &root);
             let Some(job) = editor.links_job(move |index| {
-                broken::find(index, open.as_ref().as_ref(), scope.as_deref(), &|| {
-                    g.load(Ordering::SeqCst) != mine
-                })
+                broken::find(
+                    index,
+                    &images,
+                    open.as_ref().as_ref(),
+                    scope.as_deref(),
+                    &|| g.load(Ordering::SeqCst) != mine,
+                )
             }) else {
                 return;
             };

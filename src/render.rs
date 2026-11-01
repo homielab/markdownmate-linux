@@ -22,7 +22,7 @@ use crate::{state, tags};
 /// test-only form leaves it out to keep the expected HTML short.
 #[cfg(test)]
 fn to_html(md: &str, wiki: &dyn Fn(&str) -> Option<PathBuf>) -> String {
-    body_html(md, wiki, true, true, false, true)
+    body_html(md, &wiki, true, true, false, true)
 }
 
 /// `to_html`, with syntect code highlighting and formulas marked for KaTeX (`math_html`)
@@ -32,7 +32,7 @@ fn to_html(md: &str, wiki: &dyn Fn(&str) -> Option<PathBuf>) -> String {
 /// Text, which keeps it as written).
 pub(crate) fn body_html(
     md: &str,
-    wiki: &dyn Fn(&str) -> Option<PathBuf>,
+    wiki: &dyn Links,
     rich: bool,
     tasks: bool,
     sourcepos: bool,
@@ -55,7 +55,7 @@ pub(crate) fn body_html(
 #[allow(clippy::too_many_arguments)]
 fn body_html_with(
     md: &str,
-    wiki: &dyn Fn(&str) -> Option<PathBuf>,
+    wiki: &dyn Links,
     rich: bool,
     tasks: bool,
     sourcepos: bool,
@@ -131,11 +131,7 @@ pub(crate) struct Rendered {
 }
 
 /// `body_html` of `md` as `body` says.
-pub(crate) fn render_body(
-    md: &str,
-    wiki: &dyn Fn(&str) -> Option<PathBuf>,
-    body: &Body,
-) -> Option<Rendered> {
+pub(crate) fn render_body(md: &str, wiki: &dyn Links, body: &Body) -> Option<Rendered> {
     let Body {
         rich,
         tasks,
@@ -184,6 +180,8 @@ pub(crate) fn render_body(
     // Heading ids come from the text as written (links to `#a--b` keep working): taken here,
     // before smart punctuation, and written over comrak's ids after rendering.
     let written_headings = smart.then(|| heading_texts(root));
+    // Before smart punctuation: embeds are read as written.
+    let embeds = mark_embeds(&arena, root, wiki, body);
     if smart {
         crate::smart::apply(root);
     }
@@ -212,6 +210,10 @@ pub(crate) fn render_body(
     let mut front_matter = None;
     let mut formulas = Vec::new();
     let mut code_blocks = Vec::new();
+    let base = wiki
+        .base()
+        .map(|b| percent_encode(b.as_os_str().as_bytes()))
+        .filter(|b| !b.is_empty());
     for node in root.descendants() {
         use comrak::nodes::NodeValue;
         // Before its text is marked below (tags, formulas): its descendants come after it.
@@ -282,21 +284,14 @@ pub(crate) fn render_body(
             front_matter = Some(text.to_string());
         }
         if let NodeValue::WikiLink(link) = &mut node.data_mut().value {
-            // `[[Note#Heading]]` / `[[#Heading]]`: the heading's id (see `heading_at`).
-            let anchor = link
-                .url
-                .split_once('#')
-                .map(|(_, heading)| format!("#{}", comrak::Anchorizer::new().anchorize(heading)));
-            let anchor = anchor.filter(|a| a.len() > 1);
-            // An absolute path (no `file:` scheme, which comrak drops) resolves against the
-            // note's file:// URI and comes back to `link_action` as a `Link::Note`.
-            link.url = match (wiki(&link.url), anchor) {
-                (_, Some(anchor)) if link.url.starts_with('#') => anchor,
-                (Some(path), anchor) => {
-                    percent_encode(path.as_os_str().as_bytes()) + anchor.as_deref().unwrap_or("")
-                }
-                (None, _) => format!("{MISSING}{}", percent_encode(link.url.as_bytes())),
-            };
+            link.url = wiki_href(wiki, &link.url);
+        }
+        // An embedded note's relative links and images, made relative to the page.
+        if let Some(base) = &base
+            && let NodeValue::Link(link) | NodeValue::Image(link) = &mut node.data_mut().value
+            && is_relative(&link.url)
+        {
+            link.url = format!("{base}/{}", link.url);
         }
     }
     // The renderer writes a task item's checkbox right before its children: a marker
@@ -452,12 +447,411 @@ pub(crate) fn render_body(
         comrak::html::escape(&mut pre, text.trim_end()).expect("writing to a String");
         html.insert_str(0, &format!("{pre}</pre>\n"));
     }
+    // Last: an embedded note's HTML holds headings, code blocks and formulas of its own.
+    if !embeds.is_empty() {
+        html = put_embeds(&html, &embeds);
+    }
     Some(Rendered {
         html,
         headings,
         titles,
         toc: has_toc,
     })
+}
+
+/// The `href` of a wiki link to `target`: the note's path (`Links::note`) with the heading's id
+/// for `[[Note#Heading]]` (see `heading_at`), the id alone for `[[#Heading]]`, or `MISSING` +
+/// the target when no note has that name. An absolute path (no `file:` scheme, which comrak
+/// drops) resolves against the note's file:// URI and comes back to `link_action` as a
+/// `Link::Note`.
+fn wiki_href(links: &dyn Links, target: &str) -> String {
+    let anchor = target
+        .split_once('#')
+        .map(|(_, heading)| format!("#{}", comrak::Anchorizer::new().anchorize(heading)));
+    let anchor = anchor.filter(|a| a.len() > 1);
+    match (links.note(target), anchor) {
+        (_, Some(anchor)) if target.starts_with('#') => anchor,
+        (Some(path), anchor) => {
+            percent_encode(path.as_os_str().as_bytes()) + anchor.as_deref().unwrap_or("")
+        }
+        (None, _) => format!("{MISSING}{}", percent_encode(target.as_bytes())),
+    }
+}
+
+/// Whether a link's URL is relative to the note's folder: no scheme, not absolute, not `#…`.
+fn is_relative(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or("");
+    let scheme = path.find(':').is_some_and(|c| !path[..c].contains('/'));
+    !path.is_empty() && !path.starts_with(['/', '~']) && !scheme
+}
+
+/// What an embed becomes: its HTML and, for a rendered note, the attributes of the
+/// `<div class="embed">` around it.
+struct Embed {
+    html: String,
+    block: Option<String>,
+}
+
+/// Replaces each `![[…]]` in the text of `root` (not in code, links or headings) with a marker
+/// `put_embeds` turns into its HTML. A note rendered inline gets a paragraph of its own. Nothing
+/// when `links` leaves embeds as text.
+fn mark_embeds<'a>(
+    arena: &'a comrak::Arena<'a>,
+    root: &'a comrak::nodes::AstNode<'a>,
+    links: &dyn Links,
+    body: &Body,
+) -> Vec<Embed> {
+    use comrak::nodes::NodeValue;
+    let mut found = Vec::new();
+    if links.embeds() == Embeds::Text {
+        return found;
+    }
+    let texts: Vec<_> = root
+        .descendants()
+        .filter(|n| matches!(&n.data().value, NodeValue::Text(t) if t.contains("![[")))
+        .collect();
+    for node in texts {
+        let skipped = node.ancestors().skip(1).any(|n| {
+            matches!(
+                n.data().value,
+                NodeValue::Link(_)
+                    | NodeValue::Image(_)
+                    | NodeValue::WikiLink(_)
+                    | NodeValue::Heading(_)
+            )
+        });
+        let text = match &node.data().value {
+            NodeValue::Text(t) if !skipped => t.to_string(),
+            _ => continue,
+        };
+        let spans = embed_spans(&text);
+        if spans.is_empty() {
+            continue;
+        }
+        let in_paragraph = node
+            .parent()
+            .is_some_and(|p| matches!(p.data().value, NodeValue::Paragraph));
+        let text_node = |t: &str| -> &'a comrak::nodes::AstNode<'a> {
+            arena.alloc(NodeValue::Text(t.to_string().into()).into())
+        };
+        let mut blocks = Vec::new();
+        let mut done = 0;
+        for span in spans {
+            if span.start > done {
+                node.insert_before(text_node(&text[done..span.start]));
+            }
+            let index = math_index(found.len());
+            let marker = text_node(&format!("{EMBED}{index}{EMBED_END}"));
+            node.insert_before(marker);
+            let embed = embed_html(&text[span.clone()], links, body, in_paragraph);
+            if embed.block.is_some() {
+                blocks.push(marker);
+            }
+            found.push(embed);
+            done = span.end;
+        }
+        if done < text.len() {
+            node.data_mut().value = NodeValue::Text(text[done..].to_string().into());
+        } else {
+            node.detach();
+        }
+        for marker in blocks {
+            own_paragraph(arena, marker);
+        }
+    }
+    found
+}
+
+/// The byte ranges of the `![[target]]` / `![[target|option]]` in `text`.
+fn embed_spans(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some(start) = text[from..].find("![[").map(|i| from + i) {
+        let inner = start + 3;
+        let Some(len) = text[inner..].find("]]") else {
+            break;
+        };
+        let target = text[inner..inner + len].split('|').next().unwrap_or("");
+        if text[inner..inner + len].contains('[') || target.trim().is_empty() {
+            from = inner;
+            continue;
+        }
+        found.push(start..inner + len + 2);
+        from = inner + len + 2;
+    }
+    found
+}
+
+/// Moves `marker` (in a paragraph) into a paragraph of its own, with the same source position;
+/// the line breaks around it go.
+fn own_paragraph<'a>(arena: &'a comrak::Arena<'a>, marker: &'a comrak::nodes::AstNode<'a>) {
+    use comrak::nodes::NodeValue;
+    let Some(paragraph) = marker.parent() else {
+        return;
+    };
+    let pos = paragraph.data().sourcepos;
+    let new = || -> &'a comrak::nodes::AstNode<'a> {
+        let node = arena.alloc(NodeValue::Paragraph.into());
+        node.data_mut().sourcepos = pos;
+        node
+    };
+    let rest: Vec<_> = marker.following_siblings().skip(1).collect();
+    if !rest.is_empty() {
+        let after = new();
+        paragraph.insert_after(after);
+        for node in rest {
+            after.append(node);
+        }
+        trim_breaks(after);
+    }
+    if marker.previous_sibling().is_some() {
+        let own = new();
+        paragraph.insert_after(own);
+        own.append(marker);
+        trim_breaks(paragraph);
+    }
+}
+
+/// Drops the line breaks and spaces at the ends of `paragraph`, and the paragraph itself when
+/// nothing is left.
+fn trim_breaks<'a>(paragraph: &'a comrak::nodes::AstNode<'a>) {
+    use comrak::nodes::NodeValue;
+    let blank = |n: &&comrak::nodes::AstNode<'_>| match &n.data().value {
+        NodeValue::SoftBreak | NodeValue::LineBreak => true,
+        NodeValue::Text(t) => t.trim().is_empty(),
+        _ => false,
+    };
+    while let Some(first) = paragraph.first_child().filter(blank) {
+        first.detach();
+    }
+    while let Some(last) = paragraph.last_child().filter(blank) {
+        last.detach();
+    }
+    let Some(first) = paragraph.first_child() else {
+        return paragraph.detach();
+    };
+    if let NodeValue::Text(t) = &mut first.data_mut().value {
+        *t = t.trim_start().to_string().into();
+    }
+    if let Some(last) = paragraph.last_child()
+        && let NodeValue::Text(t) = &mut last.data_mut().value
+    {
+        *t = t.trim_end().to_string().into();
+    }
+}
+
+/// HTML-escaped `text`.
+fn escaped(text: &str) -> String {
+    let mut out = String::new();
+    comrak::html::escape(&mut out, text).expect("writing to a String");
+    out
+}
+
+/// The HTML of `written` (`![[target|option]]`): the image, the note (or its section from
+/// `#Heading` to the next heading of the same or a higher level) rendered inline, a wiki link
+/// (an embed inside an embedded note, a note embedding itself, one that is not alone in a
+/// paragraph's text), or the text dimmed when the target is not found.
+fn embed_html(written: &str, links: &dyn Links, body: &Body, in_paragraph: bool) -> Embed {
+    let inner = &written[3..written.len() - 2];
+    let (target, option) = match inner.split_once('|') {
+        Some((target, option)) => (target.trim(), Some(option.trim())),
+        None => (inner.trim(), None),
+    };
+    let inline = |html: String| Embed { html, block: None };
+    let missing = || {
+        inline(format!(
+            "<span class=\"embed-missing\">{}</span>",
+            escaped(written)
+        ))
+    };
+    if is_embed_image(target) {
+        return match links.image(target, None) {
+            Some(path) => inline(image_tag(&links.show(&path), target, option)),
+            None => missing(),
+        };
+    }
+    let link = || {
+        let mut href = String::new();
+        comrak::html::escape_href(&mut href, &wiki_href(links, target), false)
+            .expect("writing to a String");
+        inline(format!(
+            "<a href=\"{href}\" data-wikilink=\"true\">{}</a>",
+            escaped(target)
+        ))
+    };
+    let (name, heading) = match target.split_once('#') {
+        Some((name, heading)) => (name.trim(), Some(heading.trim()).filter(|h| !h.is_empty())),
+        None => (target, None),
+    };
+    if links.embeds() != Embeds::All || name.is_empty() || !in_paragraph {
+        return link();
+    }
+    let Some(file) = links.file(target) else {
+        return missing();
+    };
+    if links.current() == Some(file.as_path()) {
+        return link();
+    }
+    let Some(content) = embedded_note(links, &file, heading, body) else {
+        return missing();
+    };
+    let title = file
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let title = match heading {
+        Some(heading) => format!("{title} \u{203a} {heading}"),
+        None => title,
+    };
+    let mut href = String::new();
+    comrak::html::escape_href(&mut href, &wiki_href(links, target), false)
+        .expect("writing to a String");
+    Embed {
+        html: format!(
+            "<p class=\"embed-title\"><a href=\"{href}\" data-wikilink=\"true\">{}</a></p>{content}",
+            escaped(&title)
+        ),
+        block: Some(format!(
+            " class=\"embed\" data-embed=\"{}\"",
+            escaped(target)
+        )),
+    }
+}
+
+/// `<img>` of the image at `src` (as written into the HTML): `option` is `300` (width) or
+/// `300x200` (width and height) in pixels, else its alt text (default: `name`). `src` comes
+/// first, as `site::rewrite` and `inline_images` read it.
+fn image_tag(src: &Path, name: &str, option: Option<&str>) -> String {
+    let size = option.and_then(|o| {
+        let (w, h) = match o.split_once(['x', 'X']) {
+            Some((w, h)) => (w, Some(h)),
+            None => (o, None),
+        };
+        let w: u32 = w.trim().parse().ok()?;
+        let h = match h {
+            Some(h) => Some(h.trim().parse::<u32>().ok()?),
+            None => None,
+        };
+        Some((w, h))
+    });
+    let alt = match option {
+        Some(alt) if size.is_none() && !alt.is_empty() => alt,
+        _ => name,
+    };
+    let mut tag = format!(
+        "<img src=\"{}\" alt=\"{}\"",
+        percent_encode(src.as_os_str().as_bytes()),
+        escaped(alt)
+    );
+    if let Some((w, h)) = size {
+        tag.push_str(&format!(" width=\"{w}\""));
+        if let Some(h) = h {
+            tag.push_str(&format!(" height=\"{h}\""));
+        }
+    }
+    tag.push_str(" />");
+    tag
+}
+
+/// The HTML of the note `file` (or its section under `heading`) inside a page made with
+/// `links`: no front matter, task checkboxes, Copy buttons or table of contents; its headings
+/// without ids (the page's own are counted and linked to); its embeds one level deep (`Nested`).
+/// None when it cannot be read or has no such heading.
+fn embedded_note(
+    links: &dyn Links,
+    file: &Path,
+    heading: Option<&str>,
+    body: &Body,
+) -> Option<String> {
+    let text = links.read(file)?;
+    let md = match heading {
+        Some(heading) => section(&text, heading)?,
+        None => text,
+    };
+    let nested = Nested {
+        outer: links,
+        from: file,
+    };
+    let inner = Body {
+        rich: body.rich,
+        tasks: false,
+        sourcepos: false,
+        toc: false,
+        first_line: 1,
+        cached: false,
+        next: false,
+        smart: body.smart,
+    };
+    let html = render_body(&md, &nested, &inner)?.html;
+    let mut out = String::with_capacity(html.len());
+    let mut done = 0;
+    for id in crate::incremental::heading_id_ranges(&html) {
+        // ` id="` before the value, `"` after it.
+        out.push_str(&html[done..id.start - 5]);
+        done = id.end + 1;
+    }
+    out.push_str(&html[done..]);
+    Some(out)
+}
+
+/// The lines of `md` from the heading `heading` names (as `heading_at`) to the next heading of
+/// the same or a higher level.
+fn section(md: &str, heading: &str) -> Option<String> {
+    let (line, _) = heading_at(md, heading)?;
+    let headings = heading_targets(md);
+    let level = headings.iter().find(|h| *h.lines.start() == line)?.level;
+    let lines: Vec<&str> = md.split_inclusive('\n').collect();
+    let end = headings
+        .iter()
+        .find(|h| *h.lines.start() > line && h.level <= level)
+        .map_or(lines.len(), |h| *h.lines.start() - 1);
+    Some(lines.get(line - 1..end)?.concat())
+}
+
+/// `html` with each embed marker replaced by its HTML; a rendered note's paragraph (when the
+/// renderer wrote one) becomes its `<div class="embed">`, keeping its attributes.
+fn put_embeds(html: &str, embeds: &[Embed]) -> String {
+    let mut out =
+        String::with_capacity(html.len() + embeds.iter().map(|e| e.html.len()).sum::<usize>());
+    let mut rest = html;
+    while let Some(start) = rest.find(EMBED) {
+        let marker = &rest[start + EMBED.len_utf8()..];
+        let end = marker.find(EMBED_END).expect("markers come in pairs");
+        let index: String = marker[..end]
+            .chars()
+            .map(|c| char::from_u32(c as u32 - *MATH_DIGITS.start() as u32 + '0' as u32).unwrap())
+            .collect();
+        let embed = &embeds[index.parse::<usize>().expect("embed index")];
+        let mut after = &marker[end + EMBED_END.len_utf8()..];
+        let mut before = &rest[..start];
+        match &embed.block {
+            Some(attrs) => {
+                // `<p …>MARK</p>`: the paragraph `own_paragraph` made (none in a tight list).
+                let open = before.rfind("<p").filter(|&p| {
+                    let tag = &before[p..];
+                    tag.ends_with('>')
+                        && tag[2..].starts_with([' ', '>'])
+                        && !tag[1..].contains('<')
+                        && after.starts_with("</p>")
+                });
+                let mut extra = "";
+                if let Some(p) = open {
+                    extra = &before[p + 2..before.len() - 1];
+                    before = &before[..p];
+                    after = &after["</p>".len()..];
+                }
+                out.push_str(before);
+                out.push_str(&format!("<div{attrs}{extra}>{}</div>", embed.html));
+            }
+            None => {
+                out.push_str(before);
+                out.push_str(&embed.html);
+            }
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The text comrak makes each heading's id from, in order (`Rendered::headings`).
@@ -1158,13 +1552,16 @@ const MATH_TEXT: char = '\u{E005}';
 const MATH_END: char = '\u{E006}';
 /// A `[TOC]` paragraph's text in the AST (`fill_toc`).
 const TOC: char = '\u{E007}';
+/// An embed's place (`mark_embeds`): EMBED, its index in `MATH_DIGITS`, EMBED_END.
+const EMBED: char = '\u{E008}';
+const EMBED_END: char = '\u{E009}';
 /// `'0'`…`'9'` of a formula's index.
 const MATH_DIGITS: std::ops::RangeInclusive<char> = '\u{E010}'..='\u{E019}';
 
 /// Whether `c` is one of the private-use chars `body_html` marks the AST with; the note's own
 /// copies are dropped before parsing.
 pub(crate) fn is_marker(c: char) -> bool {
-    matches!(c, TAG_OPEN..=TOC) || MATH_DIGITS.contains(&c)
+    matches!(c, TAG_OPEN..=EMBED_END) || MATH_DIGITS.contains(&c)
 }
 
 /// `n` in `MATH_DIGITS`.
@@ -1195,6 +1592,192 @@ pub(crate) fn percent_encode(bytes: &[u8]) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+/// What `![[…]]` embeds become (`Links::embeds`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Embeds {
+    /// Left as written: no folder is open.
+    Text,
+    /// Images shown, note embeds as wiki links: inside an embedded note (one level deep).
+    Images,
+    /// Images shown, notes rendered inline.
+    All,
+}
+
+/// How `body_html` resolves a note's wiki links and `![[…]]` embeds. Any
+/// `Fn(&str) -> Option<PathBuf>` is one that resolves wiki links only (embeds stay text).
+pub trait Links {
+    /// The path a `[[target]]` links to, as written into the HTML; None: not found.
+    fn note(&self, target: &str) -> Option<PathBuf>;
+    /// `note` for a link written in the note `from` (an embedded one).
+    fn note_from(&self, target: &str, _from: &Path) -> Option<PathBuf> {
+        self.note(target)
+    }
+    fn embeds(&self) -> Embeds {
+        Embeds::Text
+    }
+    /// The note file `![[target]]` embeds.
+    fn file(&self, _target: &str) -> Option<PathBuf> {
+        None
+    }
+    /// The image file `![[target]]` shows, nearest to the note `from` (the rendered one when None).
+    fn image(&self, _target: &str, _from: Option<&Path>) -> Option<PathBuf> {
+        None
+    }
+    /// The text of an embedded note.
+    fn read(&self, _note: &Path) -> Option<String> {
+        None
+    }
+    /// A file's path as written into the HTML.
+    fn show(&self, path: &Path) -> PathBuf {
+        path.to_path_buf()
+    }
+    /// The rendered note (a note embedding itself shows a link).
+    fn current(&self) -> Option<&Path> {
+        None
+    }
+    /// The folder relative links and images of the text are written for, when the page is
+    /// not that text's (an embedded note), as written into the HTML.
+    fn base(&self) -> Option<PathBuf> {
+        None
+    }
+}
+
+impl<F: Fn(&str) -> Option<PathBuf>> Links for F {
+    fn note(&self, target: &str) -> Option<PathBuf> {
+        self(target)
+    }
+}
+
+/// The open folder's links, as Ctrl+click and the Find tools resolve them: notes (and their
+/// aliases) and embeddable images by name, nearest to `current` first. No `root`: no folder is
+/// open, embeds stay text.
+pub struct Folder {
+    pub notes: Vec<PathBuf>,
+    pub images: Vec<PathBuf>,
+    pub aliases: std::sync::Arc<Aliases>,
+    pub root: Option<PathBuf>,
+    pub current: Option<PathBuf>,
+}
+
+impl Folder {
+    fn resolve(&self, target: &str, from: Option<&Path>) -> Option<PathBuf> {
+        let root = self.root.as_deref().unwrap_or(Path::new(""));
+        resolve_wiki_with(target, &self.notes, &self.aliases, root, from).cloned()
+    }
+}
+
+impl Links for Folder {
+    fn note(&self, target: &str) -> Option<PathBuf> {
+        self.resolve(target, self.current.as_deref())
+    }
+    fn note_from(&self, target: &str, from: &Path) -> Option<PathBuf> {
+        self.resolve(target, Some(from))
+    }
+    fn embeds(&self) -> Embeds {
+        if self.root.is_some() {
+            Embeds::All
+        } else {
+            Embeds::Text
+        }
+    }
+    fn file(&self, target: &str) -> Option<PathBuf> {
+        self.note(target)
+    }
+    fn image(&self, target: &str, from: Option<&Path>) -> Option<PathBuf> {
+        let root = self.root.as_deref()?;
+        resolve_wiki(target, &self.images, root, from.or(self.current.as_deref())).cloned()
+    }
+    fn read(&self, note: &Path) -> Option<String> {
+        std::fs::read(note)
+            .ok()
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+    }
+    fn current(&self) -> Option<&Path> {
+        self.current.as_deref()
+    }
+}
+
+/// `inner` for a page meant to sit in `dir` (exports): paths relative to it.
+struct Portable<'a> {
+    inner: &'a dyn Links,
+    dir: &'a Path,
+}
+
+impl Links for Portable<'_> {
+    fn note(&self, target: &str) -> Option<PathBuf> {
+        self.inner.note(target).map(|p| relative(self.dir, &p))
+    }
+    fn note_from(&self, target: &str, from: &Path) -> Option<PathBuf> {
+        self.inner
+            .note_from(target, from)
+            .map(|p| relative(self.dir, &p))
+    }
+    fn embeds(&self) -> Embeds {
+        self.inner.embeds()
+    }
+    fn file(&self, target: &str) -> Option<PathBuf> {
+        self.inner.file(target)
+    }
+    fn image(&self, target: &str, from: Option<&Path>) -> Option<PathBuf> {
+        self.inner.image(target, from)
+    }
+    fn read(&self, note: &Path) -> Option<String> {
+        self.inner.read(note)
+    }
+    fn show(&self, path: &Path) -> PathBuf {
+        relative(self.dir, &self.inner.show(path))
+    }
+    fn current(&self) -> Option<&Path> {
+        self.inner.current()
+    }
+}
+
+/// The links of the note `from` embedded in a page made with `outer`.
+struct Nested<'a> {
+    outer: &'a dyn Links,
+    from: &'a Path,
+}
+
+impl Links for Nested<'_> {
+    fn note(&self, target: &str) -> Option<PathBuf> {
+        self.outer.note_from(target, self.from)
+    }
+    fn note_from(&self, target: &str, from: &Path) -> Option<PathBuf> {
+        self.outer.note_from(target, from)
+    }
+    fn embeds(&self) -> Embeds {
+        match self.outer.embeds() {
+            Embeds::Text => Embeds::Text,
+            _ => Embeds::Images,
+        }
+    }
+    fn image(&self, target: &str, from: Option<&Path>) -> Option<PathBuf> {
+        self.outer.image(target, from.or(Some(self.from)))
+    }
+    fn show(&self, path: &Path) -> PathBuf {
+        self.outer.show(path)
+    }
+    fn current(&self) -> Option<&Path> {
+        Some(self.from)
+    }
+    fn base(&self) -> Option<PathBuf> {
+        Some(self.outer.show(self.from.parent()?))
+    }
+}
+
+/// Extensions `![[name]]` shows as an image (any case).
+const EMBED_IMAGES: [&str; 9] = [
+    "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "heic",
+];
+
+/// Whether `![[name]]` names an image (by its extension).
+pub fn is_embed_image(name: &str) -> bool {
+    Path::new(name.trim())
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| EMBED_IMAGES.iter().any(|x| e.eq_ignore_ascii_case(x)))
 }
 
 /// The note a wiki link `target` points to: matched by name without `.md`/`.markdown`,
@@ -1360,13 +1943,7 @@ fn strip_note_ext(name: &str) -> &str {
 /// images if `web_images` (Preferences ▸ Load Images from the Web). Mermaid diagrams and KaTeX
 /// formulas are drawn by the app's own script world (`diagrams`, `math`), which the page
 /// cannot reach.
-pub fn page(
-    md: &str,
-    dark: bool,
-    theme: Theme,
-    web_images: bool,
-    wiki: &dyn Fn(&str) -> Option<PathBuf>,
-) -> String {
+pub fn page(md: &str, dark: bool, theme: Theme, web_images: bool, wiki: &dyn Links) -> String {
     preview_page(
         dark,
         theme,
@@ -1437,24 +2014,14 @@ fn width_css(width: Option<TextWidth>) -> String {
 /// `.md` links stay relative, wiki links become relative links to the target note (no local
 /// absolute paths in the file), unresolved wiki links become plain text. Images may load
 /// from the web when the file is opened elsewhere (`EXPORT_CSP`).
-pub fn export_page(
-    md: &str,
-    title: &str,
-    note_dir: &Path,
-    wiki: &dyn Fn(&str) -> Option<PathBuf>,
-) -> String {
+pub fn export_page(md: &str, title: &str, note_dir: &Path, wiki: &dyn Links) -> String {
     let body = portable_body(md, note_dir, wiki, true, true, true);
     standalone_page(title, &body)
 }
 
 /// `export_page` for Export Folder as HTML: code is highlighted on the spot, so thousands of
 /// notes rendered (on several threads) neither use nor replace the preview's highlighting cache.
-pub fn folder_export_page(
-    md: &str,
-    title: &str,
-    note_dir: &Path,
-    wiki: &dyn Fn(&str) -> Option<PathBuf>,
-) -> String {
+pub fn folder_export_page(md: &str, title: &str, note_dir: &Path, wiki: &dyn Links) -> String {
     let body = portable_body(md, note_dir, wiki, true, true, false);
     standalone_page(title, &body)
 }
@@ -1477,7 +2044,7 @@ pub fn standalone_page(title: &str, body: &str) -> String {
 /// links as `export_page` relative to `note_dir`. No page CSS or script; code is plain
 /// `<pre><code>` (the `hl-*` classes mean nothing without our CSS), formulas MathML (no
 /// KaTeX), tags plain `#tag` text in a classed span. The `<meta charset>` makes browsers/editors read the clipboard as UTF-8.
-pub fn html_fragment(md: &str, note_dir: &Path, wiki: &dyn Fn(&str) -> Option<PathBuf>) -> String {
+pub fn html_fragment(md: &str, note_dir: &Path, wiki: &dyn Links) -> String {
     format!(
         "<meta charset=\"utf-8\">{}",
         portable_body(md, note_dir, wiki, false, true, false)
@@ -1504,7 +2071,7 @@ pub(crate) const MARK_COLOUR: &str = "#fff1a8";
 pub fn rich_text_page(
     md: &str,
     note_dir: &Path,
-    wiki: &dyn Fn(&str) -> Option<PathBuf>,
+    wiki: &dyn Links,
     image: &dyn Fn(&str) -> Option<String>,
 ) -> String {
     let mut body = inline_images(
@@ -1584,12 +2151,15 @@ fn inline_images(body: &str, image: &dyn Fn(&str) -> Option<String>) -> String {
 fn portable_body(
     md: &str,
     note_dir: &Path,
-    wiki: &dyn Fn(&str) -> Option<PathBuf>,
+    wiki: &dyn Links,
     rich: bool,
     toc: bool,
     cached: bool,
 ) -> String {
-    let wiki = |t: &str| wiki(t).map(|p| relative(note_dir, &p));
+    let wiki = Portable {
+        inner: wiki,
+        dir: note_dir,
+    };
     let mut body = body_html_with(
         md,
         &wiki,
@@ -1881,7 +2451,10 @@ p.mermaid-error { margin: .3em 0 0; font-size: .85em; color: var(--missing); whi
 code.math-error { color: var(--missing); }
 .katex-display { overflow-x: auto; overflow-y: hidden; }
 nav.toc { margin: 0 0 1em; } nav.toc ul ul { margin: 0; }
-@media print { html { background: none; } body { max-width: none; padding: 0; } pre, table, img, blockquote, .alert, div.mermaid, .katex-display { break-inside: avoid; } a.copy, pre.front-matter { display: none; } }
+div.embed { margin: 0 0 1em; padding: .3em 1em; border-left: 3px solid rgba(127,127,127,.4); }
+p.embed-title { margin: 0 0 .3em; font-size: .8em; opacity: .7; }
+.embed-missing { opacity: .55; }
+@media print { html { background: none; } body { max-width: none; padding: 0; } pre, table, img, blockquote, .alert, div.mermaid, div.embed, .katex-display { break-inside: avoid; } a.copy, pre.front-matter { display: none; } }
 ";
 
 /// What the preview does with a navigation to `uri`.
@@ -1951,19 +2524,65 @@ pub fn note_in_folder(path: &Path, root: &Path) -> Option<PathBuf> {
     real.is_file().then(|| root.join(rest))
 }
 
+/// A folder in the system temp dir for embed tests, removed on drop (also when a test fails).
+#[cfg(test)]
+pub(crate) struct TestFolder(pub PathBuf);
+
+#[cfg(test)]
+impl TestFolder {
+    /// The folder with `files` (relative path, text).
+    pub(crate) fn new(tag: &str, files: &[(&str, &str)]) -> Self {
+        let root = std::env::temp_dir().join(format!("mm-embeds-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (rel, text) in files {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        TestFolder(root)
+    }
+
+    /// Its links for the note `current`, as the preview resolves them.
+    pub(crate) fn links(&self, current: &str) -> Folder {
+        let mut images = Vec::new();
+        let tree =
+            crate::notes::scan_with_images(&self.0, crate::notes::SortOrder::Name, &mut images)
+                .unwrap();
+        let mut notes = Vec::new();
+        crate::quick::note_paths(&tree, &mut notes);
+        Folder {
+            notes,
+            images,
+            aliases: Default::default(),
+            root: Some(self.0.clone()),
+            current: Some(self.0.join(current)),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestFolder {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn code_highlighting() {
-        let html = to_html("```rust\nfn main() { let s = \"<b>&\"; }\n```\n", &|_| None);
+        let html = to_html(
+            "```rust\nfn main() { let s = \"<b>&\"; }\n```\n",
+            &|_: &str| None,
+        );
         assert!(html.contains("<pre><code class=\"language-rust\">"));
         assert!(html.contains("<span class=\"hl-storage hl-type hl-function hl-rust\">fn</span>"));
         assert!(html.contains("&lt;b&gt;&amp;"));
         assert!(!html.contains("<b>"));
         for md in ["```nosuchlang\nfn <i>\n```\n", "```\nfn <i>\n```\n"] {
-            let html = to_html(md, &|_| None);
+            let html = to_html(md, &|_: &str| None);
             assert!(!html.contains("<span"), "{html}");
             assert!(html.contains("fn &lt;i&gt;"));
         }
@@ -1971,7 +2590,7 @@ mod tests {
 
     #[test]
     fn heading() {
-        assert!(to_html("# Title", &|_| None).contains("<h1 id=\"title\">Title</h1>"));
+        assert!(to_html("# Title", &|_: &str| None).contains("<h1 id=\"title\">Title</h1>"));
     }
 
     #[test]
@@ -1979,7 +2598,7 @@ mod tests {
         // GitHub-style: lower case, accents kept, space → `-`, punctuation dropped, repeats `-1`.
         let md =
             "# Cài đặt **nhanh**!\n\n## Cài đặt nhanh\n\nỨng dụng\n---\n\n[go](#cài-đặt-nhanh-1)\n";
-        let html = to_html(md, &|_| None);
+        let html = to_html(md, &|_: &str| None);
         assert!(
             html.contains("<h1 id=\"cài-đặt-nhanh\">Cài đặt <strong>nhanh</strong>!</h1>"),
             "{html}"
@@ -2066,7 +2685,7 @@ mod tests {
 
     #[test]
     fn table() {
-        let html = to_html("| a | b |\n|---|---|\n| 1 | 2 |\n", &|_| None);
+        let html = to_html("| a | b |\n|---|---|\n| 1 | 2 |\n", &|_: &str| None);
         assert!(html.contains("<table>"));
         assert!(html.contains("<th>a</th>"));
         assert!(html.contains("<td>2</td>"));
@@ -2076,7 +2695,7 @@ mod tests {
     fn task_list() {
         let md = "# T\n\n- [x] done\n- [ ] todo\n  1. [X] nested\n     - plain\n\n> - [ ] quoted\n\
 \nText[^1]\n\n[^1]: - [ ] in note \u{E002}9\u{E003}\n";
-        let html = to_html(md, &|_| None);
+        let html = to_html(md, &|_: &str| None);
         let a = |line: usize, checked: bool| {
             let c = if checked { " checked=\"\"" } else { "" };
             format!(
@@ -2096,7 +2715,7 @@ mod tests {
     #[test]
     fn code_copy_buttons() {
         let md = "# T\n\n```rust\nfn x() {}\n```\n\n    indented\n    two\n\n- item\n\n  ```\n  in list\n  ```\n\n> ~~~\n> quoted\n> ~~~\n";
-        let html = to_html(md, &|_| None);
+        let html = to_html(md, &|_: &str| None);
         for line in [3, 7, 12, 16] {
             assert!(html.contains(&format!(
                 "<div class=\"code\"><a class=\"copy\" href=\"mm-copy:{line}\">Copy</a><pre"
@@ -2112,8 +2731,8 @@ mod tests {
         assert_eq!(code_block_at(md, 1), None);
         assert_eq!(link_action("mm-copy:7", "file:///a.md"), Link::Copy(7));
         assert_eq!(link_action("mm-copy:", "file:///a.md"), Link::Ignore);
-        let export = export_page(md, "T", Path::new("/r"), &|_| None);
-        let copy = html_fragment(md, Path::new("/r"), &|_| None);
+        let export = export_page(md, "T", Path::new("/r"), &|_: &str| None);
+        let copy = html_fragment(md, Path::new("/r"), &|_: &str| None);
         for out in [export, copy] {
             assert!(!out.contains("mm-copy:") && !out.contains("class=\"code\""));
             assert!(!out.contains("data-sourcepos"));
@@ -2132,7 +2751,7 @@ mod tests {
             ("[!Warning]", "warning", "Warning"),
         ] {
             let md = format!("> {marker}\n> Read *this*.\n>\n> - item\n");
-            let html = to_html(&md, &|_| None);
+            let html = to_html(&md, &|_: &str| None);
             assert_eq!(
                 html,
                 format!(
@@ -2143,14 +2762,14 @@ mod tests {
             );
         }
         // The marker alone, a hard break after it, inside a list.
-        let html = to_html("> [!TIP]\n", &|_| None);
+        let html = to_html("> [!TIP]\n", &|_: &str| None);
         assert_eq!(
             html,
             "<div class=\"alert alert-tip\">\n<p class=\"alert-title\">Tip</p>\n</div>\n"
         );
-        let html = to_html("> [!TIP]\\\n> text\n", &|_| None);
+        let html = to_html("> [!TIP]\\\n> text\n", &|_: &str| None);
         assert!(html.contains("Tip</p>\n<p>text</p>"), "{html}");
-        let html = to_html("- > [!CAUTION]\n  > hot\n", &|_| None);
+        let html = to_html("- > [!CAUTION]\n  > hot\n", &|_: &str| None);
         assert!(
             html.contains("<li>\n<div class=\"alert alert-caution\">"),
             "{html}"
@@ -2160,7 +2779,7 @@ mod tests {
     #[test]
     fn alert_lines() {
         let md = "# A\n\n> [!NOTE]\n> one\n> two\n\n> [!TIP]\n>\n> three\n";
-        let html = body_html(md, &|_| None, true, true, true, true);
+        let html = body_html(md, &|_: &str| None, true, true, true, true);
         assert!(
             html.contains(
                 "<div class=\"alert alert-note\" data-sourcepos=\"3:1-5:5\">\n\
@@ -2185,19 +2804,19 @@ mod tests {
             "> # [!NOTE]\n> body\n",
             "[!NOTE]\ntext\n",
         ] {
-            let html = to_html(md, &|_| None);
+            let html = to_html(md, &|_: &str| None);
             assert!(!html.contains("alert"), "{md:?}: {html}");
             assert!(html.contains("[!"), "{md:?}: {html}");
         }
         for md in ["```\n> [!NOTE]\n> x\n```\n", "    > [!NOTE]\n    > x\n"] {
-            let html = to_html(md, &|_| None);
+            let html = to_html(md, &|_: &str| None);
             assert!(!html.contains("alert"), "{md:?}: {html}");
             assert!(html.contains("&gt; [!NOTE]\n&gt; x"), "{md:?}: {html}");
         }
         // Raw HTML is escaped, so a note can't fake one.
         let html = to_html(
             "<div class=\"markdown-alert markdown-alert-note\">\n",
-            &|_| None,
+            &|_: &str| None,
         );
         assert!(!html.contains("<div"), "{html}");
     }
@@ -2205,7 +2824,7 @@ mod tests {
     #[test]
     fn table_of_contents() {
         let md = "# Intro\n\n[TOC]\n\n## Same\n\n### Deep `code` & <b>\n\n## Same\n\n# After\n";
-        let html = to_html(md, &|_| None);
+        let html = to_html(md, &|_: &str| None);
         assert_eq!(
             html.split("<h2").next().unwrap(),
             "<h1 id=\"intro\">Intro</h1>\n<nav class=\"toc\">\n<ul>\n\
@@ -2221,7 +2840,7 @@ mod tests {
         // The preview keeps the marker's lines; any case, spaces around, several markers.
         let html = body_html(
             "# A\n\n  [toc]  \n\n[Toc]\n",
-            &|_| None,
+            &|_: &str| None,
             true,
             true,
             true,
@@ -2233,12 +2852,15 @@ mod tests {
         );
         assert_eq!(html.matches("<nav").count(), 2, "{html}");
         // No headings, an empty note: nothing. Front matter and code are not headings.
-        assert_eq!(to_html("[TOC]\n", &|_| None), "");
-        assert_eq!(to_html("", &|_| None), "");
-        let html = to_html("---\ntitle: x\n---\n[TOC]\n\n```\n# no\n```\n", &|_| None);
+        assert_eq!(to_html("[TOC]\n", &|_: &str| None), "");
+        assert_eq!(to_html("", &|_: &str| None), "");
+        let html = to_html(
+            "---\ntitle: x\n---\n[TOC]\n\n```\n# no\n```\n",
+            &|_: &str| None,
+        );
         assert!(!html.contains("nav") && !html.contains("[TOC]"), "{html}");
         // Headings in quotes and lists count; an empty one is untitled.
-        let html = to_html("[TOC]\n\n> # Quoted\n\n- ## Listed\n\n#\n", &|_| None);
+        let html = to_html("[TOC]\n\n> # Quoted\n\n- ## Listed\n\n#\n", &|_: &str| None);
         assert!(
             html.contains(">Quoted</a>") && html.contains(">Listed</a>"),
             "{html}"
@@ -2246,15 +2868,20 @@ mod tests {
         assert!(html.contains(">Untitled Heading</a>"), "{html}");
         // Rich Text keeps it as written.
         assert!(
-            rich_text_page("# A\n\n[TOC]\n", Path::new("/r"), &|_| None, &|_| None)
-                .contains("<p>[TOC]</p>")
+            rich_text_page(
+                "# A\n\n[TOC]\n",
+                Path::new("/r"),
+                &|_: &str| None,
+                &|_: &str| None
+            )
+            .contains("<p>[TOC]</p>")
         );
         assert!(
-            html_fragment("# A\n\n[TOC]\n", Path::new("/r"), &|_| None)
+            html_fragment("# A\n\n[TOC]\n", Path::new("/r"), &|_: &str| None)
                 .contains("<nav class=\"toc\">")
         );
         assert!(
-            export_page("# A\n\n[TOC]\n", "t", Path::new("/r"), &|_| None)
+            export_page("# A\n\n[TOC]\n", "t", Path::new("/r"), &|_: &str| None)
                 .contains("<nav class=\"toc\">")
         );
     }
@@ -2272,12 +2899,12 @@ mod tests {
             "# A\n\n[TOCS]\n",
             "# [TOC]\n",
         ] {
-            let html = to_html(md, &|_| None);
+            let html = to_html(md, &|_: &str| None);
             assert!(!html.contains("<nav"), "{md:?}: {html}");
             assert!(html.contains("[TOC"), "{md:?}: {html}");
         }
         // A link to a definition named `toc`.
-        let html = to_html("# A\n\n[TOC]\n\n[toc]: /x\n", &|_| None);
+        let html = to_html("# A\n\n[TOC]\n\n[toc]: /x\n", &|_: &str| None);
         assert!(
             html.contains("<a href=\"/x\">TOC</a>") && !html.contains("<nav"),
             "{html}"
@@ -2322,14 +2949,14 @@ mod tests {
 
     #[test]
     fn footnote() {
-        let html = to_html("Text[^1]\n\n[^1]: Note.\n", &|_| None);
+        let html = to_html("Text[^1]\n\n[^1]: Note.\n", &|_: &str| None);
         assert!(html.contains("href=\"#fn-1\""));
         assert!(html.contains("class=\"footnotes\""));
     }
 
     #[test]
     fn strikethrough_and_autolink() {
-        let html = to_html("~~old~~ https://example.com", &|_| None);
+        let html = to_html("~~old~~ https://example.com", &|_: &str| None);
         assert!(html.contains("<del>old</del>"));
         assert!(html.contains("<a href=\"https://example.com\">"));
     }
@@ -2338,7 +2965,7 @@ mod tests {
     fn raw_html_is_escaped() {
         let html = to_html(
             "<script>alert(1)</script>\n\nhi <b onclick=\"x\">b</b>",
-            &|_| None,
+            &|_: &str| None,
         );
         assert!(!html.contains("<script"));
         assert!(!html.contains("<b "));
@@ -2364,7 +2991,7 @@ mod tests {
 
     #[test]
     fn math() {
-        let html = to_html("a $x^2$ b\n\n$$\\frac{a}{b}$$\n", &|_| None);
+        let html = to_html("a $x^2$ b\n\n$$\\frac{a}{b}$$\n", &|_: &str| None);
         assert!(
             html.contains("a <span class=\"math\" data-delim=\"$\" data-tex=\"x^2\"><math><msup><mi>x</mi><mn>2</mn></msup></math></span> b"),
             "{html}"
@@ -2373,14 +3000,14 @@ mod tests {
             html.contains("<span class=\"math display\" data-delim=\"$$\" data-tex=\"\\frac{a}{b}\"><math display=\"block\"><mfrac><mi>a</mi><mi>b</mi></mfrac></math></span>"),
             "{html}"
         );
-        let html = to_html("$\\sum_{i=1}^n \\sqrt{i}$ $a<b$", &|_| None);
+        let html = to_html("$\\sum_{i=1}^n \\sqrt{i}$ $a<b$", &|_: &str| None);
         assert!(
             html.contains("<mo lspace=\"0\">∑</mo>") && html.contains("<msqrt>"),
             "{html}"
         );
         assert!(html.contains("<mo>&lt;</mo>"), "{html}");
         // Bad LaTeX: the source, escaped (also for KaTeX); no raw HTML gets through.
-        let html = to_html("$\\frac{a$ and $$\\nope<b>$$", &|_| None);
+        let html = to_html("$\\frac{a$ and $$\\nope<b>$$", &|_: &str| None);
         assert!(
             html.contains(
                 "data-tex=\"\\frac{a\"><code class=\"math-error\">$\\frac{a$</code></span>"
@@ -2395,7 +3022,7 @@ mod tests {
         // ```math blocks: block MathML in a paragraph that keeps its sourcepos, no Copy
         // button; bad LaTeX shows the block's source; other code blocks are unchanged.
         let md = "```math\n\\frac{a}{b}\n```\n\n```math\n\\frac{a\n```\n\n```\nx\n```\n";
-        let html = to_html(md, &|_| None);
+        let html = to_html(md, &|_: &str| None);
         assert!(
             html.starts_with(
                 "<p><span class=\"math display\" data-delim=\"\" data-tex=\"\\frac{a}{b}\"><math display=\"block\"><mfrac><mi>a</mi><mi>b</mi></mfrac></math></span></p>"
@@ -2407,7 +3034,7 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("<pre><code>x\n</code></pre>"), "{html}");
-        let p = page(md, false, Theme::Default, false, &|_| None);
+        let p = page(md, false, Theme::Default, false, &|_: &str| None);
         assert!(
             p.contains("<p data-sourcepos=\"1:1-3:3\"><span class=\"math display\""),
             "{p}"
@@ -2416,7 +3043,7 @@ mod tests {
         assert_eq!(p.matches("mm-copy:").count(), 1, "{p}");
         // Prices are text; the note's own marker chars are dropped.
         assert_eq!(
-            to_html("$5 and $10\u{E004}0\u{E004}", &|_| None),
+            to_html("$5 and $10\u{E004}0\u{E004}", &|_: &str| None),
             "<p>$5 and $100</p>\n"
         );
         // The preview and Export mark formulas for KaTeX around the MathML (kept as the
@@ -2425,12 +3052,12 @@ mod tests {
         let mathml = "<math><mi>x</mi></math>";
         let marked =
             format!("<span class=\"math\" data-delim=\"$\" data-tex=\"x\">{mathml}</span>");
-        let copy = html_fragment(md, Path::new("/r"), &|_| None);
+        let copy = html_fragment(md, Path::new("/r"), &|_: &str| None);
         assert!(copy.contains(mathml) && !has_math(&copy), "{copy}");
-        let export = export_page(md, "t", Path::new("/r"), &|_| None);
+        let export = export_page(md, "t", Path::new("/r"), &|_: &str| None);
         assert!(export.contains(&marked) && has_math(&export), "{export}");
         assert!(export.contains("font-src data:"), "{export}");
-        let p = page(md, false, Theme::Default, false, &|_| None);
+        let p = page(md, false, Theme::Default, false, &|_: &str| None);
         assert!(
             p.contains(&format!("<p data-sourcepos=\"3:1-3:3\">{marked}</p>")),
             "{p}"
@@ -2443,7 +3070,7 @@ mod tests {
             "<span class=\"math\" data-tex=\"x\">x</span>\n",
         ] {
             assert!(
-                !has_math(&page(md, false, Theme::Default, false, &|_| None)),
+                !has_math(&page(md, false, Theme::Default, false, &|_: &str| None)),
                 "{md}"
             );
         }
@@ -2451,7 +3078,7 @@ mod tests {
 
     #[test]
     fn javascript_link_dropped() {
-        assert!(!to_html("[x](javascript:alert(1))", &|_| None).contains("javascript:"));
+        assert!(!to_html("[x](javascript:alert(1))", &|_: &str| None).contains("javascript:"));
     }
 
     #[test]
@@ -2470,7 +3097,7 @@ mod tests {
     #[test]
     fn mermaid_blocks() {
         let md = "# D\n\n```mermaid\nflowchart LR\n  A --> B<C>\n```\n\n```rust\nfn x() {}\n```\n\n- item\n\n  ~~~ Mermaid\n  pie\n  ~~~\n";
-        let p = page(md, false, Theme::Default, false, &|_| None);
+        let p = page(md, false, Theme::Default, false, &|_: &str| None);
         assert!(has_diagrams(&p));
         assert!(
             p.contains("<div class=\"mermaid\" data-sourcepos=\"3:1-6:3\"><pre><code class=\"language-mermaid\">flowchart LR\n  A --&gt; B&lt;C&gt;\n</code></pre></div>"),
@@ -2485,13 +3112,13 @@ mod tests {
         assert_eq!(p.matches("mm-copy:").count(), 1);
         assert!(p.contains("href=\"mm-copy:8\">Copy</a><pre data-sourcepos=\"8:1-10:3\""));
         // Export and Copy as HTML: the same block (a code block without the script).
-        let export = export_page(md, "D", Path::new("/r"), &|_| None);
+        let export = export_page(md, "D", Path::new("/r"), &|_: &str| None);
         assert!(
             export
                 .contains("<div class=\"mermaid\"><pre><code class=\"language-mermaid\">flowchart")
         );
         assert!(has_diagrams(&export) && !export.contains("mm-copy:"));
-        let copy = html_fragment(md, Path::new("/r"), &|_| None);
+        let copy = html_fragment(md, Path::new("/r"), &|_: &str| None);
         assert!(
             copy.contains("<div class=\"mermaid\"><pre><code class=\"language-mermaid\">flowchart")
         );
@@ -2504,7 +3131,7 @@ mod tests {
             "```mermaidx\nx\n```\n",
         ] {
             assert!(
-                !has_diagrams(&page(md, false, Theme::Default, false, &|_| None)),
+                !has_diagrams(&page(md, false, Theme::Default, false, &|_: &str| None)),
                 "{md}"
             );
         }
@@ -2512,7 +3139,7 @@ mod tests {
 
     #[test]
     fn page_blocks_scripts_and_network() {
-        let p = page("# a", true, Theme::Default, false, &|_| None);
+        let p = page("# a", true, Theme::Default, false, &|_: &str| None);
         assert!(p.contains("default-src 'none'"));
         assert!(p.contains("class=\"dark\""));
         assert!(
@@ -2525,7 +3152,7 @@ mod tests {
             false,
             Theme::Default,
             false,
-            &|_| None,
+            &|_: &str| None,
         );
         assert!(
             p.contains("<a class=\"task\" href=\"mm-task:1\"><input"),
@@ -2545,7 +3172,7 @@ mod tests {
                 for (k, v) in VARS.iter().zip(theme_values(theme, dark)) {
                     assert!(!v.is_empty() && css.contains(&format!("--{k}: {v};")));
                 }
-                assert!(page("a", dark, theme, false, &|_| None).contains(&css));
+                assert!(page("a", dark, theme, false, &|_: &str| None).contains(&css));
             }
         }
         // Mọi biến mà CSS trang dùng đều được theme đặt.
@@ -2576,7 +3203,7 @@ mod tests {
 
     /// The preview's HTML of `md` (no source positions) with smart punctuation on or off.
     fn smart_html(md: &str, smart: bool) -> String {
-        body_html_with(md, &|_| None, true, true, false, true, false, smart)
+        body_html_with(md, &|_: &str| None, true, true, false, true, false, smart)
     }
 
     #[test]
@@ -2664,9 +3291,9 @@ mod tests {
         let md = "# It's -- \"here\"\n\n\"a\" -- b --- c... \\\"d\\\" `e` https://e.com/a--b's\n";
         assert_eq!(
             smart_html(md, false),
-            body_html_with(md, &|_| None, true, true, false, true, false, false)
+            body_html_with(md, &|_: &str| None, true, true, false, true, false, false)
         );
-        assert_eq!(smart_html(md, false), to_html(md, &|_| None));
+        assert_eq!(smart_html(md, false), to_html(md, &|_: &str| None));
         let off = smart_html(md, false);
         assert!(!off.contains(['“', '”', '‘', '’', '–', '—', '…']), "{off}");
     }
@@ -2691,13 +3318,13 @@ mod tests {
     #[test]
     fn web_images_only_when_asked() {
         let md = "![w](https://x.org/w.png) ![l](assets/l.png)";
-        let off = page(md, false, Theme::Default, false, &|_| None);
+        let off = page(md, false, Theme::Default, false, &|_: &str| None);
         assert!(
             off.contains(PREVIEW_CSP) && !off.contains("http: https:"),
             "{off}"
         );
         assert!(off.contains("Web images are not loaded"), "{off}");
-        let on = page(md, false, Theme::Default, true, &|_| None);
+        let on = page(md, false, Theme::Default, true, &|_: &str| None);
         assert!(on.contains("img-src file: data: http: https:;"), "{on}");
         assert!(
             on.contains("default-src 'none';") && !on.contains("script-src"),
@@ -2707,7 +3334,7 @@ mod tests {
         // Same body either way; only the head differs.
         let body = |p: &str| p[p.find("<body>").unwrap()..].to_string();
         assert_eq!(body(&off), body(&on));
-        let export = export_page(md, "t", Path::new("/n"), &|_| None);
+        let export = export_page(md, "t", Path::new("/n"), &|_: &str| None);
         assert!(export.contains(EXPORT_CSP), "{export}");
         assert_eq!(export.matches(EXPORT_CSP).count(), 1);
     }
@@ -2769,9 +3396,12 @@ mod tests {
 
     #[test]
     fn rich_text_alert_colours() {
-        let p = rich_text_page("> [!TIP]\n> Try it\n", Path::new("/r"), &|_| None, &|_| {
-            None
-        });
+        let p = rich_text_page(
+            "> [!TIP]\n> Try it\n",
+            Path::new("/r"),
+            &|_: &str| None,
+            &|_| None,
+        );
         assert!(
             p.contains("<div class=\"alert alert-tip\" style=\"border-left: 4px solid #1a7f37;"),
             "{p}"
@@ -2784,7 +3414,7 @@ mod tests {
 
     #[test]
     fn highlight_marks() {
-        let html = |md: &str| to_html(md, &|_| None);
+        let html = |md: &str| to_html(md, &|_: &str| None);
         assert_eq!(html("==text=="), "<p><mark>text</mark></p>\n");
         assert_eq!(
             html("A ==marked **bold**== word"),
@@ -2837,7 +3467,7 @@ mod tests {
         }
         // Copy as HTML: a bare `<mark>`.
         assert_eq!(
-            html_fragment("==x==", Path::new("/r"), &|_| None),
+            html_fragment("==x==", Path::new("/r"), &|_: &str| None),
             "<meta charset=\"utf-8\"><p><mark>x</mark></p>\n"
         );
     }
@@ -2863,7 +3493,7 @@ mod tests {
 
     #[test]
     fn rich_text_highlights() {
-        let p = rich_text_page("==x==", Path::new("/r"), &|_| None, &|_| None);
+        let p = rich_text_page("==x==", Path::new("/r"), &|_: &str| None, &|_: &str| None);
         assert!(
             p.contains("<mark style=\"background-color: #fff1a8;\">x</mark>"),
             "{p}"
@@ -2994,7 +3624,7 @@ mod tests {
     fn tags_become_chips() {
         let html = to_html(
             "Hi #work/x and `#code` [#l](u) #1\n\n```\n#block\n```\n\n\u{E001}",
-            &|_| None,
+            &|_: &str| None,
         );
         assert!(html.contains("Hi <span class=\"tag\">#work/x</span> and <code>#code</code>"));
         assert!(html.contains("<a href=\"u\">#l</a> #1"));
@@ -3026,7 +3656,7 @@ mod tests {
         assert!(html.contains("href=\"/n/a%20b%26%22%3C%25.md\""));
         assert!(html.contains(">&lt;b&gt;&quot;x&quot; &amp; 100%#?</a>"));
         assert!(!html.contains("<b>"));
-        let html = to_html("[[a\"><script>|x]]", &|_| None);
+        let html = to_html("[[a\"><script>|x]]", &|_: &str| None);
         assert!(!html.contains("<script"));
         let href = html
             .split("href=\"")
@@ -3197,7 +3827,7 @@ mod tests {
     #[test]
     fn front_matter() {
         let md = "---\ntitle: <b>&</b>\ntags: [a]\n---\n# T\n\n- [ ] do\n\n```\nx\n```\n";
-        let p = page(md, false, Theme::Default, false, &|_| None);
+        let p = page(md, false, Theme::Default, false, &|_: &str| None);
         assert!(
             p.contains("<pre class=\"front-matter\">---\ntitle: &lt;b&gt;&amp;&lt;/b&gt;\ntags: [a]\n---</pre>"),
             "{p}"
@@ -3214,16 +3844,20 @@ mod tests {
         assert_eq!(code_block_at(md, 9).as_deref(), Some("x\n"));
         assert_eq!(crate::lists::front_matter_lines(md), 4);
         for out in [
-            export_page(md, "t", Path::new("/n"), &|_| None),
-            html_fragment(md, Path::new("/n"), &|_| None),
+            export_page(md, "t", Path::new("/n"), &|_: &str| None),
+            html_fragment(md, Path::new("/n"), &|_: &str| None),
         ] {
             assert!(!out.contains("title:") && !out.contains("<hr"), "{out}");
             assert!(out.contains(">T</h1>"), "{out}");
         }
         // `---` not on line 1: no front matter.
-        let p = page("x\n---\ny: 1\n---\n", false, Theme::Default, false, &|_| {
-            None
-        });
+        let p = page(
+            "x\n---\ny: 1\n---\n",
+            false,
+            Theme::Default,
+            false,
+            &|_: &str| None,
+        );
         assert!(!p.contains("front-matter\">"), "{p}");
     }
 
@@ -3232,13 +3866,13 @@ mod tests {
         let md = "```rust\nfn a() {}\n```\n\n```python\nx = 1\n```\n\n\
 ```rust\nfn a() {}\n```\n\n```nosuchlang\n<b>\n```\n\n    indented\n";
         forget_highlighting();
-        let cold = to_html(md, &|_| None);
+        let cold = to_html(md, &|_: &str| None);
         assert!(cold.contains("hl-") && cold.contains("&lt;b&gt;"));
-        assert_eq!(to_html(md, &|_| None), cold);
+        assert_eq!(to_html(md, &|_: &str| None), cold);
         let edited = md.replace("x = 1", "x = 2");
-        let warm = to_html(&edited, &|_| None);
+        let warm = to_html(&edited, &|_: &str| None);
         forget_highlighting();
-        assert_eq!(to_html(&edited, &|_| None), warm);
+        assert_eq!(to_html(&edited, &|_: &str| None), warm);
         assert_ne!(warm, cold);
     }
 
@@ -3280,14 +3914,215 @@ $x^2 + \\frac{a}{b}$ math. [[Other note]] here.\n\n- item one\n- [ ] task\n  1. 
 ```javascript\nconst f = (a, b) => a.map(x => x + b).filter(Boolean);\n```\n\n\
 $$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> quote line\n\n";
         let md = chunk.repeat(1_000_000 / chunk.len() + 1);
-        let _ = page("```rust\nx\n```\n", false, Theme::Default, false, &|_| None); // load syntaxes
+        let _ = page(
+            "```rust\nx\n```\n",
+            false,
+            Theme::Default,
+            false,
+            &|_: &str| None,
+        ); // load syntaxes
         let start = std::time::Instant::now();
-        let html = page(&md, false, Theme::Default, false, &|_| None);
+        let html = page(&md, false, Theme::Default, false, &|_: &str| None);
         eprintln!(
             "render {} KB -> {} KB in {:?}",
             md.len() / 1024,
             html.len() / 1024,
             start.elapsed()
         );
+    }
+
+    /// A folder for embeds: `Home.md` embeds the others.
+    fn embeds_folder(tag: &str) -> TestFolder {
+        TestFolder::new(
+            tag,
+            &[
+                ("Home.md", ""),
+                (
+                    "Notes/Note.md",
+                    "---\ntitle: Hidden\n---\n# Note\n\nIntro\n\n## Part\n\nPart text \
+![[pic.png]] ![[Other]] ![rel](img/r.png) [[Other]]\n\n### Deeper\n\nsub text\n\n\
+## Next\n\nnext text\n",
+                ),
+                ("Other.md", "other"),
+                ("assets/pic.png", "png"),
+                ("A/a.png", "png"),
+                ("B/a.png", "png"),
+            ],
+        )
+    }
+
+    fn embedded(folder: &TestFolder, md: &str) -> String {
+        body_html(md, &folder.links("Home.md"), false, true, false, true)
+    }
+
+    #[test]
+    fn embeds_images() {
+        let folder = embeds_folder("images");
+        let root = folder.0.to_string_lossy().into_owned();
+        let html = embedded(
+            &folder,
+            "![[pic.png]]\n\n![[pic.png|300]] ![[PIC.PNG|300x200]]\n",
+        );
+        assert!(
+            html.contains(&format!(
+                "<p><img src=\"{root}/assets/pic.png\" alt=\"pic.png\" /></p>"
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                "<img src=\"{root}/assets/pic.png\" alt=\"pic.png\" width=\"300\" />"
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains("alt=\"PIC.PNG\" width=\"300\" height=\"200\" />"),
+            "{html}"
+        );
+        // Folder/name narrows; a missing image stays its text, dimmed.
+        let html = embedded(&folder, "![[B/a.png]] ![[gone.png]]");
+        assert!(html.contains(&format!("src=\"{root}/B/a.png\"")), "{html}");
+        assert!(
+            html.contains("<span class=\"embed-missing\">![[gone.png]]</span>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn embeds_notes_one_level_deep() {
+        let folder = embeds_folder("notes");
+        let root = folder.0.to_string_lossy().into_owned();
+        let html = embedded(&folder, "# Home\n\nBefore ![[Note|ignored]] after\n");
+        assert!(
+            html.contains("<p>Before</p>\n<div class=\"embed\" data-embed=\"Note\">"),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                "<p class=\"embed-title\"><a href=\"{root}/Notes/Note.md\" data-wikilink=\"true\">Note</a></p>"
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains("<p>Intro</p>") && html.contains("next text"),
+            "{html}"
+        );
+        assert!(html.contains("<p>after</p>"), "{html}");
+        // No front matter; the embedded headings have no ids (the page's own keep theirs).
+        assert!(!html.contains("Hidden"), "{html}");
+        assert!(
+            html.contains("<h1 id=\"home\">") && html.contains("<h1>Note</h1>"),
+            "{html}"
+        );
+        // Inside it: images resolve, a relative image is relative to that note, an embed is a link.
+        assert!(
+            html.contains(&format!("src=\"{root}/assets/pic.png\"")),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!("src=\"{root}/Notes/img/r.png\"")),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                "<a href=\"{root}/Other.md\" data-wikilink=\"true\">Other</a> <img"
+            )),
+            "{html}"
+        );
+        assert!(!html.contains("data-embed=\"Other\""), "{html}");
+    }
+
+    #[test]
+    fn embeds_a_section() {
+        let folder = embeds_folder("section");
+        let html = embedded(&folder, "![[Note#Part]]");
+        assert!(
+            html.contains("<div class=\"embed\" data-embed=\"Note#Part\">"),
+            "{html}"
+        );
+        assert!(html.contains("Note \u{203a} Part</a></p>"), "{html}");
+        assert!(
+            html.contains("Part text") && html.contains("sub text"),
+            "{html}"
+        );
+        assert!(
+            !html.contains("Intro") && !html.contains("next text"),
+            "{html}"
+        );
+        assert!(
+            html.contains("href=\"") && html.contains("Note.md#part\""),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn embeds_missing_self_and_code() {
+        let folder = embeds_folder("missing");
+        let root = folder.0.to_string_lossy().into_owned();
+        let html = embedded(&folder, "![[Gone]] ![[Note#Nowhere]]\n");
+        assert!(
+            html.contains("<span class=\"embed-missing\">![[Gone]]</span>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<span class=\"embed-missing\">![[Note#Nowhere]]</span>"),
+            "{html}"
+        );
+        // A note embedding itself: a link.
+        let html = embedded(&folder, "![[Home]]");
+        assert_eq!(
+            html,
+            format!("<p><a href=\"{root}/Home.md\" data-wikilink=\"true\">Home</a></p>\n")
+        );
+        let html = embedded(
+            &folder,
+            "`![[Note]]`\n\n```\n![[pic.png]]\n```\n\n    ![[Other]]\n",
+        );
+        assert!(!html.contains("embed") && !html.contains("<img"), "{html}");
+        assert!(html.contains("<code>![[Note]]</code>"), "{html}");
+        assert!(
+            html.contains("![[pic.png]]\n</code>") && html.contains("![[Other]]\n</code>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn embeds_stay_text_without_a_folder() {
+        let folder = embeds_folder("nofolder");
+        let links = Folder {
+            root: None,
+            ..folder.links("Home.md")
+        };
+        let md = "![[pic.png]] ![[Note]]";
+        let html = body_html(md, &links, false, true, false, true);
+        assert_eq!(html, "<p>![[pic.png]] ![[Note]]</p>\n");
+        assert_eq!(
+            to_html(md, &|_: &str| None),
+            "<p>![[pic.png]] ![[Note]]</p>\n"
+        );
+    }
+
+    #[test]
+    fn exports_inline_embeds() {
+        let folder = embeds_folder("export");
+        let links = folder.links("Home.md");
+        let md = "![[pic.png|300]]\n\n![[Note#Part]]\n";
+        for html in [
+            export_page(md, "Home", &folder.0, &links),
+            html_fragment(md, &folder.0, &links),
+        ] {
+            assert!(
+                html.contains("<img src=\"assets/pic.png\" alt=\"pic.png\" width=\"300\" />"),
+                "{html}"
+            );
+            assert!(html.contains("data-embed=\"Note#Part\""), "{html}");
+            assert!(html.contains("href=\"Notes/Note.md#part\""), "{html}");
+            assert!(html.contains("src=\"Notes/img/r.png\""), "{html}");
+            assert!(html.contains("href=\"Other.md\""), "{html}");
+            assert!(
+                !html.contains(&folder.0.to_string_lossy().into_owned()),
+                "{html}"
+            );
+        }
     }
 }

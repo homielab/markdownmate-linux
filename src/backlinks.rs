@@ -489,4 +489,25 @@ mod tests {
         assert_eq!(index.backlinks(&mn).len(), 1);
         same_with_aliases(&index, &notes, &aliases, &dir);
     }
+
+    #[test]
+    fn embeds_are_backlinks() {
+        let folder = crate::render::TestFolder::new(
+            "backlinks",
+            &[
+                ("Note.md", "# Note\n\n## Part\n"),
+                ("Home.md", "x\n![[Note]]\n![[Note#Part|y]]\n![[pic.png]]\n"),
+            ],
+        );
+        let (note, home) = (folder.0.join("Note.md"), folder.0.join("Home.md"));
+        let notes = vec![note.clone(), home.clone()];
+        let mut index = LinkIndex::default();
+        index.sync(&notes, &Aliases::default(), &folder.0, &HashSet::new());
+        let found: Vec<_> = index
+            .backlinks(&note)
+            .iter()
+            .map(|b| (b.path.clone(), b.line))
+            .collect();
+        assert_eq!(found, [(home.clone(), 2), (home, 3)]);
+    }
 }

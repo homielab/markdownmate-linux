@@ -352,6 +352,18 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
         });
     }
 
+    /// The open folder's links as the preview and exports resolve them, for the open note;
+    /// copied, as the Rc lists cannot cross threads.
+    pub(crate) fn links(&self) -> render::Folder {
+        render::Folder {
+            notes: self.note_list.borrow().to_vec(),
+            images: self.image_list.borrow().to_vec(),
+            aliases: self.aliases.borrow().clone(),
+            root: self.root.borrow().clone(),
+            current: self.path.borrow().clone(),
+        }
+    }
+
     /// The preview's render of the buffer building on `previous` (`incremental::render`), as
     /// a job that may run on another thread, like `page_job`.
     fn preview_job(
@@ -360,14 +372,19 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
     ) -> impl FnOnce() -> (Option<incremental::Preview>, incremental::Update) + Send + 'static {
         let (start, end) = self.buffer.bounds();
         let text = self.buffer.text(&start, &end, true).to_string();
-        let notes = self.note_list.borrow().to_vec();
-        let aliases = self.aliases.borrow().clone();
-        let root = self.root.borrow().clone().unwrap_or_default();
-        let current = self.path.borrow().clone();
+        let wiki = self.links();
         let links = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            (&notes, &root, &current, aliases.fingerprint()).hash(&mut hasher);
+            let fingerprint = wiki.aliases.fingerprint();
+            (
+                &wiki.notes,
+                &wiki.images,
+                &wiki.root,
+                &wiki.current,
+                fingerprint,
+            )
+                .hash(&mut hasher);
             hasher.finish()
         };
         let style = incremental::Style {
@@ -379,12 +396,7 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
             smart: crate::smart::enabled(),
             links,
         };
-        move || {
-            let wiki = |t: &str| {
-                render::resolve_wiki_with(t, &notes, &aliases, &root, current.as_deref()).cloned()
-            };
-            incremental::render(previous, &text, style, &wiki)
-        }
+        move || incremental::render(previous, &text, style, &wiki)
     }
 
     /// The preview page of the buffer, as a job that may run on another thread: everything
@@ -395,10 +407,7 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
     ) -> impl FnOnce() -> String + Send + 'static {
         let (start, end) = self.buffer.bounds();
         let text = self.buffer.text(&start, &end, true).to_string();
-        let notes = self.note_list.borrow().to_vec(); // the Rc cannot cross threads
-        let aliases = self.aliases.borrow().clone();
-        let root = self.root.borrow().clone().unwrap_or_default();
-        let current = self.path.borrow().clone();
+        let wiki = self.links();
         let (dark, theme) = style.unwrap_or_else(|| {
             (
                 adw::StyleManager::default().is_dark(),
@@ -406,12 +415,7 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
             )
         });
         let web_images = self.prefs.borrow().web_images;
-        move || {
-            let wiki = |t: &str| {
-                render::resolve_wiki_with(t, &notes, &aliases, &root, current.as_deref()).cloned()
-            };
-            render::page(&text, dark, theme, web_images, &wiki)
-        }
+        move || render::page(&text, dark, theme, web_images, &wiki)
     }
 }
 
@@ -476,15 +480,13 @@ pub(crate) fn export_html(editor: &Rc<Editor>) {
             };
             let (start, end) = editor.buffer.bounds();
             let text = editor.buffer.text(&start, &end, true).to_string();
-            let notes = editor.note_list.borrow().to_vec(); // the Rc cannot cross threads
-            let aliases = editor.aliases.borrow().clone();
-            let root = editor.root.borrow().clone().unwrap_or_default();
+            let wiki = render::Folder {
+                current: Some(note.clone()),
+                ..editor.links()
+            };
             let uri = gio::File::for_path(&note).uri().to_string();
             // Rendered and written off the main thread: ~1s/MB of code would freeze the window.
             let job = move || {
-                let wiki = |t: &str| {
-                    render::resolve_wiki_with(t, &notes, &aliases, &root, Some(&note)).cloned()
-                };
                 let dir = note.parent().unwrap_or(Path::new("/"));
                 render::export_page(&text, &stem(&note), dir, &wiki)
             };
@@ -637,12 +639,11 @@ pub(crate) fn copy_as_html(editor: &Rc<Editor>) {
         return;
     };
     let text = copy_source(editor);
-    let notes = editor.note_list.borrow().to_vec(); // the Rc cannot cross threads
-    let aliases = editor.aliases.borrow().clone();
-    let root = editor.root.borrow().clone().unwrap_or_default();
+    let wiki = render::Folder {
+        current: Some(note.clone()),
+        ..editor.links()
+    };
     copy_html_and_text(editor, "Copied as HTML", move || {
-        let wiki =
-            |t: &str| render::resolve_wiki_with(t, &notes, &aliases, &root, Some(&note)).cloned();
         let dir = note.parent().unwrap_or(Path::new("/"));
         (render::html_fragment(&text, dir, &wiki), text)
     });
@@ -657,14 +658,14 @@ pub(crate) fn copy_as_rich_text(editor: &Rc<Editor>) {
         return;
     };
     let text = copy_source(editor);
-    let notes = editor.note_list.borrow().to_vec(); // the Rc cannot cross threads
-    let aliases = editor.aliases.borrow().clone();
+    let wiki = render::Folder {
+        current: Some(note.clone()),
+        ..editor.links()
+    };
     let dir = note.parent().unwrap_or(Path::new("/")).to_path_buf();
-    let root = editor.root.borrow().clone().unwrap_or_else(|| dir.clone());
+    let root = wiki.root.clone().unwrap_or_else(|| dir.clone());
     let page_uri = editor.page_uri();
     copy_html_and_text(editor, "Copied as Rich Text", move || {
-        let wiki =
-            |t: &str| render::resolve_wiki_with(t, &notes, &aliases, &root, Some(&note)).cloned();
         // Same rule as Ctrl+click on an image: a file inside the open folder.
         let image = |src: &str| {
             let uri =
