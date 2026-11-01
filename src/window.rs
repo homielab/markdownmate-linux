@@ -52,6 +52,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             ("New File", "win.new-note"),
             ("New Folder…", "win.new-folder"),
             ("Today's Note", "win.todays-note"),
+            ("Previous Daily Note", "win.previous-daily-note"),
+            ("Next Daily Note", "win.next-daily-note"),
         ][..],
         &[
             ("Open File…", "win.open-file"),
@@ -540,6 +542,23 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     ));
     window.add_action(&today_action);
     app.set_accels_for_action("win.todays-note", &["<Control>d"]);
+
+    // Previous / Next Daily Note. Ctrl+Alt+Up / Down are Move Line, so the brackets; GTK and
+    // GtkSourceView don't bind Ctrl+Alt+[ / ]. Greyed out by `update_history_actions`.
+    for (name, forward, accel) in [
+        ("previous-daily-note", false, "<Control><Alt>bracketleft"),
+        ("next-daily-note", true, "<Control><Alt>bracketright"),
+    ] {
+        let action = gio::SimpleAction::new(name, None);
+        action.set_enabled(false);
+        action.connect_activate(clone!(
+            #[strong]
+            editor,
+            move |_, _| editor.step_daily(forward)
+        ));
+        window.add_action(&action);
+        app.set_accels_for_action(&format!("win.{name}"), &[accel]);
+    }
 
     // New from Template ▸ <template>: the target is the template's path. Disabled until a
     // folder is open (load_folder enables it, and `templates`, the submenu's own no-op action).
@@ -1506,6 +1525,8 @@ fn shortcuts_window() -> gtk::ShortcutsWindow {
                     &[
                         ("<Control>n", "New file"),
                         ("<Control>d", "Today's note"),
+                        ("<Control><Alt>bracketleft", "Previous daily note"),
+                        ("<Control><Alt>bracketright", "Next daily note"),
                         ("<Control>o", "Open folder"),
                         ("<Control>p", "Open quickly"),
                         ("<Shift><Control>f", "Find in folder"),

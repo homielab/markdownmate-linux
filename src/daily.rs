@@ -101,6 +101,63 @@ pub fn create_if_missing(path: &Path, text: &str) -> io::Result<bool> {
     }
 }
 
+/// `name` read as `YYYY-MM-DD.md` with a real calendar date: the date part.
+pub fn date_of_name(name: &str) -> Option<&str> {
+    let date = name.strip_suffix(".md")?;
+    let b = date.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return None;
+    }
+    if !b
+        .iter()
+        .enumerate()
+        .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+    {
+        return None;
+    }
+    let year: u32 = date[..4].parse().ok()?;
+    let month: u32 = date[5..7].parse().ok()?;
+    let day: u32 = date[8..].parse().ok()?;
+    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+    let last = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    (1..=last).contains(&day).then_some(date)
+}
+
+/// The date of `path` when it is a daily note: `YYYY-MM-DD.md` directly in the daily notes
+/// folder.
+pub fn date_of_path(root: &Path, setting: &str, path: &Path) -> Option<String> {
+    if path.parent()? != folder(root, setting) {
+        return None;
+    }
+    date_of_name(path.file_name()?.to_str()?).map(str::to_owned)
+}
+
+/// The existing daily note nearest before (`forward` false) or after `from` (a date) in
+/// `folder`; `from` None = the most recent one (Previous from a note that is not a daily
+/// note), and no later one for Next. Names that are not `YYYY-MM-DD.md` files are ignored.
+pub fn neighbour(folder: &Path, from: Option<&str>, forward: bool) -> Option<PathBuf> {
+    let mut dates: Vec<String> = fs::read_dir(folder)
+        .ok()?
+        .flatten()
+        .filter(|e| e.path().is_file())
+        .filter_map(|e| date_of_name(e.file_name().to_str()?).map(str::to_owned))
+        .collect();
+    dates.sort();
+    let found = match (from, forward) {
+        (Some(d), true) => dates.into_iter().find(|x| x.as_str() > d),
+        (Some(d), false) => dates.into_iter().rev().find(|x| x.as_str() < d),
+        (None, false) => dates.pop(),
+        (None, true) => None,
+    }?;
+    Some(folder.join(format!("{found}.md")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,5 +296,92 @@ mod tests {
         let taken = path(&root, "", "2026-10-26");
         fs::create_dir_all(&taken).unwrap();
         assert!(create_if_missing(&taken, &text).is_err());
+    }
+
+    fn touch(dir: &Path, name: &str) {
+        fs::write(dir.join(name), "x").unwrap();
+    }
+
+    #[test]
+    fn names_must_be_real_dates() {
+        assert_eq!(date_of_name("2026-11-01.md"), Some("2026-11-01"));
+        assert_eq!(date_of_name("2028-02-29.md"), Some("2028-02-29"));
+        for bad in [
+            "2026-02-29.md",
+            "2026-13-01.md",
+            "2026-11-1.md",
+            "2026-11-01.txt",
+            "x.md",
+            "2026-11-01 b.md",
+            "٢٠٢٦-11-01.md",
+        ] {
+            assert_eq!(date_of_name(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn neighbours_skip_gaps_and_invalid_names() {
+        let (dir, _g) = make_temp_dir("nb");
+        for n in [
+            "2026-10-28.md",
+            "2026-10-30.md",
+            "2026-11-01.md",
+            "notes.md",
+            "2026-10-31.txt",
+            "2026-99-99.md",
+        ] {
+            touch(&dir, n);
+        }
+        fs::create_dir(dir.join("2026-10-29.md")).unwrap();
+        let name =
+            |p: Option<PathBuf>| p.map(|p| p.file_name().unwrap().to_string_lossy().into_owned());
+        assert_eq!(
+            name(neighbour(&dir, Some("2026-10-30"), false)).as_deref(),
+            Some("2026-10-28.md")
+        );
+        assert_eq!(
+            name(neighbour(&dir, Some("2026-10-30"), true)).as_deref(),
+            Some("2026-11-01.md")
+        );
+        assert_eq!(name(neighbour(&dir, Some("2026-11-01"), true)), None);
+        assert_eq!(name(neighbour(&dir, Some("2026-10-28"), false)), None);
+        assert_eq!(
+            name(neighbour(&dir, Some("2026-10-29"), false)).as_deref(),
+            Some("2026-10-28.md")
+        );
+        assert_eq!(
+            name(neighbour(&dir, None, false)).as_deref(),
+            Some("2026-11-01.md")
+        );
+        assert_eq!(name(neighbour(&dir, None, true)), None);
+    }
+
+    #[test]
+    fn neighbours_of_empty_or_missing_folder() {
+        let (dir, _g) = make_temp_dir("nbe");
+        assert_eq!(neighbour(&dir, Some("2026-11-01"), false), None);
+        assert_eq!(neighbour(&dir, None, false), None);
+        assert_eq!(neighbour(&dir.join("none"), None, false), None);
+    }
+
+    #[test]
+    fn daily_path_must_sit_in_the_daily_folder() {
+        let root = Path::new("/r");
+        assert_eq!(
+            date_of_path(root, "Daily", Path::new("/r/Daily/2026-11-01.md")).as_deref(),
+            Some("2026-11-01")
+        );
+        assert_eq!(
+            date_of_path(root, "Daily", Path::new("/r/2026-11-01.md")),
+            None
+        );
+        assert_eq!(
+            date_of_path(root, "", Path::new("/r/2026-11-01.md")).as_deref(),
+            Some("2026-11-01")
+        );
+        assert_eq!(
+            date_of_path(root, "Daily", Path::new("/r/Daily/a/2026-11-01.md")),
+            None
+        );
     }
 }

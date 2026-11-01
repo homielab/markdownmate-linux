@@ -939,8 +939,46 @@ impl Editor {
         self.update_history_actions();
     }
 
-    /// Greys out Back / Forward when there is no note to go to.
+    /// Previous / Next Daily Note (Ctrl+Alt+[ / ]): from the open daily note, opens the nearest
+    /// earlier / later existing one; Previous from any other note opens the most recent. Never
+    /// creates a note; nothing to go to: bell.
+    pub(crate) fn step_daily(self: &Rc<Self>, forward: bool) {
+        let Some(target) = self.daily_target(forward) else {
+            self.window.error_bell();
+            return self.update_history_actions();
+        };
+        if !self.save() {
+            return;
+        }
+        if let Some(dir) = target.parent() {
+            self.expand_to(dir);
+        }
+        self.open(&target);
+    }
+
+    fn daily_target(&self, forward: bool) -> Option<PathBuf> {
+        let root = self.root.borrow().clone()?;
+        let setting = self.prefs.borrow().daily_folder.clone();
+        let current = self.path.borrow().clone();
+        let from = current
+            .as_deref()
+            .and_then(|p| crate::daily::date_of_path(&root, &setting, p));
+        crate::daily::neighbour(
+            &crate::daily::folder(&root, &setting),
+            from.as_deref(),
+            forward,
+        )
+    }
+
+    /// Greys out Back / Forward (and the daily note steps) when there is no note to go to.
     pub(crate) fn update_history_actions(&self) {
+        for (name, forward) in [("previous-daily-note", false), ("next-daily-note", true)] {
+            if let Some(a) = self.window.lookup_action(name)
+                && let Ok(a) = a.downcast::<gio::SimpleAction>()
+            {
+                a.set_enabled(self.daily_target(forward).is_some());
+            }
+        }
         let history = self.history.borrow();
         for (name, direction) in [
             ("go-back", Direction::Back),

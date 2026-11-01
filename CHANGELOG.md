@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Previous Daily Note / Next Daily Note in the main menu (Ctrl+Alt+[ / Ctrl+Alt+]): from a daily note, jump to the nearest earlier or later one that exists (never creates one); from any other note, Previous opens the most recent. Same as the macOS app.
 - Export Folder as HTML… in the main menu: writes every note of the open folder as a standalone HTML page into an empty folder you pick, with wiki links and links to other notes pointing at their pages, the images they show and every `assets` folder copied along, and an `index.html` listing the notes as a tree by folder. Shows the progress and can be cancelled. Same as the macOS app.
 - Hover a `[[wiki link]]` in the editor to see the linked note's first lines in a tooltip, without leaving the note you are writing: its name and up to 12 lines as plain Markdown (front matter left out), starting at the heading for `[[Note#Heading]]`. Large notes are read only as far as shown. Same as the macOS app.
 - Tags in a note's YAML front matter count as tags: `tags: [a, b/c]`, a list of `- a` lines, or `tags: a, b` (also `tag:`, with or without `#`). They show in the sidebar's Tags list, `#` completion offers them, and Rename Tag rewrites them along with inline `#tags`. Notes moved from Obsidian or Jekyll keep their tags. Same as the macOS app.
