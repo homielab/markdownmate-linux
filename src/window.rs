@@ -612,6 +612,14 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     let no_templates = gio::SimpleAction::new("no-templates", None);
     no_templates.set_enabled(false);
     window.add_action(&no_templates);
+    let create_starters = gio::SimpleAction::new("create-starter-templates", None);
+    create_starters.set_enabled(false);
+    create_starters.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| editor.create_starter_templates()
+    ));
+    window.add_action(&create_starters);
     if let Some(popover) = menu_button.popover() {
         popover.connect_show(clone!(
             #[weak]

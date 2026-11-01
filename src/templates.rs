@@ -9,6 +9,39 @@ use std::path::{Path, PathBuf};
 /// The templates folder a new state file starts with.
 pub const DEFAULT_FOLDER: &str = "Templates";
 
+/// The four ready-made starter templates bundled with the app.
+pub const STARTER_TEMPLATES: [(&str, &str); 4] = [
+    (
+        "Meeting Notes.md",
+        include_str!("../resources/templates/Meeting Notes.md"),
+    ),
+    (
+        "Project.md",
+        include_str!("../resources/templates/Project.md"),
+    ),
+    (
+        "Book Notes.md",
+        include_str!("../resources/templates/Book Notes.md"),
+    ),
+    (
+        "Weekly Review.md",
+        include_str!("../resources/templates/Weekly Review.md"),
+    ),
+];
+
+/// Creates `dir` if missing and writes the starter templates that do not already exist.
+/// Existing files of the same name are left alone.
+pub fn create_starters(dir: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dir)?;
+    for (name, content) in STARTER_TEMPLATES {
+        let file = dir.join(name);
+        if !file.exists() {
+            fs::write(file, content)?;
+        }
+    }
+    Ok(())
+}
+
 /// One template: its file and the title shown in the menu (the file name without `.md`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Template {
@@ -133,5 +166,72 @@ mod tests {
             "No placeholders\n"
         );
         assert_eq!(fill("", "2026-11-01", "x"), "");
+    }
+
+    #[test]
+    fn creates_starter_templates_and_leaves_existing_untouched() {
+        let t = temp_dir("starters");
+        let target = t.0.join("Templates");
+        fs::create_dir_all(&target).unwrap();
+        let existing = target.join("Meeting Notes.md");
+        fs::write(&existing, "custom notes\n").unwrap();
+
+        create_starters(&target).unwrap();
+
+        assert_eq!(fs::read_to_string(&existing).unwrap(), "custom notes\n");
+        for (name, content) in STARTER_TEMPLATES {
+            let path = target.join(name);
+            assert!(path.is_file(), "missing {name}");
+            if name != "Meeting Notes.md" {
+                assert_eq!(
+                    fs::read_to_string(&path).unwrap(),
+                    content,
+                    "content mismatch in {name}"
+                );
+            }
+        }
+        assert_eq!(
+            titles(&target),
+            ["Book Notes", "Meeting Notes", "Project", "Weekly Review"]
+        );
+    }
+
+    #[test]
+    fn creates_starter_templates_when_folder_missing() {
+        let t = temp_dir("missing-folder");
+        let target = t.0.join("Templates");
+        assert!(!target.exists());
+
+        create_starters(&target).unwrap();
+        assert!(target.is_dir());
+
+        for (name, content) in STARTER_TEMPLATES {
+            let path = target.join(name);
+            assert!(path.is_file());
+            assert_eq!(fs::read_to_string(&path).unwrap(), content);
+        }
+        assert_eq!(
+            titles(&target),
+            ["Book Notes", "Meeting Notes", "Project", "Weekly Review"]
+        );
+    }
+
+    #[test]
+    fn starter_template_resources_match_contract() {
+        for (name, content) in STARTER_TEMPLATES {
+            assert!(
+                content.starts_with("# {{title}}\n\n"),
+                "{name} should start with title heading"
+            );
+            assert!(
+                content.contains("{{date}}"),
+                "{name} should contain date placeholder"
+            );
+            assert!(content.ends_with('\n'), "{name} should end with a newline");
+            assert!(
+                !content.contains('\r'),
+                "{name} should not contain carriage returns"
+            );
+        }
     }
 }

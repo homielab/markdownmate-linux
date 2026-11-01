@@ -1560,6 +1560,7 @@ impl Editor {
             "todays-note",
             "new-from-template",
             "templates",
+            "create-starter-templates",
             "open-quickly",
             "find-in-folder",
             "find-broken-links",
@@ -1667,6 +1668,10 @@ impl Editor {
             // `win.no-templates` is never enabled.
             self.templates_menu
                 .append(Some("No Templates"), Some("win.no-templates"));
+            self.templates_menu.append(
+                Some("Create Starter Templates…"),
+                Some("win.create-starter-templates"),
+            );
         }
         for t in list {
             // `_` marks a mnemonic in menu labels.
@@ -1888,6 +1893,27 @@ impl Editor {
                 .scroll_to_mark(&self.buffer.get_insert(), 0.0, true, 0.0, 0.3);
         }
         self.schedule_rescan();
+    }
+
+    /// Main menu ▸ New from Template ▸ Create Starter Templates…: creates the templates
+    /// folder inside the open folder with the four starter templates, reveals it in the
+    /// sidebar, and shows a toast.
+    pub(crate) fn create_starter_templates(self: &Rc<Self>) {
+        let Some(dir) = self.templates_dir() else {
+            return;
+        };
+        if let Err(e) = templates::create_starters(&dir) {
+            self.toast(&format!("Cannot create starter templates: {e}"));
+            return;
+        }
+        self.reveal_in_sidebar(&dir);
+        let name = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(templates::DEFAULT_FOLDER);
+        self.toast(&format!("4 templates added to {name}"));
+        self.schedule_rescan();
+        self.fill_templates_menu();
     }
 
     /// Folder for New Note from Selection: New Note's (`current_dir`), or without an open
