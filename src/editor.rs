@@ -1456,6 +1456,7 @@ impl Editor {
             "templates",
             "open-quickly",
             "find-in-folder",
+            "export-folder-html",
         ] {
             if let Some(a) = self.window.lookup_action(name)
                 && let Ok(a) = a.downcast::<gio::SimpleAction>()

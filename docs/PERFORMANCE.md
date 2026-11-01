@@ -284,6 +284,16 @@ char by char, while the `regex` crate matches case-insensitively without copying
 stops at the first 500 matching lines (under 5 ms either way). Run it with
 `./dev.sh sh -c 'cargo run -q --release --example generate_notes -- /tmp/notes 10000 && MM_FIND_NOTES=/tmp/notes cargo test --release find::tests::time_regex -- --ignored --nocapture'`.
 
+### Export Folder as HTML
+
+Exporting the 10,000 generated notes (every note rendered with code highlighting, its links
+rewritten and its page written, the folders searched for `assets`, plus `index.html`; release
+build, 8 threads on a 12-core machine, files in the page cache): 0.75 s. The window only polls the progress counter, so it
+stays responsive, and Cancel stops the threads before their next note. Notes with diagrams or
+formulas are drawn afterwards in the off-screen WebView one at a time, like Export as HTML (the
+generated folder has none). Run it with
+`./dev.sh sh -c 'cargo run -q --release --example generate_notes -- /tmp/notes 10000 && MM_SITE_NOTES=/tmp/notes cargo test --release site::tests::time_export -- --ignored --nocapture'`.
+
 ## Memory
 
 Resident size (`VmRSS`, `/proc/<pid>/smaps` summed per mapping) with the folder of 20 notes,

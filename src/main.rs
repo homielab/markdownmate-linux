@@ -38,6 +38,7 @@ mod rtf;
 mod save;
 mod search;
 mod sidebar;
+mod site;
 mod spell;
 mod state;
 mod stats;

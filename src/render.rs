@@ -37,13 +37,27 @@ pub(crate) fn body_html(
     sourcepos: bool,
     toc: bool,
 ) -> String {
+    body_html_with(md, wiki, rich, tasks, sourcepos, toc, rich)
+}
+
+/// `body_html`, with code highlighting through the preview's cache only if `cached` (see
+/// `Body::cached`).
+fn body_html_with(
+    md: &str,
+    wiki: &dyn Fn(&str) -> Option<PathBuf>,
+    rich: bool,
+    tasks: bool,
+    sourcepos: bool,
+    toc: bool,
+    cached: bool,
+) -> String {
     let body = Body {
         rich,
         tasks,
         sourcepos,
         toc,
         first_line: 1,
-        cached: rich,
+        cached,
         next: false,
     };
     let rendered = render_body(md, wiki, &body).expect("whole note");
@@ -1136,7 +1150,7 @@ const COPY: &str = "mm-copy:";
 const MISSING: &str = "mm-missing:";
 
 /// Every byte but `A-Za-z0-9-_.~/` as `%XX`.
-fn percent_encode(bytes: &[u8]) -> String {
+pub(crate) fn percent_encode(bytes: &[u8]) -> String {
     bytes
         .iter()
         .map(|&b| match b {
@@ -1346,7 +1360,25 @@ pub fn export_page(
     note_dir: &Path,
     wiki: &dyn Fn(&str) -> Option<PathBuf>,
 ) -> String {
-    let body = portable_body(md, note_dir, wiki, true, true);
+    let body = portable_body(md, note_dir, wiki, true, true, true);
+    standalone_page(title, &body)
+}
+
+/// `export_page` for Export Folder as HTML: code is highlighted on the spot, so thousands of
+/// notes rendered (on several threads) neither use nor replace the preview's highlighting cache.
+pub fn folder_export_page(
+    md: &str,
+    title: &str,
+    note_dir: &Path,
+    wiki: &dyn Fn(&str) -> Option<PathBuf>,
+) -> String {
+    let body = portable_body(md, note_dir, wiki, true, true, false);
+    standalone_page(title, &body)
+}
+
+/// A standalone page titled `title` around `body`: the preview's CSS in light mode, no script,
+/// images from anywhere (`EXPORT_CSP`).
+pub fn standalone_page(title: &str, body: &str) -> String {
     let mut escaped = String::new();
     comrak::html::escape(&mut escaped, title).expect("writing to a String");
     html_page(
@@ -1354,7 +1386,7 @@ pub fn export_page(
         Theme::Default,
         EXPORT_CSP,
         &format!("<title>{escaped}</title>"),
-        &body,
+        body,
     )
 }
 
@@ -1365,7 +1397,7 @@ pub fn export_page(
 pub fn html_fragment(md: &str, note_dir: &Path, wiki: &dyn Fn(&str) -> Option<PathBuf>) -> String {
     format!(
         "<meta charset=\"utf-8\">{}",
-        portable_body(md, note_dir, wiki, false, true)
+        portable_body(md, note_dir, wiki, false, true, false)
     )
 }
 
@@ -1392,7 +1424,10 @@ pub fn rich_text_page(
     wiki: &dyn Fn(&str) -> Option<PathBuf>,
     image: &dyn Fn(&str) -> Option<String>,
 ) -> String {
-    let mut body = inline_images(&portable_body(md, note_dir, wiki, false, false), image);
+    let mut body = inline_images(
+        &portable_body(md, note_dir, wiki, false, false, false),
+        image,
+    );
     // Inline colours per alert kind: mail apps drop class rules. The note's text is escaped, so
     // these tags only come from alerts.
     for (kind, title, colour) in ALERT_COLOURS {
@@ -1469,9 +1504,10 @@ fn portable_body(
     wiki: &dyn Fn(&str) -> Option<PathBuf>,
     rich: bool,
     toc: bool,
+    cached: bool,
 ) -> String {
     let wiki = |t: &str| wiki(t).map(|p| relative(note_dir, &p));
-    let mut body = body_html(md, &wiki, rich, false, false, toc);
+    let mut body = body_html_with(md, &wiki, rich, false, false, toc, cached && rich);
     // A link cannot contain a link, so the next `</a>` closes it; the note's own text is
     // escaped and cannot contain this markup.
     let open = format!("<a href=\"{MISSING}");

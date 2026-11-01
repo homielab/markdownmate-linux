@@ -474,7 +474,6 @@ pub(crate) fn export_html(editor: &Rc<Editor>) {
             let notes = editor.note_list.borrow().to_vec(); // the Rc cannot cross threads
             let root = editor.root.borrow().clone().unwrap_or_default();
             let uri = gio::File::for_path(&note).uri().to_string();
-            let web_images = editor.prefs.borrow().web_images;
             // Rendered and written off the main thread: ~1s/MB of code would freeze the window.
             let job = move || {
                 let wiki = |t: &str| render::resolve_wiki(t, &notes, &root, Some(&note)).cloned();
@@ -485,39 +484,56 @@ pub(crate) fn export_html(editor: &Rc<Editor>) {
                 let Ok(html) = gio::spawn_blocking(job).await else {
                     return editor.toast("Could not render the note");
                 };
-                // Diagrams and formulas are drawn in an off-screen WebView and saved as static
-                // SVG / KaTeX HTML; without a usable WebKit sandbox they stay code / MathML.
-                if !(render::has_diagrams(&html) || render::has_math(&html)) || !sandbox_usable() {
-                    return write_export(&editor, dest, html);
-                }
-                // The file lets web images load wherever it is opened; drawing it here loads
-                // them only with Load Images from the Web on (the preview's CSP meanwhile).
-                let shown = if web_images {
-                    html.clone()
-                } else {
-                    html.replacen(render::EXPORT_CSP, render::PREVIEW_CSP, 1)
-                };
                 let weak = Rc::downgrade(&editor);
-                let pending = std::cell::RefCell::new(Some((dest, html)));
-                offscreen(&editor, &shown, &uri, move |view| {
-                    let Some((dest, html)) = pending.take() else {
-                        return;
-                    };
-                    let (weak, page) = (weak.clone(), view.clone());
-                    finished_page(view, move |drawn| {
-                        if let Some(editor) = weak.upgrade() {
-                            drop_print_view(&editor, &page);
-                            let drawn = drawn.map(|d| match web_images {
-                                true => d,
-                                false => d.replacen(render::PREVIEW_CSP, render::EXPORT_CSP, 1),
-                            });
-                            write_export(&editor, dest, drawn.unwrap_or(html));
-                        }
-                    });
+                draw_static(&editor, html, &uri, move |html| {
+                    if let Some(editor) = weak.upgrade() {
+                        write_export(&editor, dest, html);
+                    }
                 });
             });
         },
     );
+}
+
+/// An exported page `html` with its diagrams and formulas drawn in an off-screen WebView
+/// (`uri` its base, for relative images) and saved as static SVG / KaTeX HTML, given to
+/// `done`. Without any, without a usable WebKit sandbox, or when the drawn page cannot be read,
+/// `done` gets `html` as it is (diagrams as code, formulas as MathML).
+pub(crate) fn draw_static(
+    editor: &Rc<Editor>,
+    html: String,
+    uri: &str,
+    done: impl FnOnce(String) + 'static,
+) {
+    if !(render::has_diagrams(&html) || render::has_math(&html)) || !sandbox_usable() {
+        return done(html);
+    }
+    // The file lets web images load wherever it is opened; drawing it here loads them only
+    // with Load Images from the Web on (the preview's CSP meanwhile).
+    let web_images = editor.prefs.borrow().web_images;
+    let shown = if web_images {
+        html.clone()
+    } else {
+        html.replacen(render::EXPORT_CSP, render::PREVIEW_CSP, 1)
+    };
+    let weak = Rc::downgrade(editor);
+    let pending = std::cell::RefCell::new(Some((html, done)));
+    offscreen(editor, &shown, uri, move |view| {
+        let Some((html, done)) = pending.take() else {
+            return;
+        };
+        let (weak, page) = (weak.clone(), view.clone());
+        finished_page(view, move |drawn| {
+            if let Some(editor) = weak.upgrade() {
+                drop_print_view(&editor, &page);
+            }
+            let drawn = drawn.map(|d| match web_images {
+                true => d,
+                false => d.replacen(render::PREVIEW_CSP, render::EXPORT_CSP, 1),
+            });
+            done(drawn.unwrap_or(html));
+        });
+    });
 }
 
 /// Export as HTML: the page shown in `view` (after `offscreen` drew it) as a static file: no

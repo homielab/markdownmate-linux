@@ -61,6 +61,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         &[
             ("Export as PDF…", "win.export-pdf"),
             ("Export as HTML…", "win.export-html"),
+            ("Export Folder as HTML…", "win.export-folder-html"),
             ("Export as Plain Text…", "win.export-text"),
             ("Export as RTF…", "win.export-rtf"),
             ("Copy as HTML", "win.copy-html"),
@@ -569,6 +570,16 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             move |_| editor.fill_templates_menu()
         ));
     }
+
+    // Disabled until a folder is open (load_folder enables it).
+    let folder_html_action = gio::SimpleAction::new("export-folder-html", None);
+    folder_html_action.set_enabled(false);
+    folder_html_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| crate::site::export_folder(&editor)
+    ));
+    window.add_action(&folder_html_action);
 
     // Disabled until a folder is open (load_folder enables it).
     let quick_action = gio::SimpleAction::new("open-quickly", None);
