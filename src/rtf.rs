@@ -5,14 +5,14 @@
 //! formulas as their TeX; front matter and raw HTML left out. Non-ASCII text is written as
 //! `\uN?` (UTF-16 units), so the file is plain ASCII. Pure; `preview::export_rtf` runs it.
 
-use comrak::nodes::{AlertType, AstNode, ListType, NodeValue};
+use comrak::nodes::{AstNode, ListType, NodeValue};
 
 /// Twips per indent step (a quarter inch).
 const STEP: i32 = 360;
 /// Width of a table, in twips.
 const TABLE_WIDTH: i32 = 9000;
 /// Colour table index of `==highlight==`'s background (`render::MARK_COLOUR`).
-const HIGHLIGHT: usize = 8;
+const HIGHLIGHT: usize = 3 + crate::render::ALERT_COLOURS.len();
 
 /// `md` as an RTF document, with smart punctuation if it is on (`smart`).
 pub fn rtf(md: &str) -> String {
@@ -26,7 +26,8 @@ fn rtf_with(md: &str, smart: bool) -> String {
     if smart {
         crate::smart::prepare(&mut options);
     }
-    let root = comrak::parse_document(&arena, md, &options);
+    let md = crate::render::strip_comments(md);
+    let root = comrak::parse_document(&arena, &md, &options);
     if smart {
         crate::smart::apply(root);
     }
@@ -38,10 +39,10 @@ fn rtf_with(md: &str, smart: bool) -> String {
     for quote in quotes {
         crate::render::make_alert(quote);
     }
-    // Colours: 1 link, 2 code shading, 3–7 one per alert kind (`ALERT_COLOURS` order), then
+    // Colours: 1 link, 2 code shading, then one per alert group (`ALERT_COLOURS` order), then
     // `HIGHLIGHT`.
     let mut colours = String::from("\\red0\\green82\\blue204;\\red240\\green240\\blue240;");
-    let alerts = crate::render::ALERT_COLOURS.map(|(_, _, hex)| hex);
+    let alerts = crate::render::ALERT_COLOURS.map(|(_, hex)| hex);
     for hex in alerts.into_iter().chain([crate::render::MARK_COLOUR]) {
         let rgb = u32::from_str_radix(&hex[1..], 16).unwrap_or(0);
         colours.push_str(&format!(
@@ -153,17 +154,16 @@ fn block<'a>(node: &'a AstNode<'a>, indent: i32, marker: &mut Option<String>, ou
         }
         NodeValue::Alert(alert) => {
             flush_marker(indent, marker, out);
-            let kind = match alert.alert_type {
-                AlertType::Note => 0,
-                AlertType::Tip => 1,
-                AlertType::Important => 2,
-                AlertType::Warning => 3,
-                AlertType::Caution => 4,
-            };
-            let (_, title, _) = crate::render::ALERT_COLOURS[kind];
+            let (kind, title) = crate::render::alert_parts(alert);
+            let group = crate::render::alert_group(kind).unwrap_or("note");
+            let colour = crate::render::ALERT_COLOURS
+                .iter()
+                .position(|(g, _)| *g == group)
+                .unwrap_or(0);
+            let title = escape(title);
             paragraph(
                 &format!("\\li{}\\sa60\\keepn", indent + STEP * 2),
-                &format!("{{\\b\\cf{} {title}}}", kind + 3),
+                &format!("{{\\b\\cf{} {title}}}", colour + 3),
                 out,
             );
             blocks(node, indent + STEP * 2, &mut None, out);
@@ -403,15 +403,23 @@ mod tests {
         assert!(out.contains("\\li720\\sa120 Mind the gap"));
         assert!(!out.contains("[!WARNING]"));
         assert!(out.contains("\\li720\\sa120 plain quote"));
+        // An Obsidian callout: its title, its group's colour (14 = danger).
+        let out = rtf("> [!error]- Broken pipe\n> body\n");
+        assert!(out.contains("{\\b\\cf14 Broken pipe}"), "{out}");
+        assert!(rtf("%%hidden%% shown\n").contains("shown"));
+        assert!(!rtf("%%hidden%% shown\n").contains("hidden"));
     }
 
     #[test]
     fn highlights_on_yellow() {
         let out = rtf("A ==marked **bold**== word, a == b, ==two\nlines==.");
-        // Colour 8 = `render::MARK_COLOUR`, #fff1a8.
+        // Colour 18 = `render::MARK_COLOUR`, #fff1a8.
         let table = out.split("\\colortbl;").nth(1).unwrap();
-        assert_eq!(table.split(';').nth(7), Some("\\red255\\green241\\blue168"));
-        assert!(out.contains("{\\highlight8\\chcbpat8\\cb8 marked {\\b bold}}"));
+        assert_eq!(
+            table.split(';').nth(17),
+            Some("\\red255\\green241\\blue168")
+        );
+        assert!(out.contains("{\\highlight18\\chcbpat18\\cb18 marked {\\b bold}}"));
         assert!(out.contains("a == b, ==two\\line lines==."));
         assert_eq!(out.matches("\\highlight").count(), 1);
     }

@@ -154,6 +154,7 @@ pub(crate) fn render_body(md: &str, wiki: &dyn Links, body: &Body) -> Option<Ren
     // Tags are marked with these private-use chars in the AST and turned into spans after
     // escaping; the note's own copies are dropped so it cannot open/close a span.
     let md = md.replace(is_marker, "");
+    let md = strip_comments(&md);
     let root = comrak::parse_document(&arena, &md, &options);
     unmark_multiline(&arena, root);
     if next {
@@ -332,20 +333,8 @@ pub(crate) fn render_body(md: &str, wiki: &dyn Links, body: &Body) -> Option<Ren
         rest = &rest[end + anchor_end.len()..];
     }
     out.push_str(rest);
-    // comrak's alert classes → ours (`make_alert`). The note's text is escaped, so these
-    // tags only come from alerts.
-    let html = if alerts {
-        out.replace(
-            "<div class=\"markdown-alert markdown-alert-",
-            "<div class=\"alert alert-",
-        )
-        .replace(
-            "<p class=\"markdown-alert-title\">",
-            "<p class=\"alert-title\">",
-        )
-    } else {
-        out
-    };
+    // comrak's alert tags → ours (`alert_tags`).
+    let html = if alerts { alert_tags(&out) } else { out };
     let html = html
         .replace(TAG_OPEN, "<span class=\"tag\">")
         .replace(TAG_CLOSE, "</span>");
@@ -1009,12 +998,15 @@ pub(crate) fn fill_toc(html: &str, list: &str) -> String {
     out
 }
 
-/// GitHub's alerts: a block quote whose first line is exactly `[!NOTE]`, `[!TIP]`,
-/// `[!IMPORTANT]`, `[!WARNING]` or `[!CAUTION]` (any case, plain text) becomes comrak's alert
-/// node without that line, rendered as `<div class="alert alert-note"><p
-/// class="alert-title">Note</p>…</div>` (`render_body` renames comrak's classes). Comrak's
-/// own `alerts` extension stays off: it also takes `[!NOTE] Title` and `>>>` fences, which
-/// stay quotes here as on GitHub. True if `quote` became an alert.
+/// Alerts (GitHub's and Obsidian's callouts): a block quote whose first line is `[!KIND]`,
+/// optionally a fold marker `-`/`+` (ignored: rendered open) and a space and a title, any
+/// case, with KIND one of `ALERT_KINDS`, becomes comrak's alert node without that line,
+/// rendered as `<div class="alert alert-<kind> alert-group-<group>"><p
+/// class="alert-title">Title</p>…</div>` (`render_body` rewrites comrak's tags,
+/// `alert_tags`; the five GitHub kinds keep `alert alert-<kind>` without a group class).
+/// The kind and title travel in the node's title as `kind ALERT title` (`alert_parts`).
+/// Comrak's own `alerts` extension stays off: it only knows GitHub's five kinds and also
+/// takes `>>>` fences. Unknown kinds stay quotes. True if `quote` became an alert.
 pub(crate) fn make_alert<'a>(quote: &'a comrak::nodes::AstNode<'a>) -> bool {
     use comrak::nodes::{AlertType, NodeAlert, NodeValue};
     let Some(paragraph) = quote
@@ -1024,7 +1016,8 @@ pub(crate) fn make_alert<'a>(quote: &'a comrak::nodes::AstNode<'a>) -> bool {
         return false;
     };
     // The inlines of the first line, up to and with the break that ends it. comrak may split
-    // `[!NOTE]` at the brackets: the pieces are joined.
+    // `[!NOTE]` at the brackets: the pieces are joined. The marker itself must be plain text;
+    // a title may hold inline Markdown (kept as its text).
     let mut line = String::new();
     let mut marker = Vec::new();
     for child in paragraph.children() {
@@ -1032,21 +1025,27 @@ pub(crate) fn make_alert<'a>(quote: &'a comrak::nodes::AstNode<'a>) -> bool {
         match &child.data().value {
             NodeValue::SoftBreak | NodeValue::LineBreak => break,
             NodeValue::Text(text) => line.push_str(text),
+            _ if line.trim_start().starts_with("[!") && line.contains(']') => {
+                for node in child.descendants() {
+                    match &node.data().value {
+                        NodeValue::Text(t) => line.push_str(t),
+                        NodeValue::Code(c) => line.push_str(&c.literal),
+                        _ => {}
+                    }
+                }
+            }
             _ => return false,
         }
     }
-    let kind = line
-        .trim()
-        .strip_prefix("[!")
-        .and_then(|l| l.strip_suffix(']'))
-        .map(str::to_ascii_lowercase);
-    let alert_type = match kind.as_deref() {
-        Some("note") => AlertType::Note,
-        Some("tip") => AlertType::Tip,
-        Some("important") => AlertType::Important,
-        Some("warning") => AlertType::Warning,
-        Some("caution") => AlertType::Caution,
-        _ => return false,
+    let Some((kind, title)) = parse_alert_marker(&line) else {
+        return false;
+    };
+    let alert_type = match kind.as_str() {
+        "tip" => AlertType::Tip,
+        "important" => AlertType::Important,
+        "warning" => AlertType::Warning,
+        "caution" => AlertType::Caution,
+        _ => AlertType::Note,
     };
     for node in marker {
         node.detach();
@@ -1058,12 +1057,233 @@ pub(crate) fn make_alert<'a>(quote: &'a comrak::nodes::AstNode<'a>) -> bool {
     }
     quote.data_mut().value = NodeValue::Alert(Box::new(NodeAlert {
         alert_type,
-        title: None,
+        title: Some(format!("{kind}{ALERT}{title}")),
         multiline: false,
         fence_length: 0,
         fence_offset: 0,
     }));
     true
+}
+
+/// `[!KIND]`, `[!KIND]-`, `[!kind]+ Title` → (kind lower-cased, title or the default one);
+/// `None` for an unknown kind or another text.
+fn parse_alert_marker(line: &str) -> Option<(String, String)> {
+    let rest = line.trim().strip_prefix("[!")?;
+    let close = rest.find(']')?;
+    let kind = rest[..close].to_ascii_lowercase();
+    alert_group(&kind)?;
+    let mut rest = &rest[close + 1..];
+    if let Some(r) = rest.strip_prefix(['-', '+']) {
+        rest = r;
+    }
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let title = rest.trim();
+    let title = if title.is_empty() {
+        let mut chars = kind.chars();
+        chars
+            .next()
+            .map(|c| c.to_ascii_uppercase().to_string() + chars.as_str())
+            .unwrap_or_default()
+    } else {
+        title.to_string()
+    };
+    Some((kind, title))
+}
+
+/// The alert kinds (as written, lower-cased) and the group whose look each one has. The
+/// first five are GitHub's (their HTML has no group class).
+pub(crate) const ALERT_KINDS: [(&str, &str); 27] = [
+    ("note", "note"),
+    ("tip", "tip"),
+    ("important", "important"),
+    ("warning", "warning"),
+    ("caution", "caution"),
+    ("abstract", "abstract"),
+    ("summary", "abstract"),
+    ("tldr", "abstract"),
+    ("info", "info"),
+    ("todo", "todo"),
+    ("hint", "tip"),
+    ("success", "success"),
+    ("check", "success"),
+    ("done", "success"),
+    ("question", "question"),
+    ("help", "question"),
+    ("faq", "question"),
+    ("attention", "warning"),
+    ("failure", "failure"),
+    ("fail", "failure"),
+    ("missing", "failure"),
+    ("danger", "danger"),
+    ("error", "danger"),
+    ("bug", "bug"),
+    ("example", "example"),
+    ("quote", "quote"),
+    ("cite", "quote"),
+];
+
+/// The group of an alert kind (`ALERT_KINDS`).
+pub(crate) fn alert_group(kind: &str) -> Option<&'static str> {
+    ALERT_KINDS
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, g)| *g)
+}
+
+/// An alert node's kind and title (`make_alert`).
+pub(crate) fn alert_parts(alert: &comrak::nodes::NodeAlert) -> (&str, &str) {
+    alert
+        .title
+        .as_deref()
+        .and_then(|t| t.split_once(ALERT))
+        .unwrap_or(("note", "Note"))
+}
+
+/// The colour (light) of an alert kind in Copy as Rich Text and RTF: its group's.
+pub(crate) fn alert_colour(kind: &str) -> &'static str {
+    let group = alert_group(kind).unwrap_or("note");
+    ALERT_COLOURS
+        .iter()
+        .find(|(g, _)| *g == group)
+        .map_or("#0969da", |(_, c)| *c)
+}
+
+/// comrak's alert tags (`make_alert`) → ours: `<div class="markdown-alert markdown-alert-…"
+/// …>\n<p class="markdown-alert-title">kind ALERT title</p>` → `<div class="alert
+/// alert-kind[ alert-group-g]" …>\n<p class="alert-title">title</p>`. The note's text is
+/// escaped, so these tags only come from alerts.
+fn alert_tags(html: &str) -> String {
+    const DIV: &str = "<div class=\"markdown-alert markdown-alert-";
+    const TITLE: &str = "<p class=\"markdown-alert-title\">";
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(at) = rest.find(DIV) {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + DIV.len()..];
+        let (Some(quote), Some(title)) = (after.find('"'), after.find(TITLE)) else {
+            out.push_str(&rest[at..]);
+            return out;
+        };
+        let attrs = &after[quote + 1..title];
+        let text = &after[title + TITLE.len()..];
+        let end = text.find("</p>").unwrap_or(text.len());
+        let (kind, title_text) = text[..end]
+            .split_once(ALERT)
+            .unwrap_or(("note", &text[..end]));
+        out.push_str("<div class=\"alert alert-");
+        out.push_str(kind);
+        match alert_group(kind) {
+            Some(group) if !GITHUB_ALERTS.contains(&kind) => {
+                out.push_str(" alert-group-");
+                out.push_str(group);
+            }
+            _ => {}
+        }
+        out.push('"');
+        out.push_str(attrs);
+        out.push_str("<p class=\"alert-title\">");
+        out.push_str(title_text);
+        rest = &text[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// GitHub's five alert kinds: their HTML stays as before Obsidian's callouts.
+const GITHUB_ALERTS: [&str; 5] = ["note", "tip", "important", "warning", "caution"];
+
+/// Whether `md` has a line that is only `%%` (a block comment's fence, `strip_comments`).
+pub(crate) fn has_block_comment(md: &str) -> bool {
+    md.contains("%%") && md.lines().any(|l| l.trim() == "%%")
+}
+
+/// `md` without Obsidian's comments: `%%text%%` on one line, and lines from a line that is
+/// only `%%` to the next such line (left as empty lines, so line numbers stay). Not inside
+/// code spans, code blocks, front matter or math; an unterminated `%%` stays text.
+pub(crate) fn strip_comments(md: &str) -> std::borrow::Cow<'_, str> {
+    use comrak::nodes::NodeValue;
+    if !md.contains("%%") {
+        return md.into();
+    }
+    let starts: Vec<usize> = std::iter::once(0)
+        .chain(md.match_indices('\n').map(|(i, _)| i + 1))
+        .collect();
+    let byte = |line: usize, column: usize| {
+        let start = starts
+            .get(line.saturating_sub(1))
+            .copied()
+            .unwrap_or(md.len());
+        (start + column.saturating_sub(1)).min(md.len())
+    };
+    // Byte ranges comments can't touch: code and math nodes, front matter; blocks by whole
+    // lines.
+    let arena = comrak::Arena::new();
+    let root = comrak::parse_document(&arena, md, &options());
+    let mut kept: Vec<std::ops::Range<usize>> = Vec::new();
+    for node in root.descendants() {
+        let data = node.data();
+        let pos = data.sourcepos;
+        match &data.value {
+            NodeValue::CodeBlock(_) | NodeValue::FrontMatter(_) => {
+                let end = starts.get(pos.end.line).copied().unwrap_or(md.len());
+                kept.push(byte(pos.start.line, 1)..end);
+            }
+            NodeValue::Code(_) | NodeValue::Math(_) => {
+                kept.push(
+                    byte(pos.start.line, pos.start.column)..byte(pos.end.line, pos.end.column) + 1,
+                );
+            }
+            _ => {}
+        }
+    }
+    let free = |at: usize| !kept.iter().any(|r| r.contains(&at));
+    let mut out = String::with_capacity(md.len());
+    let mut line = 0;
+    while line < starts.len() {
+        let start = starts[line];
+        let end = starts.get(line + 1).copied().unwrap_or(md.len());
+        let text = &md[start..end];
+        if text.trim() == "%%" && free(start + text.find('%').unwrap_or(0)) {
+            let close = (line + 1..starts.len()).find(|&l| {
+                let s = starts[l];
+                let t = &md[s..starts.get(l + 1).copied().unwrap_or(md.len())];
+                t.trim() == "%%" && free(s + t.find('%').unwrap_or(0))
+            });
+            if let Some(close) = close {
+                for l in line..=close {
+                    let s = starts[l];
+                    let e = starts.get(l + 1).copied().unwrap_or(md.len());
+                    if md[s..e].ends_with('\n') {
+                        out.push('\n');
+                    }
+                }
+                line = close + 1;
+                continue;
+            }
+        }
+        // Inline comments on this line.
+        let mut rest = 0;
+        let mut from = 0;
+        while let Some(open) = text[from..].find("%%").map(|i| from + i) {
+            if !free(start + open) {
+                from = open + 1;
+                continue;
+            }
+            let close = text[open + 2..]
+                .match_indices("%%")
+                .map(|(i, _)| open + 2 + i)
+                .find(|&c| free(start + c));
+            let Some(close) = close else { break };
+            out.push_str(&text[rest..open]);
+            rest = close + 2;
+            from = rest;
+        }
+        out.push_str(&text[rest..]);
+        line += 1;
+    }
+    out.into()
 }
 
 /// `==` highlights stay on one line, as in the macOS app and the editor: a pair comrak's
@@ -1555,13 +1775,15 @@ const TOC: char = '\u{E007}';
 /// An embed's place (`mark_embeds`): EMBED, its index in `MATH_DIGITS`, EMBED_END.
 const EMBED: char = '\u{E008}';
 const EMBED_END: char = '\u{E009}';
+/// Between an alert's kind and title in comrak's alert node (`make_alert`).
+const ALERT: char = '\u{E00A}';
 /// `'0'`…`'9'` of a formula's index.
 const MATH_DIGITS: std::ops::RangeInclusive<char> = '\u{E010}'..='\u{E019}';
 
 /// Whether `c` is one of the private-use chars `body_html` marks the AST with; the note's own
 /// copies are dropped before parsing.
 pub(crate) fn is_marker(c: char) -> bool {
-    matches!(c, TAG_OPEN..=EMBED_END) || MATH_DIGITS.contains(&c)
+    matches!(c, TAG_OPEN..=ALERT) || MATH_DIGITS.contains(&c)
 }
 
 /// `n` in `MATH_DIGITS`.
@@ -2051,14 +2273,24 @@ pub fn html_fragment(md: &str, note_dir: &Path, wiki: &dyn Links) -> String {
     )
 }
 
-/// Alert kinds with their title and light-mode colour (as the preview's CSS), for exports
+/// Alert groups (`ALERT_KINDS`) with their light-mode colour (as the preview's CSS), for exports
 /// that can't use the page style sheet: Copy as Rich Text and RTF.
-pub(crate) const ALERT_COLOURS: [(&str, &str, &str); 5] = [
-    ("note", "Note", "#0969da"),
-    ("tip", "Tip", "#1a7f37"),
-    ("important", "Important", "#8250df"),
-    ("warning", "Warning", "#9a6700"),
-    ("caution", "Caution", "#d1242f"),
+pub(crate) const ALERT_COLOURS: [(&str, &str); 15] = [
+    ("note", "#0969da"),
+    ("tip", "#1a7f37"),
+    ("important", "#8250df"),
+    ("warning", "#9a6700"),
+    ("caution", "#d1242f"),
+    ("abstract", "#0e8a94"),
+    ("info", "#0e8a94"),
+    ("todo", "#0e8a94"),
+    ("success", "#1a7f37"),
+    ("question", "#bc4c00"),
+    ("failure", "#d1242f"),
+    ("danger", "#d1242f"),
+    ("bug", "#d1242f"),
+    ("example", "#8250df"),
+    ("quote", "#6e7781"),
 ];
 
 /// `==highlight==` in Copy as Rich Text and RTF: the preview's light yellow.
@@ -2080,19 +2312,30 @@ pub fn rich_text_page(
     );
     // Inline colours per alert kind: mail apps drop class rules. The note's text is escaped, so
     // these tags only come from alerts.
-    for (kind, title, colour) in ALERT_COLOURS {
-        body = body
-            .replace(
-                &format!("<div class=\"alert alert-{kind}\""),
-                &format!(
-                    "<div class=\"alert alert-{kind}\" style=\"border-left: 4px solid {colour}; padding-left: 8px;\""
-                ),
-            )
-            .replace(
-                &format!("<p class=\"alert-title\">{title}</p>"),
-                &format!("<p class=\"alert-title\" style=\"color: {colour};\">{title}</p>"),
-            );
+    const DIV: &str = "<div class=\"alert alert-";
+    const TITLE: &str = "<p class=\"alert-title\">";
+    let mut styled = String::with_capacity(body.len());
+    let mut rest = body.as_str();
+    while let Some(at) = rest.find(DIV) {
+        let after = &rest[at + DIV.len()..];
+        let kind_end = after.find([' ', '"']).unwrap_or(after.len());
+        let colour = alert_colour(&after[..kind_end]);
+        let class_end = after.find('"').unwrap_or(after.len());
+        styled.push_str(&rest[..at + DIV.len() + class_end + 1]);
+        styled.push_str(&format!(
+            " style=\"border-left: 4px solid {colour}; padding-left: 8px;\""
+        ));
+        rest = &after[(class_end + 1).min(after.len())..];
+        if let Some(title) = rest.find(TITLE) {
+            styled.push_str(&rest[..title]);
+            styled.push_str(&format!(
+                "<p class=\"alert-title\" style=\"color: {colour};\">"
+            ));
+            rest = &rest[title + TITLE.len()..];
+        }
     }
+    styled.push_str(rest);
+    body = styled;
     // Highlights inline too, solid yellow: pasted documents are usually light.
     let body = body.replace(
         "<mark>",
@@ -2425,6 +2668,12 @@ blockquote { margin: 0; padding-left: 1em; border-left: 4px solid rgba(127,127,1
 .alert-tip { --alert: #1a7f37; } .alert-important { --alert: #8250df; } .alert-warning { --alert: #9a6700; } .alert-caution { --alert: #d1242f; }
 html.dark .alert-note { --alert: #4493f8; } html.dark .alert-tip { --alert: #3fb950; } html.dark .alert-important { --alert: #ab7df8; }
 html.dark .alert-warning { --alert: #d29922; } html.dark .alert-caution { --alert: #f85149; }
+.alert-group-tip, .alert-group-success { --alert: #1a7f37; } .alert-group-warning { --alert: #9a6700; }
+.alert-group-abstract, .alert-group-info, .alert-group-todo { --alert: #0e8a94; } .alert-group-question { --alert: #bc4c00; }
+.alert-group-failure, .alert-group-danger, .alert-group-bug { --alert: #d1242f; } .alert-group-example { --alert: #8250df; } .alert-group-quote { --alert: #6e7781; }
+html.dark .alert-group-tip, html.dark .alert-group-success { --alert: #3fb950; } html.dark .alert-group-warning { --alert: #d29922; }
+html.dark .alert-group-abstract, html.dark .alert-group-info, html.dark .alert-group-todo { --alert: #39c5cf; } html.dark .alert-group-question { --alert: #f0883e; }
+html.dark .alert-group-failure, html.dark .alert-group-danger, html.dark .alert-group-bug { --alert: #f85149; } html.dark .alert-group-example { --alert: #ab7df8; } html.dark .alert-group-quote { --alert: #9198a1; }
 table { border-collapse: collapse; } th, td { border: 1px solid rgba(127,127,127,.4); padding: 4px 10px; }
 img { max-width: 100%; }
 ul:has(> li > input[type=checkbox]), ul:has(> li > a.task) { list-style: none; padding-left: 1.2em; }
@@ -2794,10 +3043,82 @@ mod tests {
     }
 
     #[test]
+    fn obsidian_callouts() {
+        let render = |md: &str| to_html(md, &|_: &str| None);
+        for (marker, kind, group, title) in [
+            ("[!abstract]", "abstract", "abstract", "Abstract"),
+            ("[!TLDR]", "tldr", "abstract", "Tldr"),
+            ("[!info]", "info", "info", "Info"),
+            ("[!todo]", "todo", "todo", "Todo"),
+            ("[!hint]", "hint", "tip", "Hint"),
+            ("[!done]", "done", "success", "Done"),
+            ("[!faq]", "faq", "question", "Faq"),
+            ("[!attention]", "attention", "warning", "Attention"),
+            ("[!missing]", "missing", "failure", "Missing"),
+            ("[!error]", "error", "danger", "Error"),
+            ("[!bug]", "bug", "bug", "Bug"),
+            ("[!example]", "example", "example", "Example"),
+            ("[!cite]", "cite", "quote", "Cite"),
+            ("[!info]- Folded", "info", "info", "Folded"),
+            ("[!info]+", "info", "info", "Info"),
+            ("[!bug] A & <b>", "bug", "bug", "A &amp;"),
+        ] {
+            let html = render(&format!("> {marker}\n> body\n"));
+            assert_eq!(
+                html,
+                format!(
+                    "<div class=\"alert alert-{kind} alert-group-{group}\">\n\
+<p class=\"alert-title\">{title}</p>\n<p>body</p>\n</div>\n"
+                ),
+                "{marker}"
+            );
+        }
+        // GitHub's kinds take a title and a fold marker too, without a group class.
+        assert!(render("> [!tip]- Keep it *short*\n> x\n").starts_with(
+            "<div class=\"alert alert-tip\">\n<p class=\"alert-title\">Keep it short</p>"
+        ));
+        assert!(render("> [!note]+\n> x\n").contains("<p class=\"alert-title\">Note</p>"));
+        // Rich text keeps the group colour.
+        let page = rich_text_page(
+            "> [!question] Why\n> x\n",
+            Path::new("/"),
+            &|_: &str| None,
+            &|_: &str| None,
+        );
+        assert!(page.contains("<div class=\"alert alert-question alert-group-question\" style=\"border-left: 4px solid #bc4c00;"), "{page}");
+        assert!(page.contains("<p class=\"alert-title\" style=\"color: #bc4c00;\">Why</p>"));
+    }
+
+    #[test]
+    fn obsidian_comments() {
+        assert_eq!(strip_comments("a %%hidden%% b %%x%%\n"), "a  b \n");
+        assert_eq!(
+            strip_comments("a\n%%\nsecret\n\nmore\n%%\nb\n"),
+            "a\n\n\n\n\n\nb\n"
+        );
+        for kept in [
+            "a %%open\n",
+            "`%%code%%` and %%\n",
+            "```\n%%\nx\n%%\n```\n",
+            "    %%indented%%\n",
+            "---\ntitle: \"%%x%%\"\n---\n",
+            "$%%x%%$\n",
+            "%%\nnever closed\n",
+        ] {
+            assert_eq!(strip_comments(kept), kept, "{kept:?}");
+        }
+        let html = to_html("Keep %%drop%% this\n\n%%\nsecret\n%%\n", &|_: &str| None);
+        assert_eq!(html, "<p>Keep  this</p>\n");
+        assert!(has_block_comment("a\n %% \nb\n%%\n"));
+        assert!(!has_block_comment("a %%x%%\n"));
+    }
+
+    #[test]
     fn quotes_that_are_not_alerts() {
         for md in [
-            "> [!NOTE] more text\n> body\n",
+            "> [!NOTE]more\n> body\n",
             "> [!FOO]\n> body\n",
+            "> [!FOO] Title\n> body\n",
             "> [!NOTE\n> body\n",
             "> text\n> [!NOTE]\n",
             "> *[!NOTE]*\n> body\n",
@@ -3400,7 +3721,7 @@ mod tests {
             "> [!TIP]\n> Try it\n",
             Path::new("/r"),
             &|_: &str| None,
-            &|_| None,
+            &|_: &str| None,
         );
         assert!(
             p.contains("<div class=\"alert alert-tip\" style=\"border-left: 4px solid #1a7f37;"),

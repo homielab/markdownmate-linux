@@ -157,7 +157,8 @@ pub(crate) fn render(
 
 /// Whether `md` may be cut into chunks (module doc).
 fn cuttable(md: &str) -> bool {
-    if md.contains("[^") || md.chars().any(render::is_marker) {
+    // A `%%` comment on its own lines may span blank lines, so chunks.
+    if md.contains("[^") || md.chars().any(render::is_marker) || render::has_block_comment(md) {
         return false;
     }
     let bytes = md.as_bytes();

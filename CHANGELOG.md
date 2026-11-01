@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Obsidian callouts: besides GitHub's five alerts, `> [!info]`, `[!abstract]`, `[!todo]`, `[!success]`, `[!question]`, `[!failure]`, `[!danger]`, `[!bug]`, `[!example]`, `[!quote]` and their aliases show as coloured callouts in the preview, print and exports, with a custom title after the kind (`> [!tip] Keep it short`) and fold markers (`-`, `+`) accepted. `%%comments%%` are hidden from the preview and exports but stay in your note. Same as the macOS app.
 - Obsidian-style embeds in the preview, print and exports: `![[photo.png]]` shows an image of the open folder (`|300` sets its width, `|300x200` width and height), and `![[Note]]` or `![[Note#Heading]]` shows that note or section inside the current one, so Obsidian folders render as they do there. Missing targets show dimmed and are listed by Find Broken Links; embedded images count as used in Find Unused Attachments, and embedding notes appear in Backlinks. Same as the macOS app.
 
 ## 0.9.0
