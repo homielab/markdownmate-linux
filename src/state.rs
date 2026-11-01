@@ -216,6 +216,8 @@ pub struct Prefs {
     pub web_images: bool,
     /// Preferences ▸ Line breaks ▸ Every New Line (`render::set_hard_breaks`).
     pub hard_breaks: bool,
+    /// Preferences ▸ Preview ▸ Smart Punctuation (`smart::set_enabled`).
+    pub smart_punctuation: bool,
     /// Underline misspelled words in the editor (`spell`).
     pub spell_check: bool,
     /// Automatically insert matching brackets, backticks and quotes while typing (`autopair`).
@@ -257,6 +259,7 @@ impl Default for Prefs {
             sidebar_sort: crate::notes::SortOrder::Name,
             web_images: false,
             hard_breaks: false,
+            smart_punctuation: false,
             spell_check: true,
             auto_pair: true,
         }
@@ -369,6 +372,10 @@ impl State {
                 Some(("hard_breaks", v)) => {
                     state.prefs.hard_breaks = v.parse().unwrap_or(state.prefs.hard_breaks)
                 }
+                Some(("smart_punctuation", v)) => {
+                    state.prefs.smart_punctuation =
+                        v.parse().unwrap_or(state.prefs.smart_punctuation)
+                }
                 Some(("spell_check", v)) => {
                     state.prefs.spell_check = v.parse().unwrap_or(state.prefs.spell_check)
                 }
@@ -444,7 +451,7 @@ impl State {
             out += &format!("font={font}\n");
         }
         out += &format!(
-            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\ntemplates_folder={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\nspell_check={}\nauto_pair={}\n",
+            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\ntemplates_folder={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\nsmart_punctuation={}\nspell_check={}\nauto_pair={}\n",
             p.line_numbers,
             p.wrap,
             p.indent,
@@ -464,6 +471,7 @@ impl State {
             p.sidebar_sort.name(),
             p.web_images,
             p.hard_breaks,
+            p.smart_punctuation,
             p.spell_check,
             p.auto_pair
         );
@@ -723,7 +731,7 @@ mod tests {
         };
         let text = state.serialize();
         assert!(text.is_ascii());
-        assert_eq!(text.lines().count(), 28);
+        assert_eq!(text.lines().count(), 29);
         assert_eq!(State::parse(&text), state);
     }
 
@@ -886,6 +894,7 @@ mod tests {
             sidebar_sort: crate::notes::SortOrder::Modified,
             web_images: true,
             hard_breaks: true,
+            smart_punctuation: true,
             spell_check: false,
             auto_pair: false,
         };
@@ -906,6 +915,7 @@ mod tests {
         assert_eq!(old.prefs.text_width, TextWidth::Medium);
         assert_eq!(old.prefs.sidebar_sort, crate::notes::SortOrder::Name);
         assert!(!old.prefs.web_images && !old.prefs.hard_breaks);
+        assert!(!old.prefs.smart_punctuation);
         assert!(old.prefs.spell_check && old.prefs.auto_pair);
         // An empty daily notes folder (the open folder) stays empty.
         assert_eq!(State::parse("daily_folder=\n").prefs.daily_folder, "");
@@ -915,7 +925,7 @@ mod tests {
         );
         // Broken values keep the default.
         let bad = State::parse(
-            "font= \nline_numbers=yes\nwrap=1\nindent=3\nindent=x\ntheme=neon\nstyle=dim\nsync_scroll=no\ntags=0\nignore_colours=off\ntypewriter=on\nformat_bar=yes\nfocus_mode=1\nline_spacing=1.2\nline_spacing=x\ntext_width=huge\nsidebar_sort=size\nweb_images=yes\nhard_breaks=on\nspell_check=off\nauto_pair=invalid\n",
+            "font= \nline_numbers=yes\nwrap=1\nindent=3\nindent=x\ntheme=neon\nstyle=dim\nsync_scroll=no\ntags=0\nignore_colours=off\ntypewriter=on\nformat_bar=yes\nfocus_mode=1\nline_spacing=1.2\nline_spacing=x\ntext_width=huge\nsidebar_sort=size\nweb_images=yes\nhard_breaks=on\nsmart_punctuation=1\nspell_check=off\nauto_pair=invalid\n",
         );
         assert_eq!(bad.prefs, Prefs::default());
         for t in Theme::ALL {

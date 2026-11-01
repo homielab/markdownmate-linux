@@ -376,6 +376,7 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
             width: self.prefs.borrow().text_width,
             web_images: self.prefs.borrow().web_images,
             hard_breaks: render::hard_breaks(),
+            smart: crate::smart::enabled(),
             links,
         };
         move || {

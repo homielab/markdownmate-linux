@@ -38,11 +38,21 @@ pub(crate) fn body_html(
     sourcepos: bool,
     toc: bool,
 ) -> String {
-    body_html_with(md, wiki, rich, tasks, sourcepos, toc, rich)
+    body_html_with(
+        md,
+        wiki,
+        rich,
+        tasks,
+        sourcepos,
+        toc,
+        rich,
+        crate::smart::enabled(),
+    )
 }
 
 /// `body_html`, with code highlighting through the preview's cache only if `cached` (see
-/// `Body::cached`).
+/// `Body::cached`) and smart punctuation only if `smart`.
+#[allow(clippy::too_many_arguments)]
 fn body_html_with(
     md: &str,
     wiki: &dyn Fn(&str) -> Option<PathBuf>,
@@ -51,6 +61,7 @@ fn body_html_with(
     sourcepos: bool,
     toc: bool,
     cached: bool,
+    smart: bool,
 ) -> String {
     let body = Body {
         rich,
@@ -60,6 +71,7 @@ fn body_html_with(
         first_line: 1,
         cached,
         next: false,
+        smart,
     };
     let rendered = render_body(md, wiki, &body).expect("whole note");
     if !rendered.toc {
@@ -101,6 +113,9 @@ pub(crate) struct Body {
     /// it closes the blocks before it (where they end), but not rendered. `render_body` gives
     /// None if it does not start a top-level block there.
     pub next: bool,
+    /// Smart punctuation (`smart`): curly quotes, dashes and ellipses in the text. Heading ids
+    /// stay those of the text as written.
+    pub smart: bool,
 }
 
 /// `render_body`'s result.
@@ -129,9 +144,13 @@ pub(crate) fn render_body(
         first_line,
         cached,
         next,
+        smart,
     } = *body;
     let mut options = options();
     options.render.sourcepos = sourcepos;
+    if smart {
+        crate::smart::prepare(&mut options);
+    }
     if first_line > 1 {
         options.extension.front_matter_delimiter = None;
     }
@@ -161,6 +180,12 @@ pub(crate) fn render_body(
                 shift(&mut item.symbol_sourcepos);
             }
         }
+    }
+    // Heading ids come from the text as written (links to `#a--b` keep working): taken here,
+    // before smart punctuation, and written over comrak's ids after rendering.
+    let written_headings = smart.then(|| heading_texts(root));
+    if smart {
+        crate::smart::apply(root);
     }
     let quotes: Vec<_> = root
         .descendants()
@@ -280,11 +305,7 @@ pub(crate) fn render_body(
         let text = format!("{TASK_OPEN}{line}{TASK_CLOSE}");
         node.prepend(arena.alloc(comrak::nodes::NodeValue::Text(text.into()).into()));
     }
-    let headings = root
-        .descendants()
-        .filter(|n| matches!(n.data().value, comrak::nodes::NodeValue::Heading(_)))
-        .map(|n| n.collect_text())
-        .collect();
+    let headings = written_headings.unwrap_or_else(|| heading_texts(root));
     let highlighter = Highlighter(if cached {
         highlight_all(code_blocks)
     } else {
@@ -299,6 +320,11 @@ pub(crate) fn render_body(
         .expect("writing to a String");
     if rich && cached {
         *HIGHLIGHTED.lock().unwrap_or_else(PoisonError::into_inner) = highlighter.0;
+    }
+    if smart && !headings.is_empty() {
+        let mut anchorizer = comrak::Anchorizer::new();
+        let ids: Vec<String> = headings.iter().map(|h| anchorizer.anchorize(h)).collect();
+        html = crate::incremental::replace_ids(&html, &ids);
     }
     // comrak ends each heading with an empty `<a href="#id" … class="anchor"></a>`: dropped,
     // the id on the heading is enough. The note's text is escaped, so it has no such `"`.
@@ -432,6 +458,14 @@ pub(crate) fn render_body(
         titles,
         toc: has_toc,
     })
+}
+
+/// The text comrak makes each heading's id from, in order (`Rendered::headings`).
+fn heading_texts<'a>(root: &'a comrak::nodes::AstNode<'a>) -> Vec<String> {
+    root.descendants()
+        .filter(|n| matches!(n.data().value, comrak::nodes::NodeValue::Heading(_)))
+        .map(|n| n.collect_text())
+        .collect()
 }
 
 /// Whether `paragraph` is a `[TOC]` marker: top-level, plain text only (comrak may split it at
@@ -1556,7 +1590,16 @@ fn portable_body(
     cached: bool,
 ) -> String {
     let wiki = |t: &str| wiki(t).map(|p| relative(note_dir, &p));
-    let mut body = body_html_with(md, &wiki, rich, false, false, toc, cached && rich);
+    let mut body = body_html_with(
+        md,
+        &wiki,
+        rich,
+        false,
+        false,
+        toc,
+        cached && rich,
+        crate::smart::enabled(),
+    );
     // A link cannot contain a link, so the next `</a>` closes it; the note's own text is
     // escaped and cannot contain this markup.
     let open = format!("<a href=\"{MISSING}");
@@ -2529,6 +2572,103 @@ mod tests {
         // No width (print, exports): the page's own reading width.
         let own = page(None);
         assert!(!own.contains("html body") && own.contains("max-width: 46em"));
+    }
+
+    /// The preview's HTML of `md` (no source positions) with smart punctuation on or off.
+    fn smart_html(md: &str, smart: bool) -> String {
+        body_html_with(md, &|_| None, true, true, false, true, false, smart)
+    }
+
+    #[test]
+    fn smart_punctuation_rules() {
+        let html = |md: &str| smart_html(md, true);
+        assert_eq!(
+            html("\"quoted\" it's -- --- ..."),
+            "<p>“quoted” it’s – — …</p>\n"
+        );
+        assert_eq!(
+            html("\"**bold**\" and '*it*'"),
+            "<p>“<strong>bold</strong>” and ‘<em>it</em>’</p>\n"
+        );
+        assert_eq!(
+            html("(\"a\") [\"b\"] {'c'} x--\"d\""),
+            "<p>(“a”) [“b”] {‘c’} x–“d”</p>\n"
+        );
+        // Each paragraph, heading and cell starts afresh; a line break counts as whitespace.
+        assert_eq!(html("a\n\"b\"\n\n\"c\""), "<p>a\n“b”</p>\n<p>“c”</p>\n");
+        assert!(html("| x |\n|---|\n| \"y\" |").contains("<td>“y”</td>"));
+        // Link text changes, its destination does not.
+        assert_eq!(
+            html("[it's--here](https://e.com/a--b's \"t--x\")"),
+            "<p><a href=\"https://e.com/a--b&#x27;s\" title=\"t--x\">it’s–here</a></p>\n"
+        );
+    }
+
+    #[test]
+    fn smart_punctuation_leaves_code_urls_and_escapes() {
+        let html = |md: &str| smart_html(md, true);
+        assert_eq!(html("`\"a--b\"`"), "<p><code>&quot;a--b&quot;</code></p>\n");
+        assert_eq!(
+            html("see https://e.com/a--b's and <https://e.com/x...y>"),
+            "<p>see <a href=\"https://e.com/a--b&#x27;s\">https://e.com/a--b's</a> and \
+<a href=\"https://e.com/x...y\">https://e.com/x...y</a></p>\n"
+        );
+        assert_eq!(
+            html("www.e.com/a--b and a@b.co"),
+            "<p><a href=\"http://www.e.com/a--b\">www.e.com/a--b</a> and \
+<a href=\"mailto:a@b.co\">a@b.co</a></p>\n"
+        );
+        // Escaped characters stay as written and merge back into the text.
+        assert_eq!(
+            html("\\\"a\\\" \\-\\- \\.\\.\\. \"b\""),
+            "<p>&quot;a&quot; -- ... “b”</p>\n"
+        );
+        assert_eq!(html("say \\\"x\""), "<p>say &quot;x”</p>\n");
+        assert!(html("```\n\"a\" -- b\n```").contains("&quot;a&quot; -- b"));
+        assert!(html("    \"a\" -- b").contains("&quot;a&quot; -- b"));
+        assert!(
+            html("<span title=\"a--b\">'x'</span>")
+                .contains("&lt;span title=&quot;a--b&quot;&gt;‘x’&lt;/span&gt;")
+        );
+        assert!(html("<div>\n\"a\" -- b\n</div>").contains("&quot;a&quot; -- b"));
+        assert!(html("---\ntitle: \"a--b\"\n---\n\ntext").contains("title: &quot;a--b&quot;"));
+        assert!(!html("$a--b$ and $$x...y$$").contains('–'));
+        assert!(!html("$a--b$ and $$x...y$$").contains('…'));
+        // A tag is a name, not prose.
+        assert!(html("#a--b").contains("<span class=\"tag\">#a--b</span>"));
+    }
+
+    #[test]
+    fn smart_punctuation_keeps_heading_ids() {
+        let md = "# It's -- \"here\"\n\n[TOC]\n\n## A...B\n";
+        let on = smart_html(md, true);
+        let off = smart_html(md, false);
+        assert!(
+            on.contains("<h1 id=\"its----here\">It’s – “here”</h1>"),
+            "{on}"
+        );
+        assert!(
+            off.contains("<h1 id=\"its----here\">It's -- &quot;here&quot;</h1>"),
+            "{off}"
+        );
+        assert!(on.contains("<h2 id=\"ab\">A…B</h2>"), "{on}");
+        assert!(
+            on.contains("<li><a href=\"#its----here\">It’s – “here”</a>"),
+            "{on}"
+        );
+        assert_eq!(heading_at(md, "its----here").map(|h| h.0), Some(1));
+    }
+
+    #[test]
+    fn smart_punctuation_off_changes_nothing() {
+        let md = "# It's -- \"here\"\n\n\"a\" -- b --- c... \\\"d\\\" `e` https://e.com/a--b's\n";
+        assert_eq!(
+            smart_html(md, false),
+            body_html_with(md, &|_| None, true, true, false, true, false, false)
+        );
+        assert_eq!(smart_html(md, false), to_html(md, &|_| None));
+        let off = smart_html(md, false);
+        assert!(!off.contains(['“', '”', '‘', '’', '–', '—', '…']), "{off}");
     }
 
     #[test]

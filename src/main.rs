@@ -46,6 +46,7 @@ mod save;
 mod search;
 mod sidebar;
 mod site;
+mod smart;
 mod spell;
 mod state;
 mod stats;

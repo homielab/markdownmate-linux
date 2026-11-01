@@ -14,10 +14,22 @@ const TABLE_WIDTH: i32 = 9000;
 /// Colour table index of `==highlight==`'s background (`render::MARK_COLOUR`).
 const HIGHLIGHT: usize = 8;
 
-/// `md` as an RTF document.
+/// `md` as an RTF document, with smart punctuation if it is on (`smart`).
 pub fn rtf(md: &str) -> String {
+    rtf_with(md, crate::smart::enabled())
+}
+
+/// `rtf`, with smart punctuation only if `smart`.
+fn rtf_with(md: &str, smart: bool) -> String {
     let arena = comrak::Arena::new();
-    let root = comrak::parse_document(&arena, md, &crate::render::options());
+    let mut options = crate::render::options();
+    if smart {
+        crate::smart::prepare(&mut options);
+    }
+    let root = comrak::parse_document(&arena, md, &options);
+    if smart {
+        crate::smart::apply(root);
+    }
     crate::render::unmark_multiline(&arena, root);
     let quotes: Vec<_> = root
         .descendants()
@@ -300,7 +312,7 @@ fn span<'a>(node: &'a AstNode<'a>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{escape, rtf};
+    use super::{escape, rtf, rtf_with};
 
     #[test]
     fn escapes_specials_and_unicode() {
@@ -402,6 +414,19 @@ mod tests {
         assert!(out.contains("{\\highlight8\\chcbpat8\\cb8 marked {\\b bold}}"));
         assert!(out.contains("a == b, ==two\\line lines==."));
         assert_eq!(out.matches("\\highlight").count(), 1);
+    }
+
+    #[test]
+    fn smart_punctuation_only_when_on() {
+        let md = "\"Quoted\" -- it's `a--b` \\\"x\" https://e.com/a--b's";
+        let out = rtf_with(md, true);
+        // “Quoted” – it’s, then the code span, the escaped quote and the URL as written.
+        assert!(out.contains("\\u8220?Quoted\\u8221? \\u8211? it\\u8217?s"));
+        assert!(out.contains("a--b"));
+        assert!(out.contains(" \"x\\u8221? "));
+        assert!(out.contains("https://e.com/a--b's"));
+        assert_eq!(rtf_with(md, false), rtf(md));
+        assert!(!rtf_with(md, false).contains("\\u8220?"));
     }
 
     #[test]

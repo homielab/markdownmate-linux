@@ -123,6 +123,7 @@ fn large_notes() {
             width: crate::state::TextWidth::Medium,
             web_images: false,
             hard_breaks: false,
+            smart: false,
             links: 0,
         };
         let (blocks, _) = best(runs, cold, || incremental::render(None, &md, style, &wiki));

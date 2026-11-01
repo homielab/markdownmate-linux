@@ -286,7 +286,26 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
     look.add(&style);
     look.add(&theme);
     look.add(&sync);
-    look.add(&line_breaks);
+    // What the preview, print and exports make of the text; the editor keeps it as typed.
+    let smart = adw::SwitchRow::builder()
+        .title("Smart Punctuation")
+        .subtitle("“Curly quotes”, – and — dashes and … in the preview, print and exports")
+        .active(prefs.smart_punctuation)
+        .build();
+    smart.connect_active_notify(clone!(
+        #[strong]
+        editor,
+        move |r| {
+            let on = r.is_active();
+            editor.prefs.borrow_mut().smart_punctuation = on;
+            crate::smart::set_enabled(on);
+            editor.remember();
+            editor.refresh_preview();
+        }
+    ));
+    let preview_group = adw::PreferencesGroup::builder().title("Preview").build();
+    preview_group.add(&line_breaks);
+    preview_group.add(&smart);
     // Tags change what is a tag: re-colour the editor, re-render, re-list (or hide) the panel.
     let tags_update = {
         let editor = editor.clone();
@@ -385,6 +404,7 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
         .build();
     page.add(&group);
     page.add(&look);
+    page.add(&preview_group);
     page.add(&tag_group);
     page.add(&notes_group);
     page.add(&privacy);

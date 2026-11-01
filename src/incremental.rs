@@ -32,7 +32,8 @@ use crate::state::{TextWidth, Theme};
 pub(crate) type Wiki<'a> = dyn Fn(&str) -> Option<PathBuf> + Sync + 'a;
 
 /// What a rendered chunk depends on besides its text: light/dark, the theme, the text width,
-/// whether web images load (the page's CSP), whether every newline is a line break, and the notes wiki links resolve against (a fingerprint of the list, root and current note).
+/// whether web images load (the page's CSP), whether every newline is a line break, smart
+/// punctuation, and the notes wiki links resolve against (a fingerprint of the list, root and current note).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Style {
     pub dark: bool,
@@ -40,6 +41,7 @@ pub(crate) struct Style {
     pub width: TextWidth,
     pub web_images: bool,
     pub hard_breaks: bool,
+    pub smart: bool,
     pub links: u64,
 }
 
@@ -360,6 +362,7 @@ fn render_chunk(part: &Part, wiki: &Wiki) -> Option<Chunk> {
         first_line: part.line,
         cached: false,
         next: part.next.is_some(),
+        smart: crate::smart::enabled(),
     };
     // Where the blocks at the chunk's end end depends on what closes them (the next block's
     // first line, or the note's end): parsed with that line, as in the whole note.
@@ -786,7 +789,7 @@ fn heading_id_ranges(html: &str) -> Vec<std::ops::Range<usize>> {
 }
 
 /// `html` with its headings' ids set to `ids` (as many as `heading_ids` finds).
-fn replace_ids(html: &str, ids: &[String]) -> String {
+pub(crate) fn replace_ids(html: &str, ids: &[String]) -> String {
     let mut out = String::with_capacity(html.len());
     let mut done = 0;
     for (range, id) in heading_id_ranges(html).into_iter().zip(ids) {
@@ -872,6 +875,7 @@ mod tests {
         width: TextWidth::Medium,
         web_images: false,
         hard_breaks: false,
+        smart: false,
         links: 0,
     };
 
