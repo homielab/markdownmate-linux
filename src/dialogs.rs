@@ -8,7 +8,7 @@ use gtk::glib::{self, clone};
 
 use crate::editor::Editor;
 use crate::file_name;
-use crate::{broken, find, goto, naming, quick, render, state, tasks};
+use crate::{attachments, broken, find, goto, naming, quick, render, sidebar, state, tasks};
 
 /// Desktop id of `packaging/com.homielab.MarkdownMate.desktop`.
 const DESKTOP_ID: &str = "com.homielab.MarkdownMate.desktop";
@@ -859,12 +859,15 @@ pub(crate) enum FindMode {
     BrokenLinks,
     /// The unchecked `- [ ]` tasks of the folder's notes (`tasks.rs`).
     OpenTasks,
+    /// The files in `assets` folders no note uses (`attachments.rs`).
+    UnusedAttachments,
 }
 
-/// Main menu ▸ Find Broken Links… / Find Open Tasks…: Find in Folder in that scan mode instead
-/// of searching text. The search box gives way to a chip ("Broken links" / "Open tasks") whose
-/// ✕ (or the mode's toggle) returns to text search. Scanned when shown, when the toggle is
-/// switched on or the menu entry chosen again; not live.
+/// Main menu ▸ Find Broken Links… / Find Open Tasks… / Find Unused Attachments…: Find in Folder
+/// in that scan mode instead of searching text. The search box gives way to a chip ("Broken
+/// links", "Open tasks", "Unused attachments") whose ✕ (or the mode's toggle) returns to text
+/// search. Scanned when shown, when the toggle is switched on or the menu entry chosen again;
+/// not live.
 pub(crate) fn find_in_mode(editor: &Rc<Editor>, mode: FindMode) {
     let set = editor.find_mode.borrow().clone();
     match set {
@@ -907,7 +910,8 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
     };
     let (scope, notes) = scoped(scope);
     let notes = Rc::new(RefCell::new(notes));
-    // The folder scope, for Broken Links (which filters the link index's notes instead).
+    // The folder scope, for Broken Links (which filters the link index's notes instead) and
+    // Unused Attachments (which lists the files under it, checked against all notes).
     let current_scope = Rc::new(RefCell::new(scope.clone()));
     // The open note is searched as in the buffer (unsaved edits); the dialog is modal, so a
     // snapshot taken now stays current until Replace All edits it.
@@ -954,6 +958,14 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
         .tooltip_text("List the unchecked tasks (- [ ]) in the notes, instead of searching text")
         .build();
     toggles.append(&tasks_toggle);
+    let unused_toggle = gtk::CheckButton::builder()
+        .label("Unused Attachments")
+        .tooltip_text(
+            "List the files in assets folders that no note links to or shows, \
+             instead of searching text",
+        )
+        .build();
+    toggles.append(&unused_toggle);
     // An invalid pattern's reason, under the box.
     let error = gtk::Label::builder()
         .xalign(0.0)
@@ -1057,7 +1069,7 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
         .child(&content)
         .build();
 
-    // Row index → (note, line).
+    // Row index → (note, line); line 0: a file to show in Files (Unused Attachments).
     let targets: Rc<RefCell<Vec<(PathBuf, usize)>>> = Rc::default();
     // What Replace All replaces: the results shown; None while a search runs.
     let listed: Rc<RefCell<Option<Listed>>> = Rc::default();
@@ -1265,9 +1277,69 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
         }
     };
     let scan_tasks = Rc::new(scan_tasks);
+    // Unused Attachments: lists the files under the scope (or the open folder) and checks them
+    // against all of the folder's notes on a background thread, cancelled like a search.
+    let scan_unused = {
+        let (generation, current_scope, snapshot) =
+            (generation.clone(), current_scope.clone(), snapshot.clone());
+        let (listed, replace, error) = (listed.clone(), replace.clone(), error.clone());
+        let (list, status, targets, root, all) = (
+            list.clone(),
+            status.clone(),
+            targets.clone(),
+            root.clone(),
+            all.clone(),
+        );
+        move || {
+            listed.replace(None);
+            replace.set_sensitive(false);
+            error.set_visible(false);
+            targets.replace(result_rows(&list, &root, Vec::new()));
+            status.set_label("Looking for unused attachments…");
+            let mine = generation.fetch_add(1, Ordering::SeqCst) + 1;
+            let base = current_scope
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| root.clone());
+            let (open, notes, folder) = (snapshot(), all.clone(), root.clone());
+            let (generation, list, status, targets, root) = (
+                generation.clone(),
+                list.clone(),
+                status.clone(),
+                targets.clone(),
+                root.clone(),
+            );
+            glib::spawn_future_local(async move {
+                let g = generation.clone();
+                let found = gio::spawn_blocking(move || {
+                    attachments::find(&base, &folder, &notes, open.as_ref().as_ref(), &|| {
+                        g.load(Ordering::SeqCst) != mine
+                    })
+                })
+                .await;
+                let Ok(Some(found)) = found else {
+                    return;
+                };
+                if generation.load(Ordering::SeqCst) != mine {
+                    return;
+                }
+                targets.replace(attachment_rows(&list, &root, &found.files, find::LIMIT));
+                let size = |bytes: u64| glib::format_size(bytes).to_string();
+                status.set_label(&attachments::summary(&found, find::LIMIT, &size));
+                if let Some(row) = list.row_at_index(0) {
+                    row.grab_focus();
+                }
+            });
+        }
+    };
+    let scan_unused = Rc::new(scan_unused);
     // The mode the toggles select. Weak: the toggles' own handlers hold this.
     let mode_now = {
-        let (broken, tasks) = (broken_toggle.downgrade(), tasks_toggle.downgrade());
+        let (broken, tasks, unused) = (
+            broken_toggle.downgrade(),
+            tasks_toggle.downgrade(),
+            unused_toggle.downgrade(),
+        );
         Rc::new(move || {
             let on =
                 |t: &glib::WeakRef<gtk::CheckButton>| t.upgrade().is_some_and(|t| t.is_active());
@@ -1275,6 +1347,8 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
                 FindMode::BrokenLinks
             } else if on(&tasks) {
                 FindMode::OpenTasks
+            } else if on(&unused) {
+                FindMode::UnusedAttachments
             } else {
                 FindMode::Text
             }
@@ -1283,11 +1357,13 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
     // Searches or scans again in the current mode (after a scope change, or the menu again).
     let refresh = {
         let (mode_now, entry, run) = (mode_now.clone(), entry.clone(), run.clone());
-        let (scan_broken, scan_tasks) = (scan_broken.clone(), scan_tasks.clone());
+        let (scan_broken, scan_tasks, scan_unused) =
+            (scan_broken.clone(), scan_tasks.clone(), scan_unused.clone());
         Rc::new(move || match mode_now() {
             FindMode::Text => run(entry.text().to_string()),
             FindMode::BrokenLinks => scan_broken(),
             FindMode::OpenTasks => scan_tasks(),
+            FindMode::UnusedAttachments => scan_unused(),
         })
     };
     // Sets the scope (None = the whole folder) and searches again.
@@ -1368,6 +1444,7 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
                 FindMode::Text => "",
                 FindMode::BrokenLinks => "Broken links",
                 FindMode::OpenTasks => "Open tasks",
+                FindMode::UnusedAttachments => "Unused attachments",
             });
             for option in [&match_case, &whole_word, &regex] {
                 option.set_sensitive(text);
@@ -1379,34 +1456,42 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
             }
         })
     };
-    // The scan modes exclude each other: turning one on turns the other off first, whose
-    // handler then shows the new mode.
-    for (toggle, other) in [
-        (&broken_toggle, &tasks_toggle),
-        (&tasks_toggle, &broken_toggle),
-    ] {
-        toggle.connect_toggled(clone!(
-            #[strong]
-            apply_mode,
-            #[weak]
-            other,
-            move |toggle| {
-                if toggle.is_active() && other.is_active() {
-                    other.set_active(false);
-                } else {
-                    apply_mode();
-                }
+    // The scan modes exclude each other: turning one on turns the one that was on off first,
+    // whose handler then shows the new mode.
+    let scan_toggles = [
+        broken_toggle.clone(),
+        tasks_toggle.clone(),
+        unused_toggle.clone(),
+    ];
+    for toggle in &scan_toggles {
+        let others: Vec<glib::WeakRef<gtk::CheckButton>> = scan_toggles
+            .iter()
+            .filter(|t| *t != toggle)
+            .map(|t| t.downgrade())
+            .collect();
+        let apply_mode = apply_mode.clone();
+        toggle.connect_toggled(move |toggle| {
+            let on = others
+                .iter()
+                .filter_map(glib::WeakRef::upgrade)
+                .find(|t| t.is_active());
+            match on {
+                Some(other) if toggle.is_active() => other.set_active(false),
+                _ => apply_mode(),
             }
-        ));
+        });
     }
     mode_clear.connect_clicked(clone!(
         #[weak]
         broken_toggle,
         #[weak]
         tasks_toggle,
+        #[weak]
+        unused_toggle,
         move |_| {
             broken_toggle.set_active(false);
             tasks_toggle.set_active(false);
+            unused_toggle.set_active(false);
         }
     ));
     // The menu entries while the dialog is open: switch to that mode, or scan again.
@@ -1415,6 +1500,8 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
         broken_toggle,
         #[weak]
         tasks_toggle,
+        #[weak]
+        unused_toggle,
         #[strong]
         refresh,
         move |mode| {
@@ -1422,6 +1509,7 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
                 FindMode::Text => return,
                 FindMode::BrokenLinks => &broken_toggle,
                 FindMode::OpenTasks => &tasks_toggle,
+                FindMode::UnusedAttachments => &unused_toggle,
             };
             if toggle.is_active() {
                 refresh();
@@ -1489,6 +1577,11 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
             let Some((path, line)) = target else {
                 return;
             };
+            // An attachment: shown in Files, the list stays for the next one.
+            if line == 0 {
+                sidebar::show_in_files(&editor, &path);
+                return;
+            }
             if let Some(dialog) = dialog.upgrade() {
                 dialog.close();
             }
@@ -1529,7 +1622,42 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
         }
         FindMode::BrokenLinks => broken_toggle.set_active(true),
         FindMode::OpenTasks => tasks_toggle.set_active(true),
+        FindMode::UnusedAttachments => unused_toggle.set_active(true),
     }
+}
+
+/// Fills Find in Folder's result list with unused attachments (the first `limit`): each row is
+/// the file's path relative to `root` and its size. Their (file, 0) in order, 0 = show in Files.
+fn attachment_rows(
+    list: &gtk::ListBox,
+    root: &Path,
+    files: &[attachments::Attachment],
+    limit: usize,
+) -> Vec<(PathBuf, usize)> {
+    while let Some(row) = list.first_child() {
+        list.remove(&row);
+    }
+    let mut rows = Vec::new();
+    for file in files.iter().take(limit) {
+        let rel = file.path.strip_prefix(root).unwrap_or(&file.path);
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.append(
+            &gtk::Label::builder()
+                .label(rel.to_string_lossy())
+                .xalign(0.0)
+                .hexpand(true)
+                .ellipsize(gtk::pango::EllipsizeMode::Middle)
+                .build(),
+        );
+        let size = gtk::Label::new(Some(&glib::format_size(file.size)));
+        size.add_css_class("dim-label");
+        size.add_css_class("numeric");
+        row.append(&size);
+        row.set_tooltip_text(Some("Show in Files"));
+        list.append(&row);
+        rows.push((file.path.clone(), 0));
+    }
+    rows
 }
 
 /// Fills Find in Folder's result list: per note, its rows as (1-based line, Pango markup); the

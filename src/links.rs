@@ -33,6 +33,13 @@ pub fn spans(line: &str) -> Vec<(Range<usize>, Target)> {
     scan(line, &mut Vec::new())
 }
 
+/// Byte ranges of `line` covered by a code span, in order.
+pub fn code_spans(line: &str) -> Vec<Range<usize>> {
+    let mut code = Vec::new();
+    scan(line, &mut code);
+    code
+}
+
 /// Byte ranges of `line` covered by a code span or a link (any kind), in order.
 pub fn code_and_links(line: &str) -> Vec<Range<usize>> {
     let mut code = Vec::new();

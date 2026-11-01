@@ -163,8 +163,8 @@ pub(crate) struct Editor {
     pub(crate) find_regex: Cell<bool>,
     /// While Find in Folder is open: sets its folder scope and searches again (`None` = all).
     pub(crate) find_set_scope: RefCell<Option<SetScope>>,
-    /// While Find in Folder is open: switches it to a scan mode (Broken Links, Open Tasks), or
-    /// scans again if it is in that mode.
+    /// While Find in Folder is open: switches it to a scan mode (Broken Links, Open Tasks,
+    /// Unused Attachments), or scans again if it is in that mode.
     pub(crate) find_mode: RefCell<Option<SetMode>>,
     /// Editor preferences (Ctrl+,) and the CSS that sets the chosen font.
     pub(crate) prefs: RefCell<state::Prefs>,
@@ -1568,6 +1568,7 @@ impl Editor {
             "find-in-folder",
             "find-broken-links",
             "find-open-tasks",
+            "find-unused-attachments",
             "export-folder-html",
         ] {
             if let Some(a) = self.window.lookup_action(name)

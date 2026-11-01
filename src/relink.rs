@@ -283,7 +283,7 @@ pub fn rebase(path: &Path, root: &Path) -> PathBuf {
 }
 
 /// `path` with `.` and `..` resolved (lexically).
-fn clean(path: &Path) -> PathBuf {
+pub(crate) fn clean(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in path.components() {
         match c {

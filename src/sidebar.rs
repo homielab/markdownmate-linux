@@ -291,6 +291,21 @@ pub fn sidebar(editor: &Rc<Editor>, tree: &[notes::Node], root: &Path) -> gtk::S
         .build()
 }
 
+/// Opens Files at `path`'s folder with `path` selected (sidebar menu ▸ Show in Files, Find
+/// Unused Attachments); a toast if Files can't be opened.
+pub(crate) fn show_in_files(editor: &Rc<Editor>, path: &Path) {
+    let weak = Rc::downgrade(editor);
+    gtk::FileLauncher::new(Some(&gio::File::for_path(path))).open_containing_folder(
+        Some(&editor.window),
+        gio::Cancellable::NONE,
+        move |result| {
+            if let (Err(err), Some(e)) = (result, weak.upgrade()) {
+                e.toast(&format!("Cannot open Files: {err}"));
+            }
+        },
+    );
+}
+
 /// Scrolls the tree to `path` and focuses its row, opening the folders above it first (a
 /// Favorites folder, Open Quickly). Nothing happens for a path the tree does not list.
 pub fn reveal(view: &gtk::ListView, path: &Path) {
@@ -419,21 +434,7 @@ fn context_menu(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
             }),
         );
         let (e, p) = (Rc::clone(&editor), path.clone());
-        item(
-            "Show in Files",
-            Box::new(move || {
-                let weak = Rc::downgrade(&e);
-                gtk::FileLauncher::new(Some(&gio::File::for_path(&p))).open_containing_folder(
-                    Some(&e.window),
-                    gio::Cancellable::NONE,
-                    move |result| {
-                        if let (Err(err), Some(e)) = (result, weak.upgrade()) {
-                            e.toast(&format!("Cannot open Files: {err}"));
-                        }
-                    },
-                );
-            }),
-        );
+        item("Show in Files", Box::new(move || show_in_files(&e, &p)));
         let (e, p) = (Rc::clone(&editor), path.clone());
         item(
             "Copy Path",

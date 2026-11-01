@@ -64,6 +64,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             ("Find in Folder…", "win.find-in-folder"),
             ("Find Broken Links…", "win.find-broken-links"),
             ("Find Open Tasks…", "win.find-open-tasks"),
+            ("Find Unused Attachments…", "win.find-unused-attachments"),
         ],
         &[("Back", "win.go-back"), ("Forward", "win.go-forward")],
         &[
@@ -697,6 +698,16 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         move |_, _| find_in_mode(&editor, FindMode::OpenTasks)
     ));
     window.add_action(&tasks_action);
+
+    // Find in Folder in its Unused Attachments mode; enabled with the folder like Find in Folder.
+    let unused_action = gio::SimpleAction::new("find-unused-attachments", None);
+    unused_action.set_enabled(false);
+    unused_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| find_in_mode(&editor, FindMode::UnusedAttachments)
+    ));
+    window.add_action(&unused_action);
 
     // Ctrl+L is not bound by GTK or GtkSourceView; does nothing without an open note.
     let goto_action = gio::SimpleAction::new("go-to-line", None);

@@ -1,5 +1,6 @@
 mod about;
 mod aliases;
+mod attachments;
 mod backlinks;
 mod broken;
 mod cli;
