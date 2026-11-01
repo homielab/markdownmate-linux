@@ -26,7 +26,7 @@ use crate::{
     TAG_STYLE, UNTITLED, state_file,
 };
 use crate::{choose_file, choose_folder, folder_of};
-use crate::{links, render, sidebar, state, title};
+use crate::{hover, links, render, sidebar, state, title};
 
 /// `target`: a folder or note given on the command line; `None` reopens the last session.
 pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
@@ -1161,22 +1161,39 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     editor.view.add_controller(click);
     let motion = gtk::EventControllerMotion::new();
     let weak = Rc::downgrade(&editor);
+    // Hovering a wiki link shows the linked note's first lines (`hover.rs`).
+    let hover = Rc::new(hover::Hover::default());
     // shortcut: the cursor updates on pointer motion only, not when Ctrl alone is pressed.
-    motion.connect_motion(move |motion, x, y| {
-        let Some(editor) = weak.upgrade() else {
-            return;
-        };
-        let ctrl = motion
-            .current_event_state()
-            .contains(gtk::gdk::ModifierType::CONTROL_MASK);
-        let hand = ctrl && editor.link_at(x, y).is_some();
-        editor
-            .view
-            .set_cursor_from_name(Some(if hand { "pointer" } else { "text" }));
-    });
+    motion.connect_motion(clone!(
+        #[strong]
+        hover,
+        move |motion, x, y| {
+            let Some(editor) = weak.upgrade() else {
+                return;
+            };
+            let ctrl = motion
+                .current_event_state()
+                .contains(gtk::gdk::ModifierType::CONTROL_MASK);
+            let hand = ctrl && editor.link_at(x, y).is_some();
+            editor
+                .view
+                .set_cursor_from_name(Some(if hand { "pointer" } else { "text" }));
+            // Start reading a closed note before the tooltip delay is over.
+            if let Some(name) = editor.wiki_near(x, y) {
+                hover.peek(&editor, &name);
+            }
+        }
+    ));
     editor.view.add_controller(motion);
 
-    // Hovering an image link shows a thumbnail (max 320x240) of an image in the open folder.
+    editor.buffer.connect_changed(clone!(
+        #[strong]
+        hover,
+        move |_| hover.text_changed()
+    ));
+
+    // Hovering an image link shows a thumbnail (max 320x240) of an image in the open folder,
+    // a wiki link the linked note's first lines (`hover.rs`).
     // The last one is kept: query-tooltip runs on every pointer move.
     // shortcut: cached by path only, an image edited on disk shows stale until another is hovered.
     editor.view.set_has_tooltip(true);
@@ -1188,8 +1205,22 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             let Some(editor) = weak.upgrade().filter(|_| !keyboard) else {
                 return false;
             };
-            let Some(links::Target::Href(href)) = editor.link_at(f64::from(x), f64::from(y)) else {
-                return false;
+            let href = match editor.link_at(f64::from(x), f64::from(y)) {
+                Some(links::Target::Wiki(name)) => {
+                    let Some(peek) = hover.peek(&editor, &name) else {
+                        return false;
+                    };
+                    tooltip.set_custom(Some(&hover::widget(&peek)));
+                    return true;
+                }
+                Some(links::Target::Href(href)) => {
+                    hover.forget();
+                    href
+                }
+                None => {
+                    hover.forget();
+                    return false;
+                }
             };
             let Some(path) = editor.image_path(&href) else {
                 return false;

@@ -1105,6 +1105,25 @@ impl Editor {
         links::at(&above, &line, iter.line_offset() as usize)
     }
 
+    /// The name of the `[[wiki link]]` at a widget position, without `link_at`'s fenced-code
+    /// check (which copies the text above): cheap enough for every pointer move.
+    pub(crate) fn wiki_near(&self, x: f64, y: f64) -> Option<String> {
+        let (bx, by) =
+            self.view
+                .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+        let iter = self.view.iter_at_location(bx, by)?;
+        let start = self.buffer.iter_at_line(iter.line())?;
+        let mut end = start;
+        if !end.ends_line() {
+            end.forward_to_line_end();
+        }
+        let line = self.buffer.text(&start, &end, true);
+        match links::at("", &line, iter.line_offset() as usize)? {
+            links::Target::Wiki(name) => Some(name),
+            links::Target::Href(_) => None,
+        }
+    }
+
     /// The image file in the open folder that `href` (as written in the note) points to, if
     /// any; web URLs and anything outside the folder give None.
     pub(crate) fn image_path(&self, href: &str) -> Option<PathBuf> {

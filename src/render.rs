@@ -780,6 +780,19 @@ pub fn heading_at(md: &str, fragment: &str) -> Option<(usize, String)> {
         .cloned()
 }
 
+/// The text of the heading `src` is (an ATX line, or a Setext text line and its underline),
+/// as `heading_at` reads it before making its id; None unless `src` is exactly one heading.
+pub fn heading_text(src: &str) -> Option<String> {
+    let arena = comrak::Arena::new();
+    let mut options = options();
+    options.extension.front_matter_delimiter = None;
+    let root = comrak::parse_document(&arena, src, &options);
+    let node = root.first_child()?;
+    (matches!(node.data().value, comrak::nodes::NodeValue::Heading(_))
+        && node.next_sibling().is_none())
+    .then(|| node.collect_text())
+}
+
 /// A heading as a link target (Outline ▸ Copy Link, `[[Note#` completion).
 #[derive(Debug, PartialEq)]
 pub struct HeadingTarget {

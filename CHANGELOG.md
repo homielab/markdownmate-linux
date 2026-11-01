@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Hover a `[[wiki link]]` in the editor to see the linked note's first lines in a tooltip, without leaving the note you are writing: its name and up to 12 lines as plain Markdown (front matter left out), starting at the heading for `[[Note#Heading]]`. Large notes are read only as far as shown. Same as the macOS app.
 - Tags in a note's YAML front matter count as tags: `tags: [a, b/c]`, a list of `- a` lines, or `tags: a, b` (also `tag:`, with or without `#`). They show in the sidebar's Tags list, `#` completion offers them, and Rename Tag rewrites them along with inline `#tags`. Notes moved from Obsidian or Jekyll keep their tags. Same as the macOS app.
 
 ## 0.8.0

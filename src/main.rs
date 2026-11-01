@@ -12,6 +12,7 @@ mod format;
 mod formatbar;
 mod goto;
 mod history;
+mod hover;
 mod images;
 mod incremental;
 mod input;
