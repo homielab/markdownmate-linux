@@ -6,6 +6,8 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+## 0.8.0
+
 - Preferences ▸ About: the app version (click to copy), What's New, Send Feedback (opens your mail app with the version and system details filled in, or copies the address), Share MarkdownMate, Donate, More Apps from HomieLab and the website. What's New is also in the main menu and the About dialog; after an update a small dot shows there is something new until you open it. It never pops up on its own.
 - Find in Folder: a Regex toggle next to Match Case and Whole Word searches with a regular expression (Rust regex syntax, line by line); an invalid pattern shows why under the search box. Replace All then fills in groups: `$1`…`$9` or `${1}`, `$$` for a literal `$`. Same as the macOS app.
 - Favorites: right-click a note or folder ▸ Add to Favorites to pin it in a Favorites section at the top of the sidebar, one click away; Open Quickly lists them first. Each folder keeps its own, remembered across restarts, and they follow renames and moves made in the app. Same as the macOS app.
