@@ -1,9 +1,10 @@
 //! Rename Tag: the edits that turn `#old` into `#new` (and `#old/…` into `#new/…`) in a note,
 //! and the notes of the open folder that need them. Tags are found as everywhere else
-//! (`tags::spans`: not in front matter, fenced code, code spans, link destinations, URLs or a
-//! heading's `#`); only the tags change, the rest of a note stays byte for byte. Pure logic, no
-//! GTK; the editor asks first (`Editor::rename_tag`) and runs `find` / `write` on a background
-//! thread.
+//! (`tags::all_spans`: the front matter's `tags:` values, and inline tags not in fenced code,
+//! code spans, link destinations, URLs or a heading's `#`); only the tags change (a front-matter
+//! value keeps its quotes and `#` or lack of one), the rest of a note stays byte for byte. Pure
+//! logic, no GTK; the editor asks first (`Editor::rename_tag`) and runs `find` / `write` on a
+//! background thread.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -51,18 +52,23 @@ pub fn under<'a>(name: &'a str, old: &str) -> Option<&'a str> {
 }
 
 /// The edits renaming `#old` to `#new` in `text`: each tag under `old` gets `new` in place of
-/// `old`'s parts, keeping its own child parts (`#Work/a` → `#job/a`). A tag already written as
-/// the new name is left alone.
+/// `old`'s parts, keeping its own child parts (`#Work/a` → `#job/a`, front matter `[Work/a]` →
+/// `[job/a]`). A tag already written as the new name is left alone.
 pub fn edits(text: &str, old: &str, new: &str) -> Vec<Edit> {
     let starts: Vec<usize> = std::iter::once(0)
         .chain(text.match_indices('\n').map(|(i, _)| i + 1))
         .collect();
-    tags::spans(text)
+    tags::all_spans(text)
         .into_iter()
         .filter_map(|(line, r)| {
             let range = starts[line] + r.start..starts[line] + r.end;
-            let rest = under(&text[range.start + 1..range.end], old)?;
-            let renamed = format!("#{new}{rest}");
+            let tag = &text[range.clone()];
+            let (hash, name) = match tag.strip_prefix('#') {
+                Some(name) => ("#", name),
+                None => ("", tag),
+            };
+            let rest = under(name, old)?;
+            let renamed = format!("{hash}{new}{rest}");
             (text[range.clone()] != renamed).then_some(Edit {
                 range,
                 text: renamed,
@@ -191,13 +197,69 @@ mod tests {
 
     #[test]
     fn leaves_code_links_urls_and_headings() {
-        let md = "---\ntags: '#work'\n---\n# work\n## Plan #work\n\
+        let md = "---\ntitle: '#work'\n---\n# work\n## Plan #work\n\
 `#work` [x](#work) [y](http://a/#work) http://b.com/#work a#work\n\
 ```\n#work\n```\n~~~\n#work\n~~~\nend #work\r\nlast #work";
-        let want = "---\ntags: '#work'\n---\n# work\n## Plan #job\n\
+        let want = "---\ntitle: '#work'\n---\n# work\n## Plan #job\n\
 `#work` [x](#work) [y](http://a/#work) http://b.com/#work a#work\n\
 ```\n#work\n```\n~~~\n#work\n~~~\nend #job\r\nlast #job";
         assert_eq!(rename(md, "work", "job"), want);
+    }
+
+    #[test]
+    fn renames_front_matter_values() {
+        // Flow list: quotes, `#` and child parts kept; other values and keys untouched.
+        assert_eq!(
+            rename(
+                "---\ntitle: work\ntags: [work, \"Work/a\", '#work', older]\n---\n#work\n",
+                "work",
+                "job"
+            ),
+            "---\ntitle: work\ntags: [job, \"job/a\", '#job', older]\n---\n#job\n"
+        );
+        // Flow list over several lines.
+        assert_eq!(
+            rename(
+                "---\ntags: [\n  home,\n  Work/a, # note\n  '#work'\n]\n---\n",
+                "work",
+                "job"
+            ),
+            "---\ntags: [\n  home,\n  job/a, # note\n  '#job'\n]\n---\n"
+        );
+        // Block list with comment and blank lines between items.
+        assert_eq!(
+            rename(
+                "---\ntags:\n  - work\n  # note\n\n  - work/b\n---\n",
+                "work",
+                "job"
+            ),
+            "---\ntags:\n  - job\n  # note\n\n  - job/b\n---\n"
+        );
+        // Block list, CRLF.
+        assert_eq!(
+            rename(
+                "---\r\ntags:\r\n  - work\r\n  - \"#work/x\"\r\n  - home\r\n---\r\nbody\r\n",
+                "work",
+                "job"
+            ),
+            "---\r\ntags:\r\n  - job\r\n  - \"#job/x\"\r\n  - home\r\n---\r\nbody\r\n"
+        );
+        // String, comma or space separated; `tag:` too.
+        assert_eq!(
+            rename(
+                "---\ntags: work, home\ntag: '#work/a work'\n---\n",
+                "work",
+                "job"
+            ),
+            "---\ntags: job, home\ntag: '#job/a job'\n---\n"
+        );
+        // A front-matter-only note counts.
+        assert_eq!(
+            edits("---\ntags: [work]\n---\nno inline tag\n", "work", "job").len(),
+            1
+        );
+        // No front matter: nothing added.
+        assert_eq!(rename("tags: [work]\n", "work", "job"), "tags: [work]\n");
     }
 
     #[test]
@@ -225,7 +287,7 @@ mod tests {
         );
         fs::write(&a, "#work today\n").unwrap();
         fs::write(&b, "#work/project\n").unwrap();
-        fs::write(&c, "#older only\n").unwrap();
+        fs::write(&c, "---\ntags: [older]\n---\n#older only\n").unwrap();
         fs::write(&open, "on disk\n").unwrap();
         let notes = [
             a.clone(),
@@ -244,6 +306,9 @@ mod tests {
         assert_eq!(write(&found[..2], "work", "job"), 1);
         assert_eq!(fs::read_to_string(&a).unwrap(), "#job today\n");
         assert_eq!(fs::read_to_string(&b).unwrap(), "#work/project edited\n");
-        assert_eq!(fs::read_to_string(&c).unwrap(), "#older only\n");
+        assert_eq!(
+            fs::read_to_string(&c).unwrap(),
+            "---\ntags: [older]\n---\n#older only\n"
+        );
     }
 }

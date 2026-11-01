@@ -6,6 +6,8 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Tags in a note's YAML front matter count as tags: `tags: [a, b/c]`, a list of `- a` lines, or `tags: a, b` (also `tag:`, with or without `#`). They show in the sidebar's Tags list, `#` completion offers them, and Rename Tag rewrites them along with inline `#tags`. Notes moved from Obsidian or Jekyll keep their tags. Same as the macOS app.
+
 ## 0.8.0
 
 - Preferences ▸ About: the app version (click to copy), What's New, Send Feedback (opens your mail app with the version and system details filled in, or copies the address), Share MarkdownMate, Donate, More Apps from HomieLab and the website. What's New is also in the main menu and the About dialog; after an update a small dot shows there is something new until you open it. It never pops up on its own.

@@ -5,6 +5,11 @@
 //! `/`, `&`, `#`, `\` (so `## Heading`, `#1`, `x#y`, `http://x/#a` are not tags). Front matter,
 //! fenced code blocks, code spans and link destinations `](…)` are skipped.
 //!
+//! The YAML front matter's `tags:` (or `tag:`) key adds tags too: a flow list `[a, b/c]`, a
+//! block list (`- a` lines) or a string (`a, b` or `a b`); each value, with or without a leading
+//! `#`, counts if `#value` would be read back whole as a tag (`front_matter_values`). They join
+//! the inline tags in `names`, `all_spans` and the index; the editor colours only inline ones.
+//!
 //! Preferences: tags can be turned off (no tag anywhere), and colour codes (`#fff`,
 //! `#a1b2c3ff`: 3/4/6/8 hex digits) are not tags unless that is turned off. Both are
 //! process-wide (`set_options`) so the editor, preview, completion and index agree.
@@ -118,12 +123,16 @@ fn in_url(before: &str) -> bool {
     word.contains("://") || word.starts_with("www.")
 }
 
-/// (0-based line, byte range in that line) of every tag in `text`, outside front matter and
-/// fenced code.
+/// (0-based line, byte range in that line) of every inline tag in `text`, outside front
+/// matter and fenced code (what the editor colours).
 pub fn spans(text: &str) -> Vec<(usize, Range<usize>)> {
+    inline_spans(text, lists::front_matter_lines(text))
+}
+
+/// `spans` after the first `skip` lines.
+fn inline_spans(text: &str, skip: usize) -> Vec<(usize, Range<usize>)> {
     let mut open = None;
     let mut out = Vec::new();
-    let skip = lists::front_matter_lines(text);
     for (n, line) in text.lines().enumerate().skip(skip) {
         // shortcut: indented (4-space) code blocks are not skipped; fine for notes.
         if lists::fence_step(&mut open, line) || open.is_some() {
@@ -134,12 +143,153 @@ pub fn spans(text: &str) -> Vec<(usize, Range<usize>)> {
     out
 }
 
-/// The tags of `text` without `#`, each once, sorted.
+/// Every tag of `text` in text order: the front matter's values (`front_matter_values`), then
+/// the inline tags (`spans`). Each range is the tag with its `#` if written (always inline).
+pub fn all_spans(text: &str) -> Vec<(usize, Range<usize>)> {
+    let skip = lists::front_matter_lines(text);
+    let mut out = front_matter_values(text, skip);
+    out.extend(inline_spans(text, skip));
+    out
+}
+
+/// (0-based line, byte range in that line) of each tag value of the front matter's `tags:` /
+/// `tag:` keys (top level): flow list `[a, "b/c"]` (may span lines), block list (`- a` lines below the key) or
+/// string (`a, b` / `a b`). A range covers the value inside its quotes, with its `#` if
+/// written. Values that are not a whole tag (`#value` read by `in_line`) are skipped, and a
+/// YAML comment (`#` then a space) ends a value. `lines`: the front matter's line count
+/// (`lists::front_matter_lines`).
+fn front_matter_values(text: &str, lines: usize) -> Vec<(usize, Range<usize>)> {
+    let mut out = Vec::new();
+    if lines == 0 || !enabled() {
+        return out;
+    }
+    // The lines between the two `---`.
+    let body: Vec<&str> = text.lines().take(lines - 1).collect();
+    let mut n = 1;
+    while n < body.len() {
+        let (row, line) = (n, body[n]);
+        n += 1;
+        let Some(start) = tags_key(line) else {
+            continue;
+        };
+        let end = uncommented(line, start);
+        let value = line[start..end].trim();
+        if value.is_empty() {
+            // Block list: `- value` lines (any indent; blank and whole-line comment lines
+            // between them skipped).
+            while let Some(&item) = body.get(n) {
+                let t = item.trim_start();
+                if !t.is_empty() && !t.starts_with('#') {
+                    let Some(rest) = t
+                        .strip_prefix('-')
+                        .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))
+                    else {
+                        break;
+                    };
+                    let from = item.len() - rest.len();
+                    push_value(&mut out, n, item, from, uncommented(item, from));
+                }
+                n += 1;
+            }
+        } else if value.starts_with('[') {
+            // Flow list: comma separated up to its `]`, which may be on a later line (each
+            // line's comment cut); unclosed within the front matter → no values.
+            let (mut row, mut line, mut end) = (row, line, end);
+            let mut from = line[..end].find('[').map_or(end, |i| i + 1);
+            let mut found = Vec::new();
+            loop {
+                let close = line[from..end].find(']');
+                let to = close.map_or(end, |i| from + i);
+                let mut at = from;
+                for part in line[from..to].split(',') {
+                    push_value(&mut found, row, line, at, at + part.len());
+                    at += part.len() + 1;
+                }
+                if close.is_some() {
+                    out.append(&mut found);
+                    break;
+                }
+                let Some(&next) = body.get(n) else {
+                    break;
+                };
+                (row, line, end, from) = (n, next, uncommented(next, 0), 0);
+                n += 1;
+            }
+        } else {
+            // String: quotes around the whole value dropped, then comma / space separated.
+            let (from, to) = unquoted(line, start, end);
+            let mut at = from;
+            for part in line[from..to].split(|c: char| c == ',' || c.is_ascii_whitespace()) {
+                push_value(&mut out, row, line, at, at + part.len());
+                at += part.len() + 1;
+            }
+        }
+    }
+    out
+}
+
+/// Where the value of a top-level `tags:` / `tag:` key starts in `line` (after the `:`).
+fn tags_key(line: &str) -> Option<usize> {
+    let rest = line
+        .strip_prefix("tags:")
+        .or_else(|| line.strip_prefix("tag:"))?;
+    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| line.len() - rest.len())
+}
+
+/// Where the value starting at `from` in `line` ends: at a YAML comment (` #` then a space or
+/// the end), else the line's end.
+fn uncommented(line: &str, from: usize) -> usize {
+    let bytes = line.as_bytes();
+    (from..line.len())
+        .find(|&i| {
+            bytes[i] == b'#'
+                && (i == from || bytes[i - 1].is_ascii_whitespace())
+                && bytes.get(i + 1).is_none_or(u8::is_ascii_whitespace)
+        })
+        .unwrap_or(line.len())
+}
+
+/// `line[from..to]` trimmed, without a pair of `"` or `'` around it: its new bounds.
+fn unquoted(line: &str, from: usize, to: usize) -> (usize, usize) {
+    let raw = &line[from..to];
+    let from = from + raw.len() - raw.trim_start().len();
+    let to = from + raw.trim().len();
+    let t = &line[from..to];
+    if t.len() >= 2
+        && (t.starts_with('"') && t.ends_with('"') || t.starts_with('\'') && t.ends_with('\''))
+    {
+        (from + 1, to - 1)
+    } else {
+        (from, to)
+    }
+}
+
+/// Adds `line[from..to]` (trimmed, unquoted) as a tag value of line `row` if it is a whole tag.
+fn push_value(
+    out: &mut Vec<(usize, Range<usize>)>,
+    row: usize,
+    line: &str,
+    from: usize,
+    to: usize,
+) {
+    let (from, to) = unquoted(line, from, to);
+    let value = &line[from..to];
+    let name = value.strip_prefix('#').unwrap_or(value);
+    let tag = format!("#{name}");
+    if in_line(&tag).first() == Some(&(0..tag.len())) {
+        out.push((row, from..to));
+    }
+}
+
+/// The tags of `text` (front matter and inline) without `#`, each once, sorted.
 pub fn names(text: &str) -> Vec<String> {
     let lines: Vec<&str> = text.lines().collect();
-    let mut out: Vec<String> = spans(text)
+    let mut out: Vec<String> = all_spans(text)
         .into_iter()
-        .map(|(n, r)| lines[n][r.start + 1..r.end].to_string())
+        .map(|(n, r)| {
+            let tag = &lines[n][r];
+            tag.strip_prefix('#').unwrap_or(tag).to_string()
+        })
         .collect();
     out.sort();
     out.dedup();
@@ -186,6 +336,90 @@ mod tests {
     fn front_matter_skipped() {
         assert_eq!(tags("---\ntitle: '#x'\n---\n#y"), ["y"]);
         assert_eq!(spans("---\n#x\n---\n#y"), [(3, 0..2)]);
+    }
+
+    fn front_matter_spans(text: &str) -> Vec<(usize, Range<usize>)> {
+        front_matter_values(text, lists::front_matter_lines(text))
+    }
+
+    /// The front-matter values of `text` as written (with their `#` if any).
+    fn values(text: &str) -> Vec<String> {
+        let lines: Vec<&str> = text.lines().collect();
+        front_matter_spans(text)
+            .into_iter()
+            .map(|(n, r)| lines[n][r].to_string())
+            .collect()
+    }
+
+    #[test]
+    fn front_matter_flow_list() {
+        assert_eq!(values("---\ntags: [a, b/c]\n---\n"), ["a", "b/c"]);
+        assert_eq!(
+            values("---\ntags: [ \"a\", 'Work/Project' , #c,]\n---\n"),
+            ["a", "Work/Project", "#c"]
+        );
+        assert_eq!(
+            front_matter_spans("---\ntags: [a, \"b\"]\n---\n"),
+            [(1, 7..8), (1, 11..12)]
+        );
+        assert!(values("---\ntags: []\n---\n").is_empty());
+        // Over several lines up to `]`, comments cut; unclosed in the front matter: none.
+        let md = "---\ntags: [a, # first\n  'b/c',\n\n  #d\n  ] # end\nother: [x]\n---\n";
+        assert_eq!(values(md), ["a", "b/c", "#d"]);
+        assert_eq!(front_matter_spans(md), [(1, 7..8), (2, 3..6), (4, 2..4)]);
+        assert_eq!(values("---\r\ntags: [a,\r\n b]\r\n---\r\n"), ["a", "b"]);
+        assert!(values("---\ntags: [a,\n  b\n---\n[c]\n").is_empty());
+        assert_eq!(tags("---\ntags: [a, b/c]\n---\n#d"), ["a", "b/c", "d"]);
+    }
+
+    #[test]
+    fn front_matter_block_list() {
+        let md = "---\ntitle: x\ntags:\n  - a\n  - \"#b/c\"\n\n- 'd'\nother: [e]\n- f\n---\n";
+        assert_eq!(values(md), ["a", "#b/c", "d"]);
+        assert_eq!(tags(md), ["a", "b/c", "d"]);
+        let md = "---\ntags:\n  # work\n  - a\n\n  # more\n#x\n  - b # why\n---\n";
+        assert_eq!(values(md), ["a", "b"]);
+    }
+
+    #[test]
+    fn front_matter_string() {
+        assert_eq!(values("---\ntags: a, b\n---\n"), ["a", "b"]);
+        assert_eq!(values("---\ntags: a b,c\n---\n"), ["a", "b", "c"]);
+        assert_eq!(values("---\ntag: \"#a #b/c\"\n---\n"), ["#a", "#b/c"]);
+        assert_eq!(values("---\ntags: #a #b # a comment\n---\n"), ["#a", "#b"]);
+        assert_eq!(values("---\ntags: work\n---\n"), ["work"]);
+    }
+
+    #[test]
+    fn front_matter_invalid_skipped() {
+        // Not a tag read back whole: skipped, the others kept.
+        assert_eq!(
+            values("---\ntags: [1st, two words, a.b, ok, b/, fff, '']\n---\n"),
+            ["ok"]
+        );
+        assert_eq!(values("---\ntags: 2024, x-, ok, ##y\n---\n"), ["ok"]);
+        // Other keys, nested keys, `tagsx:`, no closing `---`, not on line 1: none.
+        assert!(values("---\ntitle: [a]\nmeta:\n  tags: [b]\ntagsx: c\n---\n").is_empty());
+        assert!(values("---\ntags: [a]\n").is_empty());
+        assert!(values("\n---\ntags: [a]\n---\n").is_empty());
+        assert!(values("tags: [a]\n").is_empty());
+    }
+
+    #[test]
+    fn front_matter_crlf_and_unicode() {
+        let md = "---\r\ntags: [việc-làm, Đọc_sách]\r\ntag:\r\n  - nhà\r\n---\r\n#x\r\n";
+        assert_eq!(values(md), ["việc-làm", "Đọc_sách", "nhà"]);
+        assert_eq!(tags(md), ["nhà", "việc-làm", "x", "Đọc_sách"]);
+    }
+
+    #[test]
+    fn front_matter_not_coloured() {
+        // `spans` (the editor's colouring) stays inline only.
+        assert_eq!(spans("---\ntags: [a, #b]\n---\n#c"), [(3, 0..2)]);
+        assert_eq!(
+            all_spans("---\ntags: [a, #b]\n---\n#c"),
+            [(1, 7..8), (1, 10..12), (3, 0..2)]
+        );
     }
 
     #[test]
@@ -250,7 +484,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let (a, b) = (dir.join("a.md"), dir.join("b.md"));
         fs::write(&a, "#work/project #work-x").unwrap();
-        fs::write(&b, "#work #home").unwrap();
+        fs::write(&b, "---\ntags: [work, home]\n---\n#home").unwrap();
         let got: Vec<(String, usize)> = index(&[a, b, dir.join("missing.md")])
             .into_iter()
             .map(|(t, n)| (t, n.len()))
@@ -258,5 +492,34 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
         let want = [("home", 1), ("work", 2), ("work/project", 1), ("work-x", 1)];
         assert_eq!(got, want.map(|(t, n)| (t.to_string(), n)));
+    }
+
+    /// Times `index` over a generated folder (best of 5):
+    /// `cargo run --release --example generate_notes -- /tmp/notes 10000`, then
+    /// `MM_TAGS_NOTES=/tmp/notes cargo test --release tags::tests::time_index -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn time_index() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+            for entry in fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "md") {
+                    out.push(path);
+                }
+            }
+        }
+        let root = PathBuf::from(std::env::var("MM_TAGS_NOTES").expect("MM_TAGS_NOTES"));
+        let mut paths = Vec::new();
+        walk(&root, &mut paths);
+        let mut best = std::time::Duration::MAX;
+        let mut count = 0;
+        for _ in 0..5 {
+            let start = std::time::Instant::now();
+            count = index(&paths).len();
+            best = best.min(start.elapsed());
+        }
+        println!("{} notes: {best:?} ({count} tags)", paths.len());
     }
 }
