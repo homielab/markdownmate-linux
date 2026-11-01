@@ -121,6 +121,8 @@ pub(crate) struct Editor {
     pub(crate) applied_gen: Cell<u64>,
     /// Folder of the newest scan (rescans target it, not a folder being replaced).
     pub(crate) scan_dir: RefCell<Option<PathBuf>>,
+    /// `--new` / `--today` that arrived while the folder was still being scanned.
+    pub(crate) pending_quick: Cell<Option<crate::cli::Quick>>,
     /// The sidebar's top-level entries (`sidebar::resort_note`) and its tree view.
     pub(crate) sidebar_store: RefCell<Option<gio::ListStore>>,
     pub(crate) sidebar_view: RefCell<Option<gtk::ListView>>,
@@ -1569,6 +1571,9 @@ impl Editor {
                 a.set_enabled(true);
             }
         }
+        if let Some(q) = self.pending_quick.take() {
+            self.quick(q);
+        }
         let mut list = Vec::new();
         quick::note_paths(tree, &mut list);
         self.note_list.replace(Rc::new(list));
@@ -1969,6 +1974,26 @@ impl Editor {
     /// local date (`daily`); a missing one is created (with its folders) from `Template.md`
     /// (or `# YYYY-MM-DD` and a blank line) and opens with the cursor at its end. Nothing
     /// without an open folder.
+    /// `markdownmate --new` / `--today` (the dock menu): in the open folder; while the
+    /// window's folder is still being scanned, once it is shown.
+    pub(crate) fn quick(self: &Rc<Self>, q: crate::cli::Quick) {
+        use crate::cli::Quick;
+        if self.root.borrow().is_none() {
+            if self.scan_dir.borrow().is_some() {
+                self.pending_quick.set(Some(q));
+            } else if q == Quick::Today {
+                self.toast("Open a folder for Today's Note");
+            }
+            return;
+        }
+        match q {
+            Quick::New => {
+                let _ = WidgetExt::activate_action(&self.window, "win.new-note", None);
+            }
+            Quick::Today => self.todays_note(),
+        }
+    }
+
     pub(crate) fn todays_note(self: &Rc<Self>) {
         let Some(root) = self.root.borrow().clone() else {
             return;

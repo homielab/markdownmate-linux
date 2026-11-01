@@ -2,6 +2,7 @@ mod about;
 mod aliases;
 mod backlinks;
 mod broken;
+mod cli;
 mod complete;
 mod daily;
 mod diagrams;
@@ -140,6 +141,15 @@ fn main() -> gtk::glib::ExitCode {
         unsafe { std::env::set_var(name, value) };
     }
     timing::init();
+    // `--new` / `--today` (the desktop file's actions); a bad combination stops here.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let quick = match cli::parse(&args) {
+        Ok(quick) => quick,
+        Err(e) => {
+            eprintln!("markdownmate: {e}");
+            return glib::ExitCode::from(2);
+        }
+    };
     // HANDLES_OPEN: `markdownmate note.md` / Files ▸ Open With pass files to `open`.
     let app = adw::Application::builder()
         .application_id(APP_ID)
@@ -147,6 +157,44 @@ fn main() -> gtk::glib::ExitCode {
         // GNOME báo kết thúc phiên (logout) qua `query-end`.
         .register_session(true)
         .build();
+    app.add_main_option(
+        "new",
+        glib::Char::from(0),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "New note in the open folder",
+        None,
+    );
+    app.add_main_option(
+        "today",
+        glib::Char::from(0),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "Open or create today's daily note",
+        None,
+    );
+    // The running instance gets `app.quick` over D-Bus; a first instance runs it after its
+    // window is built (`activate`).
+    let first_quick = Rc::new(std::cell::Cell::new(None));
+    app.connect_handle_local_options(glib::clone!(
+        #[strong]
+        first_quick,
+        move |app, _| {
+            let Some(q) = quick else {
+                return std::ops::ControlFlow::Continue(());
+            };
+            if let Err(e) = app.register(gio::Cancellable::NONE) {
+                eprintln!("markdownmate: {e}");
+                return std::ops::ControlFlow::Break(glib::ExitCode::FAILURE);
+            }
+            if app.is_remote() {
+                app.activate_action("quick", Some(&q.name().to_variant()));
+                return std::ops::ControlFlow::Break(glib::ExitCode::SUCCESS);
+            }
+            first_quick.set(Some(q));
+            std::ops::ControlFlow::Continue(())
+        }
+    ));
     app.connect_query_end(save_all);
     app.connect_shutdown(save_all);
     // quit → `shutdown` lưu.
@@ -165,10 +213,21 @@ fn main() -> gtk::glib::ExitCode {
             ),
         );
     }
-    app.connect_startup(|_| {
+    app.connect_startup(|app| {
         // Icon cài từ gói .deb (hicolor); chạy chưa cài thì GTK dùng icon mặc định.
         gtk::Window::set_default_icon_name(APP_ID);
         add_scheme_paths();
+        let quick_action = gio::SimpleAction::new("quick", Some(glib::VariantTy::STRING));
+        quick_action.connect_activate(glib::clone!(
+            #[weak]
+            app,
+            move |_, arg| {
+                if let Some(q) = arg.and_then(|a| a.str()).and_then(cli::Quick::from_name) {
+                    run_quick(&app, q);
+                }
+            }
+        ));
+        app.add_action(&quick_action);
         // Adwaita đặt min-height 36px cho row .navigation-sidebar: kết quả Find in Folder
         // chỉ một dòng sẽ nằm trên cùng và để trống bên dưới, nên bỏ min-height.
         let css = gtk::CssProvider::new();
@@ -191,7 +250,12 @@ fn main() -> gtk::glib::ExitCode {
             );
         }
     });
-    app.connect_activate(|app| build_window(app, None));
+    app.connect_activate(move |app| {
+        build_window(app, None);
+        if let Some(q) = first_quick.take() {
+            run_quick(app, q);
+        }
+    });
     app.connect_open(|app, files, _| {
         // `markdownmate://` links (a second instance forwards them here) go to the open window.
         let links: Vec<_> = files
@@ -212,6 +276,17 @@ fn main() -> gtk::glib::ExitCode {
         }
     });
     app.run()
+}
+
+/// `--new` / `--today` in the active window (none: a new one, which restores the session).
+fn run_quick(app: &adw::Application, q: cli::Quick) {
+    if app.active_window().is_none() {
+        build_window(app, None);
+    }
+    if let Some(window) = app.active_window() {
+        window.present();
+        let _ = WidgetExt::activate_action(&window, "win.quick", Some(&q.name().to_variant()));
+    }
 }
 
 /// Lưu note + phiên của mọi cửa sổ (`win.flush`), dùng khi app thoát không qua đóng cửa sổ.

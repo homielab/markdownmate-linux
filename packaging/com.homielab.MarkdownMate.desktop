@@ -9,3 +9,12 @@ Categories=Office;
 MimeType=text/markdown;text/x-markdown;x-scheme-handler/markdownmate;
 Keywords=markdown;notes;editor;
 StartupNotify=true
+Actions=new-note;todays-note;
+
+[Desktop Action new-note]
+Name=New Note
+Exec=markdownmate --new
+
+[Desktop Action todays-note]
+Name=Today's Note
+Exec=markdownmate --today

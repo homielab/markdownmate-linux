@@ -400,6 +400,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         scan_gen: Cell::new(0),
         applied_gen: Cell::new(0),
         scan_dir: RefCell::new(None),
+        pending_quick: Cell::new(None),
         note_list: RefCell::default(),
         aliases: RefCell::default(),
         aliases_gen: Cell::new(0),
@@ -554,6 +555,22 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         move |_, _| editor.todays_note()
     ));
     window.add_action(&today_action);
+
+    // `markdownmate --new` / `--today` (main.rs) arrive here as "new" / "today".
+    let quick_action = gio::SimpleAction::new("quick", Some(glib::VariantTy::STRING));
+    quick_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, arg| {
+            if let Some(q) = arg
+                .and_then(|a| a.str())
+                .and_then(crate::cli::Quick::from_name)
+            {
+                editor.quick(q);
+            }
+        }
+    ));
+    window.add_action(&quick_action);
     app.set_accels_for_action("win.todays-note", &["<Control>d"]);
 
     // Previous / Next Daily Note. Ctrl+Alt+Up / Down are Move Line, so the brackets; GTK and

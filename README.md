@@ -164,6 +164,14 @@ A note in a bookmarked folder that is not open opens that folder (the current no
 
 For safety (any web page can open such a link), links only reach existing Markdown (`.md`/`.markdown`) files inside the open folder or a bookmarked folder (no `..`, symlinks are followed and checked), `create` never overwrites, `text` is limited to 1 MB, and `append` never creates a file and always brings the note's window forward, so nothing is changed unseen. A bad or unsafe link only shows a message.
 
+### Command line and dock menu
+
+- `markdownmate note.md` / `markdownmate ~/Notes` opens a note or a folder.
+- `markdownmate --new` makes a new note in the open folder (no folder open: just brings the window forward).
+- `markdownmate --today` opens or creates Today's Note in the open folder; with no window open, in the last session's folder; with no folder at all, it asks you to open one.
+
+Both reach the running window, or start MarkdownMate. They are also the **New Note** and **Today's Note** items in the dock icon's right-click menu and in the app grid. `markdownmate --help` lists the options.
+
 ---
 
 ## ☁️ Sync

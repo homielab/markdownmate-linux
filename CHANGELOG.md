@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- New Note and Today's Note in the dock icon's right-click menu and the app grid, so a thought is captured without switching to the app first. Also from a terminal: `markdownmate --new` and `markdownmate --today` reach the running window or start one. Same as the macOS Dock menu.
 - Find Broken Links… in the main menu (also a Broken Links toggle in Find in Folder): lists every `[[wiki link]]` that reaches no note or alias and every relative link or image whose file is missing, across the folder's notes, so links broken by a rename or move outside the app can be fixed. Each row opens the note at that line. URLs, `mailto:`, absolute paths, anchors, code and front matter are skipped. Find in Folder… is in the main menu now too. Same as the macOS app.
 - Find in “Folder”… in the sidebar's right-click menu on a folder: Find in Folder searches only the notes in that folder and its subfolders, and Replace All changes only those. A chip under the search box shows the folder; its ✕ searches everything again. Shift+Ctrl+F still searches the whole folder. Same as the macOS app.
 - Front-matter aliases: list a note's other names under `aliases:` (or `alias:`) in its YAML front matter and `[[Alias]]` links reach it — in the preview, Ctrl+click, the hover tooltip, Backlinks, Unlinked Mentions and Export Folder as HTML. `[[` completion offers them as "Alias → Note". A note actually named like the alias still wins. Same as the macOS app.
