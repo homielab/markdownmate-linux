@@ -868,11 +868,14 @@ impl Editor {
 
     /// Inserts the image link `store` makes for the open note (`images.rs`) in place of the
     /// selection, as one undo step. No note open: does nothing. Error: toast, nothing inserted.
-    pub(crate) fn insert_image(&self, store: impl FnOnce(&Path) -> std::io::Result<String>) {
+    pub(crate) fn insert_image(
+        &self,
+        store: impl FnOnce(&crate::images::Dest) -> std::io::Result<String>,
+    ) {
         let Some(note) = self.path.borrow().clone() else {
             return;
         };
-        match store(&note) {
+        match store(&self.image_dest(&note)) {
             Ok(link) => {
                 self.buffer.begin_user_action();
                 self.buffer.delete_selection(true, true);
@@ -1712,6 +1715,15 @@ impl Editor {
             );
             self.templates_menu.append_item(&item);
         }
+    }
+
+    /// Where `note`'s pasted and dropped images go (`Prefs::attachments_folder`).
+    pub(crate) fn image_dest(&self, note: &Path) -> crate::images::Dest {
+        crate::images::dest(
+            note,
+            self.root.borrow().as_deref(),
+            &self.prefs.borrow().attachments_folder,
+        )
     }
 
     /// The templates folder of the open folder (`Prefs::templates_folder`); None without one.

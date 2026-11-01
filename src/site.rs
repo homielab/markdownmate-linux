@@ -80,6 +80,7 @@ pub fn export(
     root: &Path,
     dest: &Path,
     order: SortOrder,
+    attachments: &str,
     progress: &Progress,
 ) -> io::Result<Outcome> {
     let mut images = Vec::new();
@@ -143,7 +144,7 @@ pub fn export(
         outcome.listed.extend(part.listed);
     }
     outcome.cancelled = progress.done.load(Ordering::Relaxed) < outcome.total;
-    for file in assets(root) {
+    for file in assets(root, attachments) {
         if progress.cancel.load(Ordering::Relaxed) {
             outcome.cancelled = true;
             break;
@@ -163,10 +164,11 @@ pub fn export(
     Ok(outcome)
 }
 
-/// The files of every `assets` folder (any case) of `root` and of the folders inside it,
+/// The files of every attachments folder (`assets` or the configured name, any case:
+/// `images::is_attachments_name`) of `root` and of the folders inside it,
 /// relative to `root`: hidden names, `node_modules` and symlinked folders skipped as in
 /// `notes::folders`.
-fn assets(root: &Path) -> Vec<PathBuf> {
+fn assets(root: &Path, setting: &str) -> Vec<PathBuf> {
     let mut files = Vec::new();
     for dir in notes::folders(root) {
         let Ok(rel) = dir.strip_prefix(root) else {
@@ -174,7 +176,7 @@ fn assets(root: &Path) -> Vec<PathBuf> {
         };
         let in_assets = rel
             .components()
-            .any(|c| c.as_os_str().eq_ignore_ascii_case("assets"));
+            .any(|c| crate::images::is_attachments_name(c.as_os_str(), setting));
         if !in_assets {
             continue;
         }
@@ -607,6 +609,7 @@ fn run(editor: &Rc<Editor>, root: PathBuf, dest: PathBuf) {
     // Pages are rendered from the files: the open note's last edits first.
     editor.save();
     let order = editor.prefs.borrow().sidebar_sort;
+    let setting = editor.prefs.borrow().attachments_folder.clone();
     let progress = Arc::new(Progress::default());
     let shown = Rc::new(Shown::new(editor, &progress));
     let running = Rc::new(std::cell::Cell::new(true));
@@ -628,7 +631,7 @@ fn run(editor: &Rc<Editor>, root: PathBuf, dest: PathBuf) {
     let editor = Rc::clone(editor);
     glib::spawn_future_local(async move {
         let (r, d, p) = (root.clone(), dest.clone(), Arc::clone(&progress));
-        let result = gio::spawn_blocking(move || export(&r, &d, order, &p)).await;
+        let result = gio::spawn_blocking(move || export(&r, &d, order, &setting, &p)).await;
         running.set(false);
         let outcome = match result {
             Ok(Ok(outcome)) => outcome,
@@ -904,7 +907,7 @@ mod tests {
         );
         src.write("Home.md", "[[MN]] [[meeting notes#Agenda|x]] [[Gone]]\n");
         let progress = Progress::default();
-        export(&src.0, &dest.0, SortOrder::Name, &progress).unwrap();
+        export(&src.0, &dest.0, SortOrder::Name, "assets", &progress).unwrap();
         let home = dest.read("Home.html");
         assert!(home.contains("href=\"Notes/Note.html\""), "{home}");
         assert!(home.contains("href=\"Notes/Note.html#agenda\""), "{home}");
@@ -944,7 +947,7 @@ mod tests {
         src.write("node_modules/pkg/README.md", "# Readme");
         src.write(".git/HEAD.md", "x");
         let progress = Progress::default();
-        let outcome = export(&src.0, &dest.0, SortOrder::Name, &progress).unwrap();
+        let outcome = export(&src.0, &dest.0, SortOrder::Name, "assets", &progress).unwrap();
         // logo.png (shown and in assets/), unused.png, manual.pdf, style.css.
         assert_eq!((outcome.total, outcome.written, outcome.files), (3, 3, 4));
         assert!(outcome.failed.is_empty() && !outcome.cancelled);
@@ -1000,7 +1003,7 @@ mod tests {
         src.write("Guides/img/shot.png", "png");
         src.write("logo.png", "png");
         let progress = Progress::default();
-        export(&src.0, &dest.0, SortOrder::Name, &progress).unwrap();
+        export(&src.0, &dest.0, SortOrder::Name, "assets", &progress).unwrap();
         let home = dest.read("Home.html");
         assert!(
             home.contains("<img src=\"logo.png\" alt=\"logo.png\" width=\"120\" />"),
@@ -1035,7 +1038,7 @@ mod tests {
         src.write("assets/a.png", "png");
         let progress = Progress::default();
         progress.cancel.store(true, Ordering::Relaxed);
-        let outcome = export(&src.0, &dest.0, SortOrder::Name, &progress).unwrap();
+        let outcome = export(&src.0, &dest.0, SortOrder::Name, "assets", &progress).unwrap();
         assert!(outcome.cancelled);
         assert_eq!((outcome.total, outcome.written, outcome.files), (20, 0, 0));
         let index = dest.read(INDEX);
@@ -1050,7 +1053,14 @@ mod tests {
         src.write("Lost/Lost.md", "# Lost");
         // A folder where Lost's page goes: that page cannot be written.
         fs::create_dir_all(dest.0.join("Lost/Lost.html")).unwrap();
-        let outcome = export(&src.0, &dest.0, SortOrder::Name, &Progress::default()).unwrap();
+        let outcome = export(
+            &src.0,
+            &dest.0,
+            SortOrder::Name,
+            "assets",
+            &Progress::default(),
+        )
+        .unwrap();
         assert_eq!((outcome.written, outcome.failed.len()), (1, 1));
         let index = dest.read(INDEX);
         assert!(index.contains("<a href=\"Kept.html\">Kept</a>"), "{index}");
@@ -1068,7 +1078,14 @@ mod tests {
         };
         let dest = TempDir::new("dest-time");
         let start = std::time::Instant::now();
-        let outcome = export(&src, &dest.0, SortOrder::Name, &Progress::default()).unwrap();
+        let outcome = export(
+            &src,
+            &dest.0,
+            SortOrder::Name,
+            "assets",
+            &Progress::default(),
+        )
+        .unwrap();
         println!(
             "{} notes, {} files, {} to draw in {:?}",
             outcome.written,

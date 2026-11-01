@@ -1,4 +1,6 @@
-//! Pasted / dropped images: stored in `assets/` next to the note, linked as `![](assets/…)`.
+//! Pasted / dropped images: stored in the attachments folder (`Prefs::attachments_folder`,
+//! default `assets/` next to the note; `/name` = at the open folder's root), linked relative
+//! to the note.
 //! Pure Rust (no GTK) so it is testable headless.
 
 use std::fs;
@@ -7,8 +9,69 @@ use std::path::{Path, PathBuf};
 
 use crate::{naming, render};
 
-/// Folder next to the note that holds its images.
+/// Default attachments folder, next to the note; always read as an attachments folder.
 pub const ASSETS: &str = "assets";
+
+/// Where a note's images go: the folder and the link prefix from the note's folder to it
+/// (`assets/`, `../attachments/`, …).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Dest {
+    pub dir: PathBuf,
+    pub prefix: String,
+}
+
+/// The attachments folder setting cleaned like the templates folder (`daily::folder` rule):
+/// blank, `.` and `..` parts dropped, a leading `/` kept; nothing left = `assets`.
+pub fn setting(raw: &str) -> String {
+    let parts: Vec<&str> = raw
+        .split('/')
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && *p != "." && *p != "..")
+        .collect();
+    if parts.is_empty() {
+        return ASSETS.to_string();
+    }
+    let root = if raw.trim_start().starts_with('/') {
+        "/"
+    } else {
+        ""
+    };
+    format!("{root}{}", parts.join("/"))
+}
+
+/// The attachments folder for `note`: `<note's folder>/<name>`, or `<root>/<name>` for `/name`
+/// when a folder is open and the note is inside it (else next to the note).
+pub fn dest(note: &Path, root: Option<&Path>, raw: &str) -> Dest {
+    let name = setting(raw);
+    let note_dir = note.parent().unwrap_or(Path::new("."));
+    if let Some(rel) = name.strip_prefix('/')
+        && let Some((root, up)) = root.and_then(|r| {
+            note_dir
+                .strip_prefix(r)
+                .ok()
+                .map(|d| (r, d.components().count()))
+        })
+    {
+        return Dest {
+            dir: root.join(rel),
+            prefix: format!("{}{rel}/", "../".repeat(up)),
+        };
+    }
+    let rel = name.trim_start_matches('/');
+    Dest {
+        dir: note_dir.join(rel),
+        prefix: format!("{rel}/"),
+    }
+}
+
+/// Whether a folder named `name` holds attachments: `assets` or the last part of the setting,
+/// any case.
+pub fn is_attachments_name(name: &std::ffi::OsStr, raw: &str) -> bool {
+    let name = name.to_string_lossy();
+    let configured = setting(raw);
+    let last = configured.rsplit('/').next().unwrap_or(ASSETS);
+    name.eq_ignore_ascii_case(ASSETS) || name.eq_ignore_ascii_case(last)
+}
 
 /// Whether `path` has an image extension the preview can show.
 pub fn is_image(path: &Path) -> bool {
@@ -25,12 +88,12 @@ pub fn in_folder(path: &Path, root: &Path) -> Option<PathBuf> {
     render::note_in_folder(path, root).filter(|p| is_image(p))
 }
 
-/// `![](assets/<name>)`, with the characters that would break the link or URL %-encoded
+/// `![](<prefix><name>)` (`Dest::prefix`), with the characters that would break the link or URL %-encoded
 /// (space, `%`, brackets, `#`, `?`, control characters); other characters, accents included,
 /// stay readable.
-pub fn link(name: &str) -> String {
-    let mut out = format!("![]({ASSETS}/");
-    for c in name.chars() {
+pub fn link(prefix: &str, name: &str) -> String {
+    let mut out = String::from("![](");
+    for c in prefix.chars().chain(name.chars()) {
         if c.is_control() || " %()<>[]#?\\".contains(c) {
             let mut buf = [0; 4];
             for b in c.encode_utf8(&mut buf).bytes() {
@@ -44,32 +107,32 @@ pub fn link(name: &str) -> String {
     out
 }
 
-/// Stores an image for `note` under `assets/<name>` (numbered `<stem> 2.<ext>`, … if taken,
+/// Stores an image in `dest` as `<name>` (numbered `<stem> 2.<ext>`, … if taken,
 /// never overwriting: the file is created with create_new first, then `fill`ed). `fill` gets
 /// the new, empty file's path. Returns the Markdown link. On error no new file is left behind.
 pub fn store(
-    note: &Path,
+    dest: &Dest,
     name: &str,
     fill: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<String> {
-    let dir = assets_dir(note);
-    fs::create_dir_all(&dir)?;
-    let path = naming::create_note(&dir, name)?;
+    let dir = &dest.dir;
+    fs::create_dir_all(dir)?;
+    let path = naming::create_note(dir, name)?;
     if let Err(e) = fill(&path) {
         let _ = fs::remove_file(&path);
         return Err(e);
     }
-    Ok(link(&file_name(&path)))
+    Ok(link(&dest.prefix, &file_name(&path)))
 }
 
-/// Link for a dropped image file: copied into the note's `assets/` (keeping its name, numbered
+/// Link for a dropped image file: copied into `dest` (keeping its name, numbered
 /// if taken), or just linked if it already is in that folder.
-pub fn store_file(note: &Path, src: &Path) -> io::Result<String> {
+pub fn store_file(dest: &Dest, src: &Path) -> io::Result<String> {
     let src_dir = src.parent().and_then(|d| d.canonicalize().ok());
-    if src_dir.is_some() && src_dir == assets_dir(note).canonicalize().ok() {
-        return Ok(link(&file_name(src)));
+    if src_dir.is_some() && src_dir == dest.dir.canonicalize().ok() {
+        return Ok(link(&dest.prefix, &file_name(src)));
     }
-    store(note, &file_name(src), |dest| {
+    store(dest, &file_name(src), |dest| {
         fs::copy(src, dest).map(|_| ())
     })
 }
@@ -108,10 +171,6 @@ fn base64(bytes: &[u8]) -> String {
         }
     }
     out
-}
-
-fn assets_dir(note: &Path) -> PathBuf {
-    note.parent().unwrap_or(Path::new(".")).join(ASSETS)
 }
 
 fn file_name(path: &Path) -> String {
@@ -209,10 +268,16 @@ mod tests {
 
     #[test]
     fn links_encode_spaces_and_breaking_characters() {
-        assert_eq!(link("image.png"), "![](assets/image.png)");
-        assert_eq!(link("image 2.png"), "![](assets/image%202.png)");
-        assert_eq!(link("a(1)%#?.png"), "![](assets/a%281%29%25%23%3F.png)");
-        assert_eq!(link("ảnh chụp.png"), "![](assets/ảnh%20chụp.png)");
+        assert_eq!(link("assets/", "image.png"), "![](assets/image.png)");
+        assert_eq!(link("assets/", "image 2.png"), "![](assets/image%202.png)");
+        assert_eq!(
+            link("assets/", "a(1)%#?.png"),
+            "![](assets/a%281%29%25%23%3F.png)"
+        );
+        assert_eq!(
+            link("assets/", "ảnh chụp.png"),
+            "![](assets/ảnh%20chụp.png)"
+        );
     }
 
     #[test]
@@ -221,11 +286,11 @@ mod tests {
         let note = t.0.join("Note.md");
         let png = |bytes: &'static [u8]| move |p: &Path| fs::write(p, bytes);
         assert_eq!(
-            store(&note, "image.png", png(b"1")).unwrap(),
+            store(&dest(&note, None, ""), "image.png", png(b"1")).unwrap(),
             "![](assets/image.png)"
         );
         assert_eq!(
-            store(&note, "image.png", png(b"2")).unwrap(),
+            store(&dest(&note, None, ""), "image.png", png(b"2")).unwrap(),
             "![](assets/image%202.png)"
         );
         let a = t.0.join("assets");
@@ -233,7 +298,10 @@ mod tests {
         assert_eq!(fs::read(a.join("image 2.png")).unwrap(), b"2");
 
         // A failed write leaves nothing behind.
-        let err = store(&note, "image.png", |_| Err(io::Error::other("full"))).unwrap_err();
+        let err = store(&dest(&note, None, ""), "image.png", |_| {
+            Err(io::Error::other("full"))
+        })
+        .unwrap_err();
         assert_eq!(err.to_string(), "full");
         assert!(!a.join("image 3.png").exists());
     }
@@ -247,18 +315,73 @@ mod tests {
         fs::write(t.0.join("pic.png"), "new").unwrap();
 
         // Same name already in assets/: copied as "pic 2.png", the old one kept.
-        let l = store_file(&note, &t.0.join("pic.png")).unwrap();
+        let l = store_file(&dest(&note, None, ""), &t.0.join("pic.png")).unwrap();
         assert_eq!(l, "![](assets/pic%202.png)");
         assert_eq!(fs::read(t.0.join("sub/assets/pic.png")).unwrap(), b"old");
         assert_eq!(fs::read(t.0.join("sub/assets/pic 2.png")).unwrap(), b"new");
 
         // Already in the note's assets/: linked, not copied.
-        let l = store_file(&note, &t.0.join("sub/assets/pic.png")).unwrap();
+        let l = store_file(&dest(&note, None, ""), &t.0.join("sub/assets/pic.png")).unwrap();
         assert_eq!(l, "![](assets/pic.png)");
         assert!(!t.0.join("sub/assets/pic 3.png").exists());
 
         // Copy failure (source gone): error, no empty file left.
-        assert!(store_file(&note, &t.0.join("gone.png")).is_err());
+        assert!(store_file(&dest(&note, None, ""), &t.0.join("gone.png")).is_err());
         assert!(!t.0.join("sub/assets/gone.png").exists());
+    }
+
+    #[test]
+    fn attachments_folder_setting() {
+        assert_eq!(setting(""), "assets");
+        assert_eq!(setting("  / "), "assets");
+        assert_eq!(setting(" Media "), "Media");
+        assert_eq!(setting("/attachments"), "/attachments");
+        assert_eq!(setting("../x/./y/.."), "x/y");
+        assert_eq!(setting("/../attachments"), "/attachments");
+    }
+
+    #[test]
+    fn attachments_folder_destination() {
+        let root = Path::new("/v");
+        let note = Path::new("/v/a/b/Note.md");
+        assert_eq!(
+            dest(note, Some(root), "/attachments"),
+            Dest {
+                dir: PathBuf::from("/v/attachments"),
+                prefix: "../../attachments/".into()
+            }
+        );
+        let top = dest(Path::new("/v/Note.md"), Some(root), "/attachments");
+        assert_eq!(top.prefix, "attachments/");
+        assert_eq!(
+            dest(note, Some(root), "").dir,
+            PathBuf::from("/v/a/b/assets")
+        );
+        assert_eq!(dest(note, Some(root), "img").prefix, "img/");
+        // No open folder, or a note outside it: next to the note.
+        assert_eq!(
+            dest(note, None, "/attachments").dir,
+            PathBuf::from("/v/a/b/attachments")
+        );
+        assert_eq!(
+            dest(note, Some(Path::new("/w")), "/attachments").prefix,
+            "attachments/"
+        );
+        assert_eq!(
+            link(&dest(note, Some(root), "/My Files").prefix, "a.png"),
+            "![](../../My%20Files/a.png)"
+        );
+    }
+
+    #[test]
+    fn attachments_folder_names() {
+        use std::ffi::OsStr;
+        assert!(is_attachments_name(OsStr::new("Assets"), "/attachments"));
+        assert!(is_attachments_name(
+            OsStr::new("Attachments"),
+            "/attachments"
+        ));
+        assert!(is_attachments_name(OsStr::new("img"), "media/img"));
+        assert!(!is_attachments_name(OsStr::new("notes"), "/attachments"));
     }
 }

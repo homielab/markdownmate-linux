@@ -49,6 +49,7 @@ pub struct Found {
 pub fn attachments(
     base: &Path,
     root: &Path,
+    setting: &str,
     cancelled: &dyn Fn() -> bool,
 ) -> Option<Vec<Attachment>> {
     let mut found = Vec::new();
@@ -77,7 +78,7 @@ pub fn attachments(
                 }
                 continue;
             }
-            if !kind.is_file() || notes::is_note(&path) || !in_assets(&path, root) {
+            if !kind.is_file() || notes::is_note(&path) || !in_assets(&path, root, setting) {
                 continue;
             }
             let size = entry.metadata().map_or(0, |m| m.len());
@@ -94,13 +95,16 @@ pub fn attachments(
     Some(found)
 }
 
-/// Whether one of the folders between `root` and `file` is named `assets`.
-fn in_assets(file: &Path, root: &Path) -> bool {
+/// Whether one of the folders between `root` and `file` is an attachments folder (`assets` or
+/// the configured name, `images::is_attachments_name`).
+fn in_assets(file: &Path, root: &Path, setting: &str) -> bool {
     let Some(dir) = file.parent() else {
         return false;
     };
-    dir.strip_prefix(root)
-        .is_ok_and(|rel| rel.components().any(|c| c.as_os_str() == images::ASSETS))
+    dir.strip_prefix(root).is_ok_and(|rel| {
+        rel.components()
+            .any(|c| images::is_attachments_name(c.as_os_str(), setting))
+    })
 }
 
 /// The files `text` (the note at `note`) links to or shows, as `key`s.
@@ -292,11 +296,12 @@ pub fn unused(
 pub fn find(
     base: &Path,
     root: &Path,
+    setting: &str,
     notes: &[PathBuf],
     open: Option<&(PathBuf, String)>,
     cancelled: &dyn Fn() -> bool,
 ) -> Option<Found> {
-    let files = attachments(base, root, cancelled)?;
+    let files = attachments(base, root, setting, cancelled)?;
     unused(
         files,
         notes,
@@ -599,7 +604,7 @@ mod tests {
         std::os::unix::fs::symlink(t.0.join("photo.png"), t.0.join("assets/link.png")).unwrap();
         std::os::unix::fs::symlink(t.0.join("Projects"), t.0.join("assets/linked")).unwrap();
 
-        let found = attachments(&t.0, &t.0, &|| false).unwrap();
+        let found = attachments(&t.0, &t.0, "assets", &|| false).unwrap();
         assert_eq!(
             relative(&found, &t.0),
             [
@@ -611,11 +616,22 @@ mod tests {
         assert!(found.iter().all(|a| a.size == 5));
 
         // A Find in “Name”… folder: only the files under it, paths still from the open folder.
-        let scoped = attachments(&t.0.join("Projects"), &t.0, &|| false).unwrap();
+        let scoped = attachments(&t.0.join("Projects"), &t.0, "assets", &|| false).unwrap();
         assert_eq!(relative(&scoped, &t.0), ["Projects/Deep/assets/c.jpg"]);
-        let inside = attachments(&t.0.join("assets/2024"), &t.0, &|| false).unwrap();
+        let inside = attachments(&t.0.join("assets/2024"), &t.0, "assets", &|| false).unwrap();
         assert_eq!(relative(&inside, &t.0), ["assets/2024/b.pdf"]);
-        assert_eq!(attachments(&t.0, &t.0, &|| true), None);
+        assert_eq!(attachments(&t.0, &t.0, "assets", &|| true), None);
+    }
+
+    #[test]
+    fn configured_folder_and_assets_both_scanned() {
+        let t = TempDir::new("attachments-both");
+        t.files(&["assets/a.png", "Attachments/b.png", "media/c.png"]);
+        let found = attachments(&t.0, &t.0, "/attachments", &|| false).unwrap();
+        assert_eq!(
+            relative(&found, &t.0),
+            ["assets/a.png", "Attachments/b.png"]
+        );
     }
 
     #[test]
@@ -631,7 +647,7 @@ mod tests {
         fs::write(&note, "Nothing\n").unwrap();
         // The open note's editor text counts, not the file on disk.
         let open = (home.clone(), "![](assets/used.png)\n".to_string());
-        let found = find(&t.0, &t.0, &[home, note], Some(&open), &|| false).unwrap();
+        let found = find(&t.0, &t.0, "assets", &[home, note], Some(&open), &|| false).unwrap();
         assert_eq!(
             relative(&found.files, &t.0),
             ["assets/unused.png", "Notes/assets/nested.png"]

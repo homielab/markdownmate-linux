@@ -570,8 +570,8 @@ pub(crate) fn image_input(view: &sourceview5::View, editor: &Rc<Editor>) {
             view.stop_signal_emission_by_name("paste-clipboard");
             glib::spawn_future_local(async move {
                 match clipboard.read_texture_future().await {
-                    Ok(Some(texture)) => editor.insert_image(|note| {
-                        images::store(note, "image.png", |p| {
+                    Ok(Some(texture)) => editor.insert_image(|dest| {
+                        images::store(dest, "image.png", |p| {
                             std::fs::write(p, texture.save_to_png_bytes())
                         })
                     }),
@@ -660,7 +660,7 @@ fn place_drop(widget: Option<&gtk::Widget>, editor: &Editor, x: f64, y: f64) {
 }
 
 /// Dropped files at the cursor, one per line, as one undo step: images copied into the
-/// note's `assets/` (`images.rs`), notes inside the open folder as `[[wiki links]]`, other
+/// attachments folder (`images.rs`), notes inside the open folder as `[[wiki links]]`, other
 /// files and folders as relative links (`droplink::dropped_link`).
 fn insert_dropped(editor: &Editor, paths: &[PathBuf]) {
     let Some(note) = editor.path.borrow().clone() else {
@@ -670,7 +670,7 @@ fn insert_dropped(editor: &Editor, paths: &[PathBuf]) {
     let mut lines = vec![];
     for path in paths {
         if images::is_image(path) && path.is_file() {
-            match images::store_file(&note, path) {
+            match images::store_file(&editor.image_dest(&note), path) {
                 Ok(link) => lines.push(link),
                 Err(e) => editor.toast(&format!("Cannot add image: {e}")),
             }

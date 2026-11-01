@@ -392,12 +392,25 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
             editor.remember();
         }
     ));
+    let attachments = adw::EntryRow::builder()
+        .title("Attachments Folder")
+        .text(prefs.attachments_folder.as_str())
+        .build();
+    attachments.connect_changed(clone!(
+        #[strong]
+        editor,
+        move |row| {
+            editor.prefs.borrow_mut().attachments_folder = row.text().to_string();
+            editor.remember();
+        }
+    ));
     let notes_group = adw::PreferencesGroup::builder()
         .title("Notes")
-        .description("Today's Note (Ctrl+D) opens YYYY-MM-DD.md in this folder of the open folder; empty: the open folder itself. A Template.md in this folder sets the initial text for new daily notes, replacing {{date}}, {{time}} and {{title}} with today's date and time (formats like {{date:dddd, MMMM D, YYYY}}). New from Template (main menu) lists the .md notes of the Templates Folder and creates an Untitled note from one, with {{date}}, {{time}}, {{title}} and {{cursor}}.")
+        .description("Today's Note (Ctrl+D) opens YYYY-MM-DD.md in this folder of the open folder; empty: the open folder itself. A Template.md in this folder sets the initial text for new daily notes, replacing {{date}}, {{time}} and {{title}} with today's date and time (formats like {{date:dddd, MMMM D, YYYY}}). New from Template (main menu) lists the .md notes of the Templates Folder and creates an Untitled note from one, with {{date}}, {{time}}, {{title}} and {{cursor}}. Attachments Folder: images you paste or drop are saved here, next to the note. Start with / for a folder at the top of the open folder.")
         .build();
     notes_group.add(&daily);
     notes_group.add(&templates);
+    notes_group.add(&attachments);
     let page = adw::PreferencesPage::builder()
         .title("General")
         .icon_name("preferences-system-symbolic")
@@ -1323,6 +1336,7 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
         let (generation, current_scope, snapshot) =
             (generation.clone(), current_scope.clone(), snapshot.clone());
         let (listed, replace, error) = (listed.clone(), replace.clone(), error.clone());
+        let editor = editor.clone();
         let (list, status, targets, root, all) = (
             list.clone(),
             status.clone(),
@@ -1342,6 +1356,7 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
                 .clone()
                 .unwrap_or_else(|| root.clone());
             let (open, notes, folder) = (snapshot(), all.clone(), root.clone());
+            let setting = editor.prefs.borrow().attachments_folder.clone();
             let (generation, list, status, targets, root) = (
                 generation.clone(),
                 list.clone(),
@@ -1352,9 +1367,14 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
             glib::spawn_future_local(async move {
                 let g = generation.clone();
                 let found = gio::spawn_blocking(move || {
-                    attachments::find(&base, &folder, &notes, open.as_ref().as_ref(), &|| {
-                        g.load(Ordering::SeqCst) != mine
-                    })
+                    attachments::find(
+                        &base,
+                        &folder,
+                        &setting,
+                        &notes,
+                        open.as_ref().as_ref(),
+                        &|| g.load(Ordering::SeqCst) != mine,
+                    )
                 })
                 .await;
                 let Ok(Some(found)) = found else {
