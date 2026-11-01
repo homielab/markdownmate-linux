@@ -303,9 +303,37 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
             editor.refresh_preview();
         }
     ));
+    let front_matter = adw::ComboRow::builder()
+        .title("Front Matter")
+        .subtitle("How the YAML properties at the top of a note show in the preview")
+        .model(&gtk::StringList::new(
+            &state::FrontMatter::ALL.map(state::FrontMatter::title),
+        ))
+        .selected(
+            state::FrontMatter::ALL
+                .iter()
+                .position(|m| *m == prefs.front_matter)
+                .unwrap_or(0) as u32,
+        )
+        .build();
+    front_matter.connect_selected_notify(clone!(
+        #[strong]
+        editor,
+        move |r| {
+            let mode = state::FrontMatter::ALL
+                .get(r.selected() as usize)
+                .copied()
+                .unwrap_or_default();
+            editor.prefs.borrow_mut().front_matter = mode;
+            render::set_front_matter(mode);
+            editor.remember();
+            editor.refresh_preview();
+        }
+    ));
     let preview_group = adw::PreferencesGroup::builder().title("Preview").build();
     preview_group.add(&line_breaks);
     preview_group.add(&smart);
+    preview_group.add(&front_matter);
     // Tags change what is a tag: re-colour the editor, re-render, re-list (or hide) the panel.
     let tags_update = {
         let editor = editor.clone();

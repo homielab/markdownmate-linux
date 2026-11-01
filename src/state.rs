@@ -164,6 +164,41 @@ impl TextWidth {
     }
 }
 
+/// What the preview does with a note's YAML front matter (Preferences ▸ Preview ▸ Front
+/// Matter): a properties table, the block as written, or nothing (`frontmatter`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum FrontMatter {
+    #[default]
+    Table,
+    Source,
+    Hidden,
+}
+
+impl FrontMatter {
+    pub const ALL: [FrontMatter; 3] =
+        [FrontMatter::Table, FrontMatter::Source, FrontMatter::Hidden];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FrontMatter::Table => "table",
+            FrontMatter::Source => "source",
+            FrontMatter::Hidden => "hidden",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            FrontMatter::Table => "Table",
+            FrontMatter::Source => "Source",
+            FrontMatter::Hidden => "Hidden",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<FrontMatter> {
+        FrontMatter::ALL.into_iter().find(|f| f.name() == name)
+    }
+}
+
 /// Line spacing choices in percent of the font's line height (Preferences ▸ Line Spacing).
 pub const LINE_SPACINGS: [u32; 5] = [100, 115, 130, 150, 200];
 
@@ -221,6 +256,8 @@ pub struct Prefs {
     pub hard_breaks: bool,
     /// Preferences ▸ Preview ▸ Smart Punctuation (`smart::set_enabled`).
     pub smart_punctuation: bool,
+    /// Preferences ▸ Preview ▸ Front Matter (`render::set_front_matter`).
+    pub front_matter: FrontMatter,
     /// Underline misspelled words in the editor (`spell`).
     pub spell_check: bool,
     /// Automatically insert matching brackets, backticks and quotes while typing (`autopair`).
@@ -264,6 +301,7 @@ impl Default for Prefs {
             web_images: false,
             hard_breaks: false,
             smart_punctuation: false,
+            front_matter: FrontMatter::Table,
             spell_check: true,
             auto_pair: true,
         }
@@ -380,6 +418,9 @@ impl State {
                     state.prefs.smart_punctuation =
                         v.parse().unwrap_or(state.prefs.smart_punctuation)
                 }
+                Some(("preview_front_matter", v)) => {
+                    state.prefs.front_matter = FrontMatter::from_name(v).unwrap_or_default()
+                }
                 Some(("spell_check", v)) => {
                     state.prefs.spell_check = v.parse().unwrap_or(state.prefs.spell_check)
                 }
@@ -456,7 +497,7 @@ impl State {
             out += &format!("font={font}\n");
         }
         out += &format!(
-            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\ntemplates_folder={}\nattachments_folder={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\nsmart_punctuation={}\nspell_check={}\nauto_pair={}\n",
+            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\ntemplates_folder={}\nattachments_folder={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\nsmart_punctuation={}\npreview_front_matter={}\nspell_check={}\nauto_pair={}\n",
             p.line_numbers,
             p.wrap,
             p.indent,
@@ -478,6 +519,7 @@ impl State {
             p.web_images,
             p.hard_breaks,
             p.smart_punctuation,
+            p.front_matter.name(),
             p.spell_check,
             p.auto_pair
         );
@@ -737,7 +779,7 @@ mod tests {
         };
         let text = state.serialize();
         assert!(text.is_ascii());
-        assert_eq!(text.lines().count(), 30);
+        assert_eq!(text.lines().count(), 31);
         assert_eq!(State::parse(&text), state);
     }
 
@@ -902,6 +944,7 @@ mod tests {
             web_images: true,
             hard_breaks: true,
             smart_punctuation: true,
+            front_matter: FrontMatter::Hidden,
             spell_check: false,
             auto_pair: false,
         };
@@ -924,6 +967,7 @@ mod tests {
         assert_eq!(old.prefs.sidebar_sort, crate::notes::SortOrder::Name);
         assert!(!old.prefs.web_images && !old.prefs.hard_breaks);
         assert!(!old.prefs.smart_punctuation);
+        assert_eq!(old.prefs.front_matter, FrontMatter::Table);
         assert!(old.prefs.spell_check && old.prefs.auto_pair);
         // An empty daily notes folder (the open folder) stays empty.
         assert_eq!(State::parse("daily_folder=\n").prefs.daily_folder, "");
@@ -933,7 +977,7 @@ mod tests {
         );
         // Broken values keep the default.
         let bad = State::parse(
-            "font= \nline_numbers=yes\nwrap=1\nindent=3\nindent=x\ntheme=neon\nstyle=dim\nsync_scroll=no\ntags=0\nignore_colours=off\ntypewriter=on\nformat_bar=yes\nfocus_mode=1\nline_spacing=1.2\nline_spacing=x\ntext_width=huge\nsidebar_sort=size\nweb_images=yes\nhard_breaks=on\nsmart_punctuation=1\nspell_check=off\nauto_pair=invalid\n",
+            "font= \nline_numbers=yes\nwrap=1\nindent=3\nindent=x\ntheme=neon\nstyle=dim\nsync_scroll=no\ntags=0\nignore_colours=off\ntypewriter=on\nformat_bar=yes\nfocus_mode=1\nline_spacing=1.2\nline_spacing=x\ntext_width=huge\nsidebar_sort=size\nweb_images=yes\nhard_breaks=on\nsmart_punctuation=1\npreview_front_matter=yaml\nspell_check=off\nauto_pair=invalid\n",
         );
         assert_eq!(bad.prefs, Prefs::default());
         for t in Theme::ALL {
@@ -942,6 +986,15 @@ mod tests {
         for s in Style::ALL {
             assert_eq!(Style::from_name(s.name()), Some(s));
         }
+        for f in FrontMatter::ALL {
+            assert_eq!(FrontMatter::from_name(f.name()), Some(f));
+        }
+        assert_eq!(
+            State::parse("preview_front_matter=source\n")
+                .prefs
+                .front_matter,
+            FrontMatter::Source
+        );
     }
 
     #[test]

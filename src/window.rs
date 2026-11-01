@@ -36,6 +36,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     // Before the menu is built: its What's New badge starts from this.
     crate::about::start();
     render::set_hard_breaks(session.prefs.hard_breaks);
+    render::set_front_matter(session.prefs.front_matter);
     crate::smart::set_enabled(session.prefs.smart_punctuation);
     // The folder to show is scanned on its own thread while the window is built.
     let scan = match &target {

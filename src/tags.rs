@@ -263,7 +263,7 @@ fn list_key(line: &str, keys: &[&str]) -> Option<usize> {
 
 /// Where the value starting at `from` in `line` ends: at a YAML comment (` #` then a space or
 /// the end), else the line's end.
-fn uncommented(line: &str, from: usize) -> usize {
+pub(crate) fn uncommented(line: &str, from: usize) -> usize {
     let bytes = line.as_bytes();
     (from..line.len())
         .find(|&i| {
@@ -275,7 +275,7 @@ fn uncommented(line: &str, from: usize) -> usize {
 }
 
 /// `line[from..to]` trimmed, without a pair of `"` or `'` around it: its new bounds.
-fn unquoted(line: &str, from: usize, to: usize) -> (usize, usize) {
+pub(crate) fn unquoted(line: &str, from: usize, to: usize) -> (usize, usize) {
     let raw = &line[from..to];
     let from = from + raw.len() - raw.trim_start().len();
     let to = from + raw.trim().len();

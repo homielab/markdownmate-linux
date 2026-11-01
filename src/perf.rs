@@ -124,6 +124,7 @@ fn large_notes() {
             web_images: false,
             hard_breaks: false,
             smart: false,
+            front_matter: crate::state::FrontMatter::Table,
             links: 0,
         };
         let (blocks, _) = best(runs, cold, || incremental::render(None, &md, style, &wiki));

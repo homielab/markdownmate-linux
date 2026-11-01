@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, PoisonError};
 
 use crate::aliases::{self, Aliases};
-use crate::state::{TextWidth, Theme};
+use crate::state::{FrontMatter, TextWidth, Theme};
 use crate::{state, tags};
 
 /// Markdown body as HTML: GFM (tables, task lists, strikethrough, autolinks, footnotes).
@@ -27,9 +27,9 @@ fn to_html(md: &str, wiki: &dyn Fn(&str) -> Option<PathBuf>) -> String {
 
 /// `to_html`, with syntect code highlighting and formulas marked for KaTeX (`math_html`)
 /// only if `rich` (the preview and exports, not Copy as HTML), clickable task checkboxes and
-/// code Copy buttons only if `tasks`, `data-sourcepos="L:C-L:C"` on elements (for scroll
-/// sync) only if `sourcepos`, and `[TOC]` as the table of contents only if `toc` (not in Rich
-/// Text, which keeps it as written).
+/// code Copy buttons and the front matter (as `front_matter()` says) only if `tasks`,
+/// `data-sourcepos="L:C-L:C"` on elements (for scroll sync) only if `sourcepos`, and `[TOC]`
+/// as the table of contents only if `toc` (not in Rich Text, which keeps it as written).
 pub(crate) fn body_html(
     md: &str,
     wiki: &dyn Links,
@@ -47,11 +47,13 @@ pub(crate) fn body_html(
         toc,
         rich,
         crate::smart::enabled(),
+        tasks.then(front_matter),
     )
 }
 
 /// `body_html`, with code highlighting through the preview's cache only if `cached` (see
-/// `Body::cached`) and smart punctuation only if `smart`.
+/// `Body::cached`), smart punctuation only if `smart` and the front matter as `front_matter`
+/// says (None: left out).
 #[allow(clippy::too_many_arguments)]
 fn body_html_with(
     md: &str,
@@ -62,6 +64,7 @@ fn body_html_with(
     toc: bool,
     cached: bool,
     smart: bool,
+    front_matter: Option<FrontMatter>,
 ) -> String {
     let body = Body {
         rich,
@@ -72,6 +75,7 @@ fn body_html_with(
         cached,
         next: false,
         smart,
+        front_matter,
     };
     let rendered = render_body(md, wiki, &body).expect("whole note");
     if !rendered.toc {
@@ -116,6 +120,8 @@ pub(crate) struct Body {
     /// Smart punctuation (`smart`): curly quotes, dashes and ellipses in the text. Heading ids
     /// stay those of the text as written.
     pub smart: bool,
+    /// How the front matter shows before the first block (`frontmatter::html`); None: not at all.
+    pub front_matter: Option<FrontMatter>,
 }
 
 /// `render_body`'s result.
@@ -141,6 +147,7 @@ pub(crate) fn render_body(md: &str, wiki: &dyn Links, body: &Body) -> Option<Ren
         cached,
         next,
         smart,
+        front_matter: front_matter_mode,
     } = *body;
     let mut options = options();
     options.render.sourcepos = sourcepos;
@@ -429,12 +436,10 @@ pub(crate) fn render_body(md: &str, wiki: &dyn Links, body: &Body) -> Option<Ren
         out.push_str(&html[done..]);
         html = out;
     }
-    // Front matter (comrak renders nothing for it) is shown in the preview only, after the
-    // code-block pass above, which counts `<pre`s.
-    if let Some(text) = front_matter.filter(|_| tasks) {
-        let mut pre = String::from("<pre class=\"front-matter\">");
-        comrak::html::escape(&mut pre, text.trim_end()).expect("writing to a String");
-        html.insert_str(0, &format!("{pre}</pre>\n"));
+    // Front matter (comrak renders nothing for it) is shown in the preview and Export Folder
+    // as HTML only, after the code-block pass above, which counts `<pre`s.
+    if let (Some(text), Some(mode)) = (front_matter, front_matter_mode) {
+        html.insert_str(0, &crate::frontmatter::html(&text, mode, sourcepos));
     }
     // Last: an embedded note's HTML holds headings, code blocks and formulas of its own.
     if !embeds.is_empty() {
@@ -770,6 +775,7 @@ fn embedded_note(
         cached: false,
         next: false,
         smart: body.smart,
+        front_matter: None,
     };
     let html = render_body(&md, &nested, &inner)?.html;
     let mut out = String::with_capacity(html.len());
@@ -1387,6 +1393,28 @@ pub(crate) fn set_hard_breaks(on: bool) {
 
 pub(crate) fn hard_breaks() -> bool {
     HARD_BREAKS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Preferences ▸ Preview ▸ Front Matter, as its index in `FrontMatter::ALL`: how the preview
+/// and Export Folder as HTML show a note's front matter (print hides it, other exports leave
+/// it out).
+static FRONT_MATTER: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Sets `FRONT_MATTER`, at launch and when the preference changes (like `set_hard_breaks`).
+pub(crate) fn set_front_matter(mode: FrontMatter) {
+    let index = FrontMatter::ALL
+        .iter()
+        .position(|m| *m == mode)
+        .unwrap_or(0);
+    FRONT_MATTER.store(index as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn front_matter() -> FrontMatter {
+    let index = FRONT_MATTER.load(std::sync::atomic::Ordering::Relaxed);
+    FrontMatter::ALL
+        .get(usize::from(index))
+        .copied()
+        .unwrap_or_default()
 }
 
 /// Markdown options shared by rendering and `code_block_at`.
@@ -2243,8 +2271,9 @@ pub fn export_page(md: &str, title: &str, note_dir: &Path, wiki: &dyn Links) -> 
 
 /// `export_page` for Export Folder as HTML: code is highlighted on the spot, so thousands of
 /// notes rendered (on several threads) neither use nor replace the preview's highlighting cache.
+/// Front matter shows as Preferences ▸ Preview ▸ Front Matter says (`front_matter`).
 pub fn folder_export_page(md: &str, title: &str, note_dir: &Path, wiki: &dyn Links) -> String {
-    let body = portable_body(md, note_dir, wiki, true, true, false);
+    let body = portable_body_with(md, note_dir, wiki, true, true, false, Some(front_matter()));
     standalone_page(title, &body)
 }
 
@@ -2390,7 +2419,8 @@ fn inline_images(body: &str, image: &dyn Fn(&str) -> Option<String>) -> String {
     out
 }
 
-/// `body_html` with wiki links relative to `note_dir` and unresolved ones as plain text.
+/// `body_html` with wiki links relative to `note_dir` and unresolved ones as plain text, no
+/// front matter.
 fn portable_body(
     md: &str,
     note_dir: &Path,
@@ -2398,6 +2428,19 @@ fn portable_body(
     rich: bool,
     toc: bool,
     cached: bool,
+) -> String {
+    portable_body_with(md, note_dir, wiki, rich, toc, cached, None)
+}
+
+/// `portable_body` with the front matter as `front_matter` says.
+fn portable_body_with(
+    md: &str,
+    note_dir: &Path,
+    wiki: &dyn Links,
+    rich: bool,
+    toc: bool,
+    cached: bool,
+    front_matter: Option<FrontMatter>,
 ) -> String {
     let wiki = Portable {
         inner: wiki,
@@ -2412,6 +2455,7 @@ fn portable_body(
         toc,
         cached && rich,
         crate::smart::enabled(),
+        front_matter,
     );
     // A link cannot contain a link, so the next `</a>` closes it; the note's own text is
     // escaped and cannot contain this markup.
@@ -2692,6 +2736,8 @@ a.copy { visibility: hidden; position: absolute; top: 6px; right: 6px; font: 12p
 div.code:hover a.copy { visibility: visible; }
 hr { border: none; border-top: 1px solid rgba(127,127,127,.4); }
 pre.front-matter { font-size: 0.8em; color: var(--hl-comment); background: none; border: 1px solid rgba(127,127,127,.25); padding: 6px 10px; opacity: .8; }
+table.front-matter { margin: 0 0 1.5em; font-size: 0.85em; } .front-matter th, .front-matter td { border: none; border-bottom: 1px solid rgba(127,127,127,.2); padding: 3px 12px 3px 0; vertical-align: top; }
+.front-matter th { text-align: left; white-space: nowrap; font-weight: 500; color: var(--hl-comment); } .front-matter td { white-space: pre-line; } .front-matter td code { white-space: pre; }
 div.mermaid { margin: 1em 0; } div.mermaid > pre { margin: 0; }
 div.mermaid.drawn > pre { display: none; }
 div.mermaid .diagram { overflow-x: auto; text-align: center; }
@@ -2703,7 +2749,7 @@ nav.toc { margin: 0 0 1em; } nav.toc ul ul { margin: 0; }
 div.embed { margin: 0 0 1em; padding: .3em 1em; border-left: 3px solid rgba(127,127,127,.4); }
 p.embed-title { margin: 0 0 .3em; font-size: .8em; opacity: .7; }
 .embed-missing { opacity: .55; }
-@media print { html { background: none; } body { max-width: none; padding: 0; } pre, table, img, blockquote, .alert, div.mermaid, div.embed, .katex-display { break-inside: avoid; } a.copy, pre.front-matter { display: none; } }
+@media print { html { background: none; } body { max-width: none; padding: 0; } pre, table, img, blockquote, .alert, div.mermaid, div.embed, .katex-display { break-inside: avoid; } a.copy, pre.front-matter, table.front-matter { display: none; } }
 ";
 
 /// What the preview does with a navigation to `uri`.
@@ -3524,7 +3570,17 @@ mod tests {
 
     /// The preview's HTML of `md` (no source positions) with smart punctuation on or off.
     fn smart_html(md: &str, smart: bool) -> String {
-        body_html_with(md, &|_: &str| None, true, true, false, true, false, smart)
+        body_html_with(
+            md,
+            &|_: &str| None,
+            true,
+            true,
+            false,
+            true,
+            false,
+            smart,
+            Some(FrontMatter::Table),
+        )
     }
 
     #[test]
@@ -3579,7 +3635,7 @@ mod tests {
                 .contains("&lt;span title=&quot;a--b&quot;&gt;‘x’&lt;/span&gt;")
         );
         assert!(html("<div>\n\"a\" -- b\n</div>").contains("&quot;a&quot; -- b"));
-        assert!(html("---\ntitle: \"a--b\"\n---\n\ntext").contains("title: &quot;a--b&quot;"));
+        assert!(html("---\ntitle: \"a--b\"\n---\n\ntext").contains("<td>a--b</td>"));
         assert!(!html("$a--b$ and $$x...y$$").contains('–'));
         assert!(!html("$a--b$ and $$x...y$$").contains('…'));
         // A tag is a name, not prose.
@@ -3612,7 +3668,17 @@ mod tests {
         let md = "# It's -- \"here\"\n\n\"a\" -- b --- c... \\\"d\\\" `e` https://e.com/a--b's\n";
         assert_eq!(
             smart_html(md, false),
-            body_html_with(md, &|_: &str| None, true, true, false, true, false, false)
+            body_html_with(
+                md,
+                &|_: &str| None,
+                true,
+                true,
+                false,
+                true,
+                false,
+                false,
+                Some(FrontMatter::Table)
+            )
         );
         assert_eq!(smart_html(md, false), to_html(md, &|_: &str| None));
         let off = smart_html(md, false);
@@ -3770,7 +3836,7 @@ mod tests {
         assert!(bare.contains("href=\"https://x.y/?a==b==c\""), "{bare}");
         // Front matter is not Markdown.
         let page = html("---\ntitle: ==x==\n---\n\n# ==Key== idea\n");
-        assert!(page.contains("title: ==x=="), "{page}");
+        assert!(page.contains("<td>==x==</td>"), "{page}");
         assert!(
             page.contains("<h1 id=\"key-idea\"><mark>Key</mark> idea</h1>"),
             "{page}"
@@ -4148,11 +4214,36 @@ mod tests {
     #[test]
     fn front_matter() {
         let md = "---\ntitle: <b>&</b>\ntags: [a]\n---\n# T\n\n- [ ] do\n\n```\nx\n```\n";
+        // The preview's default: the properties table, with its lines for scroll sync.
         let p = page(md, false, Theme::Default, false, &|_: &str| None);
         assert!(
-            p.contains("<pre class=\"front-matter\">---\ntitle: &lt;b&gt;&amp;&lt;/b&gt;\ntags: [a]\n---</pre>"),
+            p.contains("<table class=\"front-matter\" data-line=\"1\" data-sourcepos=\"1:1-4:3\">\n<tbody>\n<tr><th>title</th><td>&lt;b&gt;&amp;&lt;/b&gt;</td></tr>\n<tr><th>tags</th><td>a</td></tr>\n</tbody>\n</table>\n"),
             "{p}"
         );
+        // Source: the block as before.
+        let body = Body {
+            rich: true,
+            tasks: true,
+            sourcepos: true,
+            toc: true,
+            first_line: 1,
+            cached: false,
+            next: false,
+            smart: false,
+            front_matter: Some(FrontMatter::Source),
+        };
+        let wiki = |_: &str| None;
+        let html = render_body(md, &wiki, &body).unwrap().html;
+        assert!(
+            html.starts_with("<pre class=\"front-matter\">---\ntitle: &lt;b&gt;&amp;&lt;/b&gt;\ntags: [a]\n---</pre>\n<h1"),
+            "{html}"
+        );
+        let hidden = Body {
+            front_matter: Some(FrontMatter::Hidden),
+            ..body
+        };
+        let html = render_body(md, &wiki, &hidden).unwrap().html;
+        assert!(html.starts_with("<h1"), "{html}");
         assert!(
             p.contains("<h1 id=\"t\" data-sourcepos=\"5:1-5:3\">T</h1>"),
             "{p}"
@@ -4168,9 +4259,21 @@ mod tests {
             export_page(md, "t", Path::new("/n"), &|_: &str| None),
             html_fragment(md, Path::new("/n"), &|_: &str| None),
         ] {
-            assert!(!out.contains("title:") && !out.contains("<hr"), "{out}");
+            assert!(
+                !out.contains("title:") && !out.contains("front-matter\">"),
+                "{out}"
+            );
+            assert!(!out.contains("<hr"), "{out}");
             assert!(out.contains(">T</h1>"), "{out}");
         }
+        // Export Folder as HTML follows the setting (the default here: a table, no sourcepos).
+        let out = folder_export_page(md, "t", Path::new("/n"), &|_: &str| None);
+        assert!(
+            out.contains(
+                "<table class=\"front-matter\" data-line=\"1\">\n<tbody>\n<tr><th>title</th>"
+            ),
+            "{out}"
+        );
         // `---` not on line 1: no front matter.
         let p = page(
             "x\n---\ny: 1\n---\n",

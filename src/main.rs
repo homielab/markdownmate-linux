@@ -17,6 +17,7 @@ mod find;
 mod focus;
 mod format;
 mod formatbar;
+mod frontmatter;
 mod goto;
 mod history;
 mod hover;

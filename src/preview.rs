@@ -394,6 +394,7 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
             web_images: self.prefs.borrow().web_images,
             hard_breaks: render::hard_breaks(),
             smart: crate::smart::enabled(),
+            front_matter: render::front_matter(),
             links,
         };
         move || incremental::render(previous, &text, style, &wiki)
