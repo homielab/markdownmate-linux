@@ -262,6 +262,8 @@ pub struct Prefs {
     pub spell_check: bool,
     /// Automatically insert matching brackets, backticks and quotes while typing (`autopair`).
     pub auto_pair: bool,
+    /// Preferences ▸ Notes ▸ Open Today's Note at Launch (`Editor::launch_today`).
+    pub open_today_at_launch: bool,
 }
 
 pub const ZOOM_MIN: u32 = 50;
@@ -304,6 +306,7 @@ impl Default for Prefs {
             front_matter: FrontMatter::Table,
             spell_check: true,
             auto_pair: true,
+            open_today_at_launch: false,
         }
     }
 }
@@ -427,6 +430,10 @@ impl State {
                 Some(("auto_pair", v)) => {
                     state.prefs.auto_pair = v.parse().unwrap_or(state.prefs.auto_pair)
                 }
+                Some(("open_today_at_launch", v)) => {
+                    state.prefs.open_today_at_launch =
+                        v.parse().unwrap_or(state.prefs.open_today_at_launch)
+                }
                 // Kept as typed (an empty value is a choice: the open folder).
                 Some(("daily_folder", v)) => state.prefs.daily_folder = v.to_string(),
                 Some(("templates_folder", v)) => state.prefs.templates_folder = v.to_string(),
@@ -497,7 +504,7 @@ impl State {
             out += &format!("font={font}\n");
         }
         out += &format!(
-            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\ntemplates_folder={}\nattachments_folder={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\nsmart_punctuation={}\npreview_front_matter={}\nspell_check={}\nauto_pair={}\n",
+            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\ntemplates_folder={}\nattachments_folder={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\nsmart_punctuation={}\npreview_front_matter={}\nspell_check={}\nauto_pair={}\nopen_today_at_launch={}\n",
             p.line_numbers,
             p.wrap,
             p.indent,
@@ -521,7 +528,8 @@ impl State {
             p.smart_punctuation,
             p.front_matter.name(),
             p.spell_check,
-            p.auto_pair
+            p.auto_pair,
+            p.open_today_at_launch
         );
         out += &format!(
             "find_match_case={}\nfind_whole_word={}\nfind_regex={}\n",
@@ -779,7 +787,7 @@ mod tests {
         };
         let text = state.serialize();
         assert!(text.is_ascii());
-        assert_eq!(text.lines().count(), 31);
+        assert_eq!(text.lines().count(), 32);
         assert_eq!(State::parse(&text), state);
     }
 
@@ -947,6 +955,7 @@ mod tests {
             front_matter: FrontMatter::Hidden,
             spell_check: false,
             auto_pair: false,
+            open_today_at_launch: true,
         };
         let state = State {
             prefs: prefs.clone(),
@@ -969,6 +978,7 @@ mod tests {
         assert!(!old.prefs.smart_punctuation);
         assert_eq!(old.prefs.front_matter, FrontMatter::Table);
         assert!(old.prefs.spell_check && old.prefs.auto_pair);
+        assert!(!old.prefs.open_today_at_launch);
         // An empty daily notes folder (the open folder) stays empty.
         assert_eq!(State::parse("daily_folder=\n").prefs.daily_folder, "");
         assert_eq!(

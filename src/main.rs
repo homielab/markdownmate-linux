@@ -258,13 +258,24 @@ fn main() -> gtk::glib::ExitCode {
             );
         }
     });
-    app.connect_activate(move |app| {
-        build_window(app, None);
-        if let Some(q) = first_quick.take() {
-            run_quick(app, q);
+    // Open Today's Note at Launch: only the first window of this process, restored from the
+    // session (not a file, a link or `--today`).
+    let launched = Rc::new(std::cell::Cell::new(false));
+    app.connect_activate(glib::clone!(
+        #[strong]
+        launched,
+        move |app| {
+            let first = !launched.replace(true);
+            build_window(app, None);
+            if let Some(q) = first_quick.take() {
+                run_quick(app, q);
+            } else if first && let Some(window) = app.active_window() {
+                let _ = WidgetExt::activate_action(&window, "win.launch-today", None);
+            }
         }
-    });
-    app.connect_open(|app, files, _| {
+    ));
+    app.connect_open(move |app, files, _| {
+        launched.set(true);
         // `markdownmate://` links (a second instance forwards them here) go to the open window.
         let links: Vec<_> = files
             .iter()

@@ -169,6 +169,65 @@ pub fn neighbour(folder: &Path, from: Option<&str>, forward: bool) -> Option<Pat
     Some(folder.join(format!("{found}.md")))
 }
 
+/// `now` with its date replaced by `year`-`month`-`day` (weekday recomputed): Daily Note for
+/// Date… fills `{{date}}` / `{{title}}` with the chosen day and `{{time}}` with the time now.
+pub fn components_for_date(
+    now: &crate::templates::Components,
+    year: i32,
+    month: u32,
+    day: u32,
+) -> crate::templates::Components {
+    crate::templates::Components {
+        year,
+        month,
+        day,
+        weekday: crate::templates::weekday_of(year, month, day),
+        ..*now
+    }
+}
+
+/// Daily Note for Date…'s line under the calendar: what Open does with `<date>.md`.
+pub fn date_label(date: &str, exists: bool, has_template: bool) -> String {
+    if exists {
+        format!("Opens {date}.md")
+    } else if has_template {
+        format!("Creates {date}.md from {TEMPLATE_FILE}")
+    } else {
+        format!("Creates {date}.md with the default title")
+    }
+}
+
+/// The days of `year`-`month` that have a daily note among `names` (file names in the daily
+/// notes folder), sorted, for the calendar's marks.
+pub fn marked_days<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+    year: i32,
+    month: u32,
+) -> Vec<u32> {
+    let prefix = format!("{year:04}-{month:02}-");
+    let mut days: Vec<u32> = names
+        .into_iter()
+        .filter_map(date_of_name)
+        .filter_map(|d| d.strip_prefix(prefix.as_str())?.parse().ok())
+        .collect();
+    days.sort_unstable();
+    days.dedup();
+    days
+}
+
+/// The `.md` file names directly in `folder` (for `marked_days`); a missing folder = none.
+pub fn note_names(folder: &Path) -> Vec<String> {
+    fs::read_dir(folder)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.path().is_file())
+                .filter_map(|e| e.file_name().into_string().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,5 +510,53 @@ mod tests {
             date_of_path(root, "Daily", Path::new("/r/Daily/a/2026-11-01.md")),
             None
         );
+    }
+
+    #[test]
+    fn date_for_a_chosen_day() {
+        let root = Path::new("/notes");
+        assert_eq!(
+            path(root, "Daily", &date_string(2026, 2, 3)),
+            Path::new("/notes/Daily/2026-02-03.md")
+        );
+        let now = crate::templates::Components::from_ymd_hms(2026, 11, 2, 9, 5, 0);
+        let c = components_for_date(&now, 2026, 10, 31);
+        assert_eq!(
+            c,
+            crate::templates::Components::from_ymd_hms(2026, 10, 31, 9, 5, 0)
+        );
+        let filled = initial_text_from_template(Some("# {{title}} {{date}} {{time}}"), &c);
+        assert_eq!(filled.text, "# 2026-10-31 2026-10-31 09:05");
+        assert_eq!(
+            initial_text_from_template(None, &c).text,
+            "# 2026-10-31\n\n"
+        );
+    }
+
+    #[test]
+    fn label_says_what_open_does() {
+        assert_eq!(date_label("2026-11-02", true, true), "Opens 2026-11-02.md");
+        assert_eq!(
+            date_label("2026-11-02", false, true),
+            "Creates 2026-11-02.md from Template.md"
+        );
+        assert_eq!(
+            date_label("2026-11-02", false, false),
+            "Creates 2026-11-02.md with the default title"
+        );
+    }
+
+    #[test]
+    fn marks_days_with_notes_in_the_month() {
+        let names = [
+            "2026-11-09.md",
+            "2026-11-02.md",
+            "2026-10-02.md",
+            "2026-11-31.md",
+            "Template.md",
+            "2026-11-05.markdown",
+        ];
+        assert_eq!(marked_days(names, 2026, 11), vec![2, 9]);
+        assert!(marked_days(names, 2025, 11).is_empty());
     }
 }

@@ -131,7 +131,6 @@ impl Components {
 }
 
 /// Calculates the Gregorian weekday: 1 = Monday .. 7 = Sunday (GLib convention).
-#[cfg(test)]
 pub fn weekday_of(year: i32, month: u32, day: u32) -> u32 {
     let t = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
     let mut y = year;

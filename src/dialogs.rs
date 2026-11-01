@@ -438,6 +438,19 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
         .description("Today's Note (Ctrl+D) opens YYYY-MM-DD.md in this folder of the open folder; empty: the open folder itself. A Template.md in this folder sets the initial text for new daily notes, replacing {{date}}, {{time}} and {{title}} with today's date and time (formats like {{date:dddd, MMMM D, YYYY}}). New from Template (main menu) lists the .md notes of the Templates Folder and creates an Untitled note from one, with {{date}}, {{time}}, {{title}} and {{cursor}}. Attachments Folder: images you paste or drop are saved here, next to the note. Start with / for a folder at the top of the open folder.")
         .build();
     notes_group.add(&daily);
+    let open_today = adw::SwitchRow::builder()
+        .title("Open Today's Note at Launch")
+        .active(prefs.open_today_at_launch)
+        .build();
+    open_today.connect_active_notify(clone!(
+        #[strong]
+        editor,
+        move |r| {
+            editor.prefs.borrow_mut().open_today_at_launch = r.is_active();
+            editor.remember();
+        }
+    ));
+    notes_group.add(&open_today);
     notes_group.add(&templates);
     notes_group.add(&attachments);
     let page = adw::PreferencesPage::builder()
@@ -1974,6 +1987,121 @@ fn replace_all(
             rerun();
         }
     });
+}
+
+/// Daily Note for Date… (main menu): a calendar on today with the days that have a daily
+/// note marked, a line saying what Open does, Open (Enter, or a double-click on a day)
+/// opens or creates that day's note like Today's Note; Esc cancels.
+pub(crate) fn daily_note_for_date(editor: &Rc<Editor>) {
+    let Some(root) = editor.root.borrow().clone() else {
+        return;
+    };
+    let folder = crate::daily::folder(&root, &editor.prefs.borrow().daily_folder);
+    let names = crate::daily::note_names(&folder);
+    let has_template = crate::daily::load_template(&folder).is_some();
+    let calendar = gtk::Calendar::new();
+    let label = gtk::Label::builder()
+        .wrap(true)
+        .css_classes(["dim-label"])
+        .build();
+    let date_of = |c: &gtk::Calendar| {
+        let d = c.date();
+        (d.year(), d.month() as u32, d.day_of_month() as u32)
+    };
+    let refresh = {
+        let names = names.clone();
+        let folder = folder.clone();
+        move |c: &gtk::Calendar, label: &gtk::Label| {
+            let (y, m, d) = date_of(c);
+            c.clear_marks();
+            for day in crate::daily::marked_days(names.iter().map(String::as_str), y, m) {
+                c.mark_day(day);
+            }
+            let date = crate::daily::date_string(y, m, d);
+            let exists = folder.join(format!("{date}.md")).is_file();
+            label.set_label(&crate::daily::date_label(&date, exists, has_template));
+        }
+    };
+    refresh(&calendar, &label);
+    let refresh = Rc::new(refresh);
+    calendar.connect_day_selected(clone!(
+        #[strong]
+        refresh,
+        #[weak]
+        label,
+        move |c| refresh(c, &label)
+    ));
+    let open = gtk::Button::builder()
+        .label("Open")
+        .css_classes(["suggested-action"])
+        .build();
+    let cancel = gtk::Button::with_label("Cancel");
+    let header = adw::HeaderBar::builder()
+        .show_start_title_buttons(false)
+        .show_end_title_buttons(false)
+        .build();
+    header.pack_start(&cancel);
+    header.pack_end(&open);
+    let body = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    body.append(&calendar);
+    body.append(&label);
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&header);
+    view.set_content(Some(&body));
+    let dialog = adw::Dialog::builder()
+        .title("Daily Note for Date")
+        .child(&view)
+        .default_widget(&open)
+        .build();
+    let weak = Rc::downgrade(editor);
+    let go = Rc::new(clone!(
+        #[weak]
+        dialog,
+        #[weak]
+        calendar,
+        move || {
+            let (y, m, d) = date_of(&calendar);
+            dialog.close();
+            if let Some(editor) = weak.upgrade()
+                && let Some(now) = editor.now()
+            {
+                editor.open_daily(crate::daily::components_for_date(&now, y, m, d));
+            }
+        }
+    ));
+    open.connect_clicked(clone!(
+        #[strong]
+        go,
+        move |_| go()
+    ));
+    cancel.connect_clicked(clone!(
+        #[weak]
+        dialog,
+        move |_| {
+            dialog.close();
+        }
+    ));
+    // Enter on the focused calendar would only select a day: Open instead.
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    keys.connect_key_pressed(move |_, key, _, _| {
+        if matches!(key, gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter) {
+            go();
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    dialog.add_controller(keys);
+    dialog.present(Some(&editor.window));
+    calendar.grab_focus();
 }
 
 #[cfg(test)]

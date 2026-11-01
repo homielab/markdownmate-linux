@@ -57,6 +57,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             ("Today's Note", "win.todays-note"),
             ("Previous Daily Note", "win.previous-daily-note"),
             ("Next Daily Note", "win.next-daily-note"),
+            ("Daily Note for Date…", "win.daily-note-for-date"),
         ][..],
         &[
             ("Open File…", "win.open-file"),
@@ -564,6 +565,23 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         move |_, _| editor.todays_note()
     ));
     window.add_action(&today_action);
+    // Daily Note for Date…: no shortcut; enabled with a folder (load_folder).
+    let for_date_action = gio::SimpleAction::new("daily-note-for-date", None);
+    for_date_action.set_enabled(false);
+    for_date_action.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| crate::dialogs::daily_note_for_date(&editor)
+    ));
+    window.add_action(&for_date_action);
+    // Open Today's Note at Launch (main.rs, once per launch, only for a restored session).
+    let launch_today = gio::SimpleAction::new("launch-today", None);
+    launch_today.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| editor.launch_today()
+    ));
+    window.add_action(&launch_today);
 
     // `markdownmate --new` / `--today` (main.rs) arrive here as "new" / "today".
     let quick_action = gio::SimpleAction::new("quick", Some(glib::VariantTy::STRING));

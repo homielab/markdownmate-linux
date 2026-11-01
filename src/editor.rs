@@ -1649,6 +1649,7 @@ impl Editor {
             "new-note",
             "new-folder",
             "todays-note",
+            "daily-note-for-date",
             "new-from-template",
             "templates",
             "create-starter-templates",
@@ -2086,7 +2087,7 @@ impl Editor {
 
     /// The local date and time components for templates; None (with a toast) if the clock
     /// cannot be read.
-    fn now(&self) -> Option<templates::Components> {
+    pub(crate) fn now(&self) -> Option<templates::Components> {
         let Ok(now) = glib::DateTime::now_local() else {
             self.toast("Cannot read today's date");
             return None;
@@ -2138,10 +2139,27 @@ impl Editor {
     /// the cursor at the template's first `{{cursor}}`, else at its end. Nothing without an
     /// open folder.
     pub(crate) fn todays_note(self: &Rc<Self>) {
-        let Some(root) = self.root.borrow().clone() else {
+        if let Some(now) = self.now() {
+            self.open_daily(now);
+        }
+    }
+
+    /// Open Today's Note at Launch: Today's Note in a window restored with a folder (also
+    /// while it is still being scanned, once it is shown); off or no folder: nothing.
+    pub(crate) fn launch_today(self: &Rc<Self>) {
+        if !self.prefs.borrow().open_today_at_launch {
             return;
-        };
-        let Some(components) = self.now() else {
+        }
+        if self.root.borrow().is_some() || self.scan_dir.borrow().is_some() {
+            self.quick(crate::cli::Quick::Today);
+        }
+    }
+
+    /// Opens the daily note for `components`' date, creating it (with its folders) from
+    /// `Template.md` filled for that date, or `# YYYY-MM-DD` and a blank line. Shared by
+    /// Today's Note and Daily Note for Date…; nothing without an open folder.
+    pub(crate) fn open_daily(self: &Rc<Self>, components: templates::Components) {
+        let Some(root) = self.root.borrow().clone() else {
             return;
         };
         let date = components.date_string();
@@ -2157,7 +2175,7 @@ impl Editor {
         let created = match crate::daily::create_if_missing(&path, &filled.text) {
             Ok(created) => created,
             Err(e) => {
-                self.toast(&format!("Cannot create today's note: {e}"));
+                self.toast(&format!("Cannot create the daily note: {e}"));
                 return;
             }
         };
