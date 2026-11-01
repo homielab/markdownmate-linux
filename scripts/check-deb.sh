@@ -4,12 +4,13 @@
 #   scripts/check-deb.sh              # the host's architecture (arm64 on Apple Silicon)
 #   ARCH=amd64 scripts/check-deb.sh   # emulated amd64 container
 #   DIST=dist/ppa-deb scripts/check-deb.sh   # another folder (scripts/check-source.sh)
+#   SERIES=resolute scripts/check-deb.sh     # in ubuntu:resolute instead
 set -euo pipefail
 cd "$(dirname "$0")/.."
-# Always explicit: the local ubuntu:24.04 tag may hold the other architecture after an amd64 run.
+# Always explicit: the local ubuntu:<series> tag may hold the other architecture after an amd64 run.
 PLATFORM="--platform=linux/${ARCH:-$(docker version -f '{{.Server.Arch}}')}"
 
-docker run --rm -i $PLATFORM -v "$PWD/${DIST:-dist}":/dist:ro ubuntu:24.04 bash -s <<'IN'
+docker run --rm -i $PLATFORM -v "$PWD/${DIST:-dist}":/dist:ro "ubuntu:${SERIES:-24.04}" bash -s <<'IN'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 deb=$(ls /dist/*_"$(dpkg --print-architecture)".deb)

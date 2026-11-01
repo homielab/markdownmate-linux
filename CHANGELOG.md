@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- The PPA now has builds for Ubuntu 26.04 LTS and 26.10 besides 24.04 LTS, so `sudo apt install markdownmate` works on each of them.
 - Find Unused Attachments… in the main menu (also an Unused Attachments toggle in Find in Folder): lists the files in your `assets` folders that no note links to or shows anymore, with their size, so you can tidy up after removing images from your notes. Enter or a double-click shows the file in Files; MarkdownMate never deletes anything. Same as the macOS app.
 - Two more template placeholders, in New from Template and in Today's Note's `Template.md`: `{{time}}` becomes the time now (`HH:MM`, 24-hour), and `{{cursor}}` is removed with the cursor starting where it was (the first one, if there are several), so a new note opens ready to type in the right place instead of at the end. Same as the macOS app.
 - Find Open Tasks… in the main menu (also an Open Tasks toggle in Find in Folder): lists every unchecked `- [ ]` task across the folder's notes (nested or quoted too, not in code or front matter) with its note and line, so everything still to do is in one list. Each row opens the note at that line. Same as the macOS app.

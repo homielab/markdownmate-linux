@@ -16,6 +16,13 @@ on:
 permissions:
   contents: read
 
+env:
+  # Ubuntu series that get a build, one signed source upload each, version
+  # <X.Y.Z-0ppaN>~<series>1. Only series Launchpad still supports
+  # (https://launchpad.net/ubuntu/+series): drop one when it reaches end of life,
+  # add a new release once Launchpad opens it.
+  SERIES: noble resolute stonking
+
 # one upload per tag at a time
 concurrency:
   group: ppa-${{ inputs.tag || github.ref_name }}
@@ -70,21 +77,31 @@ jobs:
 
       # Launchpad takes each version once; a second upload only earns a
       # "Rejected: already accepted" email. (Uploads still in Launchpad's queue,
-      # which can take hours, don't show up here yet.)
-      - name: Skip if this version is already in the PPA
+      # which can take hours, don't show up here yet.) Series already there are
+      # skipped, so a re-run after adding a series uploads only the new one.
+      - name: Skip the series whose version is already in the PPA
         id: new
         if: steps.gate.outputs.on == 'true'
         run: |
-          n=$(curl -fsS "https://api.launchpad.net/devel/~homielab/+archive/ubuntu/markdownmate?ws.op=getPublishedSources&source_name=markdownmate&version=$DEB_VERSION&exact_match=true" |
-            python3 -c 'import json,sys; print(json.load(sys.stdin)["total_size"])')
-          if [ "$n" = 0 ]; then echo "yes=true" >> "$GITHUB_OUTPUT"
-          else echo "::notice::$DEB_VERSION is already in the PPA; nothing to upload. For a packaging-only fix, bump the suffix in debian/changelog (e.g. -0ppa2)."; fi
+          todo=
+          for s in $SERIES; do
+            v="$DEB_VERSION~${s}1"
+            n=$(curl -fsS "https://api.launchpad.net/devel/~homielab/+archive/ubuntu/markdownmate?ws.op=getPublishedSources&source_name=markdownmate&version=$v&exact_match=true" |
+              python3 -c 'import json,sys; print(json.load(sys.stdin)["total_size"])')
+            if [ "$n" = 0 ]; then todo="$todo $s"
+            else echo "::notice::$v is already in the PPA; skipping $s. For a packaging-only fix, bump the suffix in debian/changelog (e.g. -0ppa2)."; fi
+          done
+          echo "TODO=${todo# }" >> "$GITHUB_ENV"
+          if [ -n "$todo" ]; then echo "yes=true" >> "$GITHUB_OUTPUT"; fi
 
-      - name: Build and sign the source package
+      # One .orig.tar.xz for every series (build-source.sh fails if a run made a different one).
+      - name: Build and sign one source package per series
         if: steps.new.outputs.yes == 'true'
         run: |
-          packaging/build-source.sh -us -uc
-          debsign -p"$RUNNER_TEMP/gpg-ci" -k"$KEYID" dist/ppa/*_source.changes
+          for s in $TODO; do
+            SERIES=$s packaging/build-source.sh -us -uc
+            debsign -p"$RUNNER_TEMP/gpg-ci" -k"$KEYID" "dist/ppa/markdownmate_$DEB_VERSION~${s}1_source.changes"
+          done
 
       # Launchpad silently drops uploads whose signature it can't match to an
       # account, so check against the public key as the keyserver has it.
@@ -102,11 +119,14 @@ jobs:
           path: dist/ppa/
           retention-days: 14
 
+      # One after another: the first upload brings the .orig.tar.xz, the next ones carry the same file.
       - name: Upload to the PPA
         if: steps.new.outputs.yes == 'true'
         run: |
-          dput "$PPA" dist/ppa/*_source.changes
-          echo "::notice::Uploaded $DEB_VERSION. Launchpad emails contact@homielab.com when it's accepted (minutes, or hours when busy), then builds it."
+          for s in $TODO; do
+            dput "$PPA" "dist/ppa/markdownmate_$DEB_VERSION~${s}1_source.changes"
+            echo "::notice::Uploaded $DEB_VERSION~${s}1 for $s. Launchpad emails contact@homielab.com when it's accepted (minutes, or hours when busy), then builds it."
+          done
 
       - name: Remove the key material
         if: always()
