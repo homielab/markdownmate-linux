@@ -466,6 +466,62 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
             editor.remember();
         }
     ));
+    // Image data pasted from the clipboard only (`images::convert`); dropped files, GIF and SVG
+    // are stored as they are.
+    let pasted_format = adw::ComboRow::builder()
+        .title("Pasted Images")
+        .subtitle("Format of images pasted from the clipboard; dropped files, GIF and SVG stay as they are")
+        .model(&gtk::StringList::new(
+            &crate::images::PastedFormat::ALL.map(crate::images::PastedFormat::title),
+        ))
+        .selected(
+            crate::images::PastedFormat::ALL
+                .iter()
+                .position(|f| *f == prefs.pasted_image_format)
+                .unwrap_or(0) as u32,
+        )
+        .build();
+    pasted_format.connect_selected_notify(clone!(
+        #[strong]
+        editor,
+        move |r| {
+            editor.prefs.borrow_mut().pasted_image_format = crate::images::PastedFormat::ALL
+                .get(r.selected() as usize)
+                .copied()
+                .unwrap_or_default();
+            editor.remember();
+        }
+    ));
+    let width_titles: Vec<String> = crate::images::MAX_WIDTHS
+        .iter()
+        .map(|w| match w {
+            0 => "Off".to_string(),
+            w => format!("{w} px"),
+        })
+        .collect();
+    let width_titles: Vec<&str> = width_titles.iter().map(String::as_str).collect();
+    let pasted_width = adw::ComboRow::builder()
+        .title("Scale Down To")
+        .subtitle("Wider pasted images are saved at this width, keeping their proportions")
+        .model(&gtk::StringList::new(&width_titles))
+        .selected(
+            crate::images::MAX_WIDTHS
+                .iter()
+                .position(|w| *w == prefs.pasted_image_max_width)
+                .unwrap_or(0) as u32,
+        )
+        .build();
+    pasted_width.connect_selected_notify(clone!(
+        #[strong]
+        editor,
+        move |r| {
+            editor.prefs.borrow_mut().pasted_image_max_width = crate::images::MAX_WIDTHS
+                .get(r.selected() as usize)
+                .copied()
+                .unwrap_or(0);
+            editor.remember();
+        }
+    ));
     let notes_group = adw::PreferencesGroup::builder()
         .title("Notes")
         .description("Today's Note (Ctrl+D) opens YYYY-MM-DD.md in this folder of the open folder; empty: the open folder itself. Daily Note Name sets another name from the date tokens YYYY YY MMMM MMM MM M DD D dddd ddd, with [text] kept as written and / for subfolders: YYYY/MM/YYYY-MM-DD keeps 2026-11-02.md in 2026/11. A Template.md in this folder sets the initial text for new daily notes, replacing {{date}}, {{time}} and {{title}} (the file name) with today's date and time (formats like {{date:dddd, MMMM D, YYYY}}). New from Template (main menu) lists the .md notes of the Templates Folder and creates an Untitled note from one, with {{date}}, {{time}}, {{title}} and {{cursor}}. Attachments Folder: images you paste or drop are saved here, next to the note. Start with / for a folder at the top of the open folder.")
@@ -488,6 +544,8 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
     notes_group.add(&open_today);
     notes_group.add(&templates);
     notes_group.add(&attachments);
+    notes_group.add(&pasted_format);
+    notes_group.add(&pasted_width);
     let page = adw::PreferencesPage::builder()
         .title("General")
         .icon_name("preferences-system-symbolic")

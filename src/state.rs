@@ -247,6 +247,10 @@ pub struct Prefs {
     /// Pasted / dropped images' folder (`images::setting`): a name next to the note, `/name` at
     /// the open folder's root; kept as typed.
     pub attachments_folder: String,
+    /// Preferences ▸ Notes ▸ Pasted Images (`images::convert`).
+    pub pasted_image_format: crate::images::PastedFormat,
+    /// Preferences ▸ Notes ▸ Scale Down To: one of `images::MAX_WIDTHS`, 0 = Off.
+    pub pasted_image_max_width: u32,
     /// Line height in percent of the font's (`LINE_SPACINGS`); 100 = the font's own.
     pub line_spacing: u32,
     pub text_width: TextWidth,
@@ -300,6 +304,8 @@ impl Default for Prefs {
             daily_name: crate::dailyname::DEFAULT.to_string(),
             templates_folder: crate::templates::DEFAULT_FOLDER.to_string(),
             attachments_folder: crate::images::ASSETS.to_string(),
+            pasted_image_format: crate::images::PastedFormat::Keep,
+            pasted_image_max_width: 0,
             line_spacing: 100,
             text_width: TextWidth::Medium,
             sidebar_sort: crate::notes::SortOrder::Name,
@@ -447,6 +453,14 @@ impl State {
                 }
                 Some(("templates_folder", v)) => state.prefs.templates_folder = v.to_string(),
                 Some(("attachments_folder", v)) => state.prefs.attachments_folder = v.to_string(),
+                Some(("pasted_image_format", v)) => {
+                    state.prefs.pasted_image_format =
+                        crate::images::PastedFormat::from_name(v).unwrap_or_default()
+                }
+                Some(("pasted_image_max_width", v)) => {
+                    state.prefs.pasted_image_max_width =
+                        crate::images::parse_max_width(v).unwrap_or(0)
+                }
                 Some(("indent", v @ ("2" | "4"))) => state.prefs.indent = v.parse().unwrap_or(4),
                 Some(("zoom", v)) => {
                     if let Ok(z) = v.parse::<u32>() {
@@ -513,7 +527,7 @@ impl State {
             out += &format!("font={font}\n");
         }
         out += &format!(
-            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\ndaily_name={}\ntemplates_folder={}\nattachments_folder={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\nsmart_punctuation={}\npreview_front_matter={}\nspell_check={}\nauto_pair={}\nopen_today_at_launch={}\n",
+            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\ndaily_name={}\ntemplates_folder={}\nattachments_folder={}\npasted_image_format={}\npasted_image_max_width={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\nsmart_punctuation={}\npreview_front_matter={}\nspell_check={}\nauto_pair={}\nopen_today_at_launch={}\n",
             p.line_numbers,
             p.wrap,
             p.indent,
@@ -530,6 +544,8 @@ impl State {
             p.daily_name.replace('\n', " "),
             p.templates_folder.replace('\n', " "),
             p.attachments_folder.replace('\n', " "),
+            p.pasted_image_format.name(),
+            p.pasted_image_max_width,
             line_spacing_name(p.line_spacing),
             p.text_width.name(),
             p.sidebar_sort.name(),
@@ -797,7 +813,7 @@ mod tests {
         };
         let text = state.serialize();
         assert!(text.is_ascii());
-        assert_eq!(text.lines().count(), 33);
+        assert_eq!(text.lines().count(), 35);
         assert_eq!(State::parse(&text), state);
     }
 
@@ -957,6 +973,8 @@ mod tests {
             daily_name: "YYYY/MM/YYYY-MM-DD dddd".into(),
             templates_folder: "Notes/My Templates".into(),
             attachments_folder: "/attachments".into(),
+            pasted_image_format: crate::images::PastedFormat::Jpeg,
+            pasted_image_max_width: 1600,
             line_spacing: 115,
             text_width: TextWidth::Wide,
             sidebar_sort: crate::notes::SortOrder::Modified,
@@ -983,6 +1001,19 @@ mod tests {
         assert_eq!(old.prefs.daily_name, "YYYY-MM-DD");
         assert_eq!(old.prefs.templates_folder, "Templates");
         assert_eq!(old.prefs.attachments_folder, "assets");
+        assert_eq!(
+            old.prefs.pasted_image_format,
+            crate::images::PastedFormat::Keep
+        );
+        assert_eq!(old.prefs.pasted_image_max_width, 0);
+        let odd = State::parse("pasted_image_format=webp\npasted_image_max_width=1000\n");
+        assert_eq!(
+            (
+                odd.prefs.pasted_image_format,
+                odd.prefs.pasted_image_max_width
+            ),
+            (crate::images::PastedFormat::Keep, 0)
+        );
         assert_eq!(old.prefs.line_spacing, 100);
         assert_eq!(old.prefs.text_width, TextWidth::Medium);
         assert_eq!(old.prefs.sidebar_sort, crate::notes::SortOrder::Name);

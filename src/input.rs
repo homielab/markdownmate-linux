@@ -536,8 +536,10 @@ pub(crate) fn line_command(view: &gtk::TextView, command: LineCommand) -> bool {
 }
 
 /// Paste (clipboard with an image and no plain text) and drop (image files) put images into
-/// the open note's `assets/` and insert a link (`images.rs`); other files and folders dropped
-/// from Files or the sidebar are linked where they are (`insert_dropped`). Text pasted over a one-line
+/// the open note's `assets/` and insert a link (`images.rs`; pasted image data follows
+/// Preferences ▸ Notes ▸ Pasted Images / Scale Down To, dropped files are copied as they are);
+/// other files and folders dropped from Files or the sidebar are linked where they are
+/// (`insert_dropped`). Text pasted over a one-line
 /// selection outside code: a URL makes `[text](url)` (`format::paste_link`). Rich text
 /// (`text/html` without an image) outside code becomes Markdown (`paste.rs`). Anything else:
 /// GTK's own handling.
@@ -561,14 +563,44 @@ pub(crate) fn image_input(view: &sourceview5::View, editor: &Rc<Editor>) {
                 return;
             }
             view.stop_signal_emission_by_name("paste-clipboard");
+            let (format, max_width) = {
+                let prefs = editor.prefs.borrow();
+                (prefs.pasted_image_format, prefs.pasted_image_max_width)
+            };
+            // With the settings on, a GIF or SVG on the clipboard is stored as it is.
+            let raw = (!images::changes_nothing(format, max_width))
+                .then(|| {
+                    formats
+                        .mime_types()
+                        .iter()
+                        .find_map(|m| images::passthrough(m).map(|ext| (m.to_string(), ext)))
+                })
+                .flatten();
             glib::spawn_future_local(async move {
-                match clipboard.read_texture_future().await {
-                    Ok(Some(texture)) => editor.insert_image(|dest| {
-                        images::store(dest, "image.png", |p| {
-                            std::fs::write(p, texture.save_to_png_bytes())
-                        })
+                if let Some((mime, ext)) = raw {
+                    match read_clipboard_bytes(&clipboard, &mime).await {
+                        Ok(bytes) => editor.insert_image(|dest| {
+                            images::store(dest, &format!("image.{ext}"), |p| {
+                                std::fs::write(p, &bytes)
+                            })
+                        }),
+                        Err(_) => editor.toast("Cannot read the image from the clipboard"),
+                    }
+                    return;
+                }
+                let png = match clipboard.read_texture_future().await {
+                    Ok(Some(texture)) => texture.save_to_png_bytes().to_vec(),
+                    _ => return editor.toast("Cannot read the image from the clipboard"),
+                };
+                // Decoding, scaling and encoding a large screenshot: off the main thread.
+                let converted =
+                    gtk::gio::spawn_blocking(move || images::convert(png, format, max_width)).await;
+                match converted {
+                    Ok(Ok((bytes, ext))) => editor.insert_image(|dest| {
+                        images::store(dest, &format!("image.{ext}"), |p| std::fs::write(p, &bytes))
                     }),
-                    _ => editor.toast("Cannot read the image from the clipboard"),
+                    Ok(Err(e)) => editor.toast(&format!("Cannot add image: {e}")),
+                    Err(_) => editor.toast("Cannot add image"),
                 }
             });
         }
@@ -634,6 +666,25 @@ pub(crate) fn image_input(view: &sourceview5::View, editor: &Rc<Editor>) {
         }
     ));
     view.add_controller(entry);
+}
+
+/// The clipboard's data of type `mime`, read whole.
+async fn read_clipboard_bytes(
+    clipboard: &gtk::gdk::Clipboard,
+    mime: &str,
+) -> Result<glib::Bytes, glib::Error> {
+    let (stream, _) = clipboard
+        .read_future(&[mime], glib::Priority::DEFAULT)
+        .await?;
+    let out = gtk::gio::MemoryOutputStream::new_resizable();
+    out.splice_future(
+        &stream,
+        gtk::gio::OutputStreamSpliceFlags::CLOSE_SOURCE
+            | gtk::gio::OutputStreamSpliceFlags::CLOSE_TARGET,
+        glib::Priority::DEFAULT,
+    )
+    .await?;
+    Ok(out.steal_as_bytes())
 }
 
 /// Puts the cursor where a drop at (x, y) of the editor `widget` lands: past the end of the

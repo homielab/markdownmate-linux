@@ -1,7 +1,8 @@
 //! Pasted / dropped images: stored in the attachments folder (`Prefs::attachments_folder`,
 //! default `assets/` next to the note; `/name` = at the open folder's root), linked relative
-//! to the note.
-//! Pure Rust (no GTK) so it is testable headless.
+//! to the note. Pasted image data can be converted to PNG / JPEG and scaled down
+//! (`PastedFormat`, `MAX_WIDTHS`, `convert`).
+//! No display needed (gdk-pixbuf only), so it is testable headless.
 
 use std::fs;
 use std::io;
@@ -173,6 +174,130 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// Preferences ▸ Notes ▸ Pasted Images: the format image data pasted from the clipboard is
+/// saved in. Keep = as before (PNG, the format GTK gives the clipboard image in).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PastedFormat {
+    #[default]
+    Keep,
+    Png,
+    Jpeg,
+}
+
+impl PastedFormat {
+    pub const ALL: [PastedFormat; 3] = [PastedFormat::Keep, PastedFormat::Png, PastedFormat::Jpeg];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PastedFormat::Keep => "keep",
+            PastedFormat::Png => "png",
+            PastedFormat::Jpeg => "jpeg",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            PastedFormat::Keep => "Keep Format",
+            PastedFormat::Png => "PNG",
+            PastedFormat::Jpeg => "JPEG",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<PastedFormat> {
+        PastedFormat::ALL.into_iter().find(|f| f.name() == name)
+    }
+
+    /// The extension of the file written.
+    pub fn extension(self) -> &'static str {
+        match self {
+            PastedFormat::Keep | PastedFormat::Png => "png",
+            PastedFormat::Jpeg => "jpg",
+        }
+    }
+}
+
+/// Preferences ▸ Notes ▸ Scale Down To: the widest a pasted image is saved, in pixels; 0 = Off.
+pub const MAX_WIDTHS: [u32; 4] = [0, 1200, 1600, 2000];
+
+/// JPEG quality of converted pasted images (gdk-pixbuf's 0–100 scale).
+const JPEG_QUALITY: &str = "85";
+
+/// `pasted_image_max_width=` of the state file: one of `MAX_WIDTHS`.
+pub fn parse_max_width(v: &str) -> Option<u32> {
+    let w = v.trim().parse().ok()?;
+    MAX_WIDTHS.contains(&w).then_some(w)
+}
+
+/// Whether the pasted image settings leave pasted images as before (Keep, Off).
+pub fn changes_nothing(format: PastedFormat, max_width: u32) -> bool {
+    format == PastedFormat::Keep && max_width == 0
+}
+
+/// The size a `w`×`h` image is saved at with `max_width` (0 = Off): shrunk to `max_width`
+/// wide with its aspect ratio (height rounded, at least 1), never enlarged.
+pub fn target_size(w: u32, h: u32, max_width: u32) -> (u32, u32) {
+    if max_width == 0 || w <= max_width {
+        return (w, h);
+    }
+    let h = (u64::from(h) * u64::from(max_width) + u64::from(w) / 2) / u64::from(w);
+    (max_width, (h as u32).max(1))
+}
+
+/// The extension a clipboard image of type `mime` is stored with as it is, never converted
+/// or scaled: GIF (it may be animated) and SVG (a drawing, not pixels). None: other types.
+pub fn passthrough(mime: &str) -> Option<&'static str> {
+    let mime = mime.split(';').next().unwrap_or("").trim();
+    if mime.eq_ignore_ascii_case("image/gif") {
+        Some("gif")
+    } else if mime.eq_ignore_ascii_case("image/svg+xml") || mime.eq_ignore_ascii_case("image/svg") {
+        Some("svg")
+    } else {
+        None
+    }
+}
+
+/// Pasted image data (`png`: PNG bytes, as GTK gives the clipboard image) in `format`, at most
+/// `max_width` wide (`target_size`, bilinear): the bytes and the extension to write. JPEG is
+/// written at quality 85 with transparency flattened on white. PNG that needs no scaling is
+/// returned as it is, without decoding.
+pub fn convert(
+    png: Vec<u8>,
+    format: PastedFormat,
+    max_width: u32,
+) -> Result<(Vec<u8>, &'static str), gtk::glib::Error> {
+    use gtk::gdk_pixbuf::{InterpType, PixbufLoader, prelude::*};
+    let ext = format.extension();
+    if format != PastedFormat::Jpeg && max_width == 0 {
+        return Ok((png, ext));
+    }
+    let failed = || gtk::glib::Error::new(gtk::glib::FileError::Failed, "cannot convert the image");
+    let loader = PixbufLoader::with_type("png")?;
+    loader.write(&png)?;
+    loader.close()?;
+    let pixbuf = loader.pixbuf().ok_or_else(failed)?;
+    let (w, h) = (pixbuf.width() as u32, pixbuf.height() as u32);
+    let (tw, th) = target_size(w, h, max_width);
+    let scaled = (tw, th) != (w, h);
+    if format != PastedFormat::Jpeg && !scaled {
+        return Ok((png, ext));
+    }
+    let (tw, th) = (tw as i32, th as i32);
+    let out = if format == PastedFormat::Jpeg && pixbuf.has_alpha() {
+        // A new pixbuf without alpha, blended over white.
+        pixbuf.composite_color_simple(tw, th, InterpType::Bilinear, 255, 8, 0xFFFFFF, 0xFFFFFF)
+    } else if scaled {
+        pixbuf.scale_simple(tw, th, InterpType::Bilinear)
+    } else {
+        Some(pixbuf)
+    }
+    .ok_or_else(failed)?;
+    let bytes = match format {
+        PastedFormat::Jpeg => out.save_to_bufferv("jpeg", &[("quality", JPEG_QUALITY)])?,
+        _ => out.save_to_bufferv("png", &[])?,
+    };
+    Ok((bytes, ext))
+}
+
 fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -328,6 +453,103 @@ mod tests {
         // Copy failure (source gone): error, no empty file left.
         assert!(store_file(&dest(&note, None, ""), &t.0.join("gone.png")).is_err());
         assert!(!t.0.join("sub/assets/gone.png").exists());
+    }
+
+    #[test]
+    fn pasted_images_shrink_only_and_keep_the_aspect_ratio() {
+        assert_eq!(target_size(3000, 2000, 1600), (1600, 1067));
+        assert_eq!(target_size(800, 600, 1600), (800, 600));
+        assert_eq!(target_size(1600, 900, 1600), (1600, 900));
+        assert_eq!(target_size(3000, 2000, 0), (3000, 2000));
+        assert_eq!(target_size(4000, 1, 1200), (1200, 1));
+        assert_eq!(target_size(2560, 1600, 2000), (2000, 1250));
+    }
+
+    #[test]
+    fn pasted_image_settings() {
+        let ext: Vec<_> = PastedFormat::ALL.map(PastedFormat::extension).into();
+        assert_eq!(ext, ["png", "png", "jpg"]);
+        for f in PastedFormat::ALL {
+            assert_eq!(PastedFormat::from_name(f.name()), Some(f));
+        }
+        assert_eq!(PastedFormat::from_name("webp"), None);
+        assert_eq!(PastedFormat::default(), PastedFormat::Keep);
+        assert_eq!(parse_max_width("1600"), Some(1600));
+        assert_eq!(parse_max_width("0"), Some(0));
+        assert_eq!(parse_max_width("1000"), None);
+        assert_eq!(parse_max_width("x"), None);
+        assert!(changes_nothing(PastedFormat::Keep, 0));
+        assert!(!changes_nothing(PastedFormat::Png, 0));
+        assert!(!changes_nothing(PastedFormat::Keep, 1200));
+    }
+
+    #[test]
+    fn gif_and_svg_pass_through() {
+        assert_eq!(passthrough("image/gif"), Some("gif"));
+        assert_eq!(passthrough("IMAGE/GIF"), Some("gif"));
+        assert_eq!(passthrough("image/svg+xml"), Some("svg"));
+        assert_eq!(passthrough("image/svg+xml;charset=utf-8"), Some("svg"));
+        for other in [
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "image/bmp",
+            "text/plain",
+        ] {
+            assert_eq!(passthrough(other), None, "{other}");
+        }
+    }
+
+    fn png(w: i32, h: i32, alpha: bool, rgba: u32) -> Vec<u8> {
+        let p =
+            gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, alpha, 8, w, h).unwrap();
+        p.fill(rgba);
+        p.save_to_bufferv("png", &[]).unwrap()
+    }
+
+    fn decode(bytes: &[u8]) -> gtk::gdk_pixbuf::Pixbuf {
+        use gtk::gdk_pixbuf::prelude::*;
+        let loader = gtk::gdk_pixbuf::PixbufLoader::new();
+        loader.write(bytes).unwrap();
+        loader.close().unwrap();
+        loader.pixbuf().unwrap()
+    }
+
+    #[test]
+    fn pasted_images_are_converted_and_scaled() {
+        let big = png(3000, 2000, false, 0x3366_99FF);
+        // Keep / PNG without scaling: the bytes as they are.
+        assert_eq!(
+            convert(big.clone(), PastedFormat::Keep, 0).unwrap(),
+            (big.clone(), "png")
+        );
+        assert_eq!(
+            convert(big.clone(), PastedFormat::Png, 0).unwrap(),
+            (big.clone(), "png")
+        );
+        let small = png(800, 600, true, 0x0000_0000);
+        assert_eq!(
+            convert(small.clone(), PastedFormat::Png, 1600).unwrap().0,
+            small
+        );
+
+        let (bytes, ext) = convert(big.clone(), PastedFormat::Jpeg, 1600).unwrap();
+        assert_eq!(ext, "jpg");
+        assert!(bytes.starts_with(&[0xFF, 0xD8]), "JPEG data");
+        let p = decode(&bytes);
+        assert_eq!((p.width(), p.height()), (1600, 1067));
+
+        let (bytes, ext) = convert(big, PastedFormat::Keep, 2000).unwrap();
+        assert_eq!(ext, "png");
+        let p = decode(&bytes);
+        assert_eq!((p.width(), p.height()), (2000, 1333));
+
+        // Transparent → white in JPEG, not enlarged.
+        let (bytes, _) = convert(small, PastedFormat::Jpeg, 1600).unwrap();
+        let p = decode(&bytes);
+        assert_eq!((p.width(), p.height(), p.has_alpha()), (800, 600, false));
+        let px = p.read_pixel_bytes();
+        assert!(px[..3].iter().all(|&c| c > 245), "white: {:?}", &px[..3]);
     }
 
     #[test]
