@@ -240,6 +240,8 @@ pub struct Prefs {
     /// Today's Note's folder, relative to the open folder (`daily::folder`); empty = the open
     /// folder itself.
     pub daily_folder: String,
+    /// The daily note name (`dailyname::Pattern`, `/` for subfolders); always a valid pattern.
+    pub daily_name: String,
     /// New from Template's folder, relative to the open folder (the `daily_folder` rule).
     pub templates_folder: String,
     /// Pasted / dropped images' folder (`images::setting`): a name next to the note, `/name` at
@@ -295,6 +297,7 @@ impl Default for Prefs {
             format_bar: false,
             focus_mode: false,
             daily_folder: crate::daily::DEFAULT_FOLDER.to_string(),
+            daily_name: crate::dailyname::DEFAULT.to_string(),
             templates_folder: crate::templates::DEFAULT_FOLDER.to_string(),
             attachments_folder: crate::images::ASSETS.to_string(),
             line_spacing: 100,
@@ -436,6 +439,12 @@ impl State {
                 }
                 // Kept as typed (an empty value is a choice: the open folder).
                 Some(("daily_folder", v)) => state.prefs.daily_folder = v.to_string(),
+                // Preferences stores only valid patterns; a hand-edited bad one keeps the default.
+                Some(("daily_name", v)) => {
+                    if let Ok(p) = crate::dailyname::Pattern::new(v) {
+                        state.prefs.daily_name = p.text().to_string();
+                    }
+                }
                 Some(("templates_folder", v)) => state.prefs.templates_folder = v.to_string(),
                 Some(("attachments_folder", v)) => state.prefs.attachments_folder = v.to_string(),
                 Some(("indent", v @ ("2" | "4"))) => state.prefs.indent = v.parse().unwrap_or(4),
@@ -504,7 +513,7 @@ impl State {
             out += &format!("font={font}\n");
         }
         out += &format!(
-            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\ntemplates_folder={}\nattachments_folder={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\nsmart_punctuation={}\npreview_front_matter={}\nspell_check={}\nauto_pair={}\nopen_today_at_launch={}\n",
+            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\ndaily_name={}\ntemplates_folder={}\nattachments_folder={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\nsmart_punctuation={}\npreview_front_matter={}\nspell_check={}\nauto_pair={}\nopen_today_at_launch={}\n",
             p.line_numbers,
             p.wrap,
             p.indent,
@@ -518,6 +527,7 @@ impl State {
             p.format_bar,
             p.focus_mode,
             p.daily_folder.replace('\n', " "),
+            p.daily_name.replace('\n', " "),
             p.templates_folder.replace('\n', " "),
             p.attachments_folder.replace('\n', " "),
             line_spacing_name(p.line_spacing),
@@ -787,7 +797,7 @@ mod tests {
         };
         let text = state.serialize();
         assert!(text.is_ascii());
-        assert_eq!(text.lines().count(), 32);
+        assert_eq!(text.lines().count(), 33);
         assert_eq!(State::parse(&text), state);
     }
 
@@ -944,6 +954,7 @@ mod tests {
             format_bar: true,
             focus_mode: true,
             daily_folder: " Journal/2026 ".into(),
+            daily_name: "YYYY/MM/YYYY-MM-DD dddd".into(),
             templates_folder: "Notes/My Templates".into(),
             attachments_folder: "/attachments".into(),
             line_spacing: 115,
@@ -969,6 +980,7 @@ mod tests {
         assert!(old.prefs.sync_scroll && old.prefs.tags && old.prefs.ignore_colours);
         assert!(!old.prefs.typewriter && !old.prefs.format_bar && !old.prefs.focus_mode);
         assert_eq!(old.prefs.daily_folder, "Daily");
+        assert_eq!(old.prefs.daily_name, "YYYY-MM-DD");
         assert_eq!(old.prefs.templates_folder, "Templates");
         assert_eq!(old.prefs.attachments_folder, "assets");
         assert_eq!(old.prefs.line_spacing, 100);
@@ -979,6 +991,15 @@ mod tests {
         assert_eq!(old.prefs.front_matter, FrontMatter::Table);
         assert!(old.prefs.spell_check && old.prefs.auto_pair);
         assert!(!old.prefs.open_today_at_launch);
+        // An invalid daily note name keeps the default.
+        assert_eq!(
+            State::parse("daily_name=YYYY-MM\n").prefs.daily_name,
+            "YYYY-MM-DD"
+        );
+        assert_eq!(
+            State::parse("daily_name= YYYY/MM/DD \n").prefs.daily_name,
+            "YYYY/MM/DD"
+        );
         // An empty daily notes folder (the open folder) stays empty.
         assert_eq!(State::parse("daily_folder=\n").prefs.daily_folder, "");
         assert_eq!(

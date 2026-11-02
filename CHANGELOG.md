@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Daily Note Name in Preferences ▸ Notes: name daily notes the way your vault already does, such as `YYYY/MM/YYYY-MM-DD` for `Daily/2026/11/2026-11-02.md` or `YYYY-MM-DD dddd` for `2026-11-02 Monday.md` (`YYYY-MM-DD` by default). Today's Note, Daily Note for Date…, Previous / Next Daily Note and Open Today's Note at Launch find and create notes with that name, with `Template.md` kept at the top of the daily notes folder. Same as the macOS app.
 - Preview polish: a folded callout you opened or closed stays that way while you type elsewhere in the note; Find in Preview finds text inside closed callouts and opens them; tag chips look and act clickable only when a folder is open; Ctrl+hover over links and tags stays smooth in very large notes.
 - Daily Note for Date… in the main menu: pick a day on a calendar that marks the days with a daily note, and open its note or create it from Template.md with that date filled in, instead of scrolling the Daily folder. Same as the macOS app.
 - Preferences ▸ Notes ▸ Open Today's Note at Launch (off by default): starting MarkdownMate with your last folder opens today's daily note right away.

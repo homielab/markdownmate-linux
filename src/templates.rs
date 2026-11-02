@@ -101,8 +101,22 @@ pub struct Components {
 
 impl Components {
     /// Date as `YYYY-MM-DD`.
+    #[cfg(test)]
     pub fn date_string(&self) -> String {
         crate::daily::date_string(self.year, self.month, self.day)
+    }
+
+    /// Midnight of `year`-`month`-`day`, with its weekday.
+    pub fn from_ymd(year: i32, month: u32, day: u32) -> Self {
+        Self {
+            year,
+            month,
+            day,
+            weekday: weekday_of(year, month, day),
+            hour: 0,
+            minute: 0,
+            second: 0,
+        }
     }
 }
 
@@ -261,7 +275,7 @@ pub fn format(pattern: &str, components: &Components) -> String {
     result
 }
 
-fn month_name(month: u32) -> &'static str {
+pub(crate) fn month_name(month: u32) -> &'static str {
     match month {
         1 => "January",
         2 => "February",
@@ -279,7 +293,7 @@ fn month_name(month: u32) -> &'static str {
     }
 }
 
-fn month_abbr(month: u32) -> &'static str {
+pub(crate) fn month_abbr(month: u32) -> &'static str {
     match month {
         1 => "Jan",
         2 => "Feb",
@@ -297,7 +311,7 @@ fn month_abbr(month: u32) -> &'static str {
     }
 }
 
-fn weekday_name(weekday: u32) -> &'static str {
+pub(crate) fn weekday_name(weekday: u32) -> &'static str {
     match weekday {
         1 => "Monday",
         2 => "Tuesday",
@@ -310,7 +324,7 @@ fn weekday_name(weekday: u32) -> &'static str {
     }
 }
 
-fn weekday_abbr(weekday: u32) -> &'static str {
+pub(crate) fn weekday_abbr(weekday: u32) -> &'static str {
     match weekday {
         1 => "Mon",
         2 => "Tue",

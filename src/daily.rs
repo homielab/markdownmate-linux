@@ -1,7 +1,8 @@
-//! Today's Note (Ctrl+D): `<open folder>/<daily notes folder>/YYYY-MM-DD.md` for the local
-//! date, created from `Template.md` in that folder (filled like New from Template:
-//! `{{date}}`, `{{time}}`, `{{title}}`, `{{cursor}}`), or `# YYYY-MM-DD` and a blank line when
-//! missing or unreadable. The daily notes folder is a
+//! Today's Note (Ctrl+D): `<open folder>/<daily notes folder>/<daily note name>.md` for the
+//! local date (the name from `dailyname::Pattern`, `YYYY-MM-DD` by default, may hold
+//! subfolders), created from `Template.md` at the daily notes folder's root (filled like New
+//! from Template: `{{date}}`, `{{time}}`, `{{title}}` = the file name, `{{cursor}}`), or
+//! `# <file name>` and a blank line when missing or unreadable. The daily notes folder is a
 //! preference (`Prefs::daily_folder`), relative to the open folder, `Daily` by default; empty
 //! means the open folder itself. Pure Rust (no GTK) so it is testable headless.
 
@@ -9,6 +10,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use crate::dailyname::Pattern;
 use crate::templates::Filled;
 
 /// The daily notes folder a new state file starts with.
@@ -33,9 +35,15 @@ pub fn folder(root: &Path, setting: &str) -> PathBuf {
         .fold(root.to_path_buf(), |dir, part| dir.join(part))
 }
 
-/// Today's note for `date` (`date_string`): `<folder>/<date>.md`.
-pub fn path(root: &Path, setting: &str, date: &str) -> PathBuf {
-    folder(root, setting).join(format!("{date}.md"))
+/// The daily note named `name` (`Pattern::format`, `/` between subfolders):
+/// `<folder>/<name>.md`.
+pub fn path(root: &Path, setting: &str, name: &str) -> PathBuf {
+    folder(root, setting).join(format!("{name}.md"))
+}
+
+/// The file name of `name` (its last part) without `.md`: the template's `{{title}}`.
+pub fn title(name: &str) -> &str {
+    name.rsplit('/').next().unwrap_or(name)
 }
 
 /// Reads `<folder>/Template.md` if it exists with that exact name and casing and can be read
@@ -60,17 +68,17 @@ pub fn load_template(folder: &Path) -> Option<String> {
 }
 
 /// What a new daily note starts with and where its cursor goes: `template` filled in by
-/// `templates::fill` (as New from Template, with the title = `components.date_string()`), or
-/// `# <date>\n\n` with the cursor at the end when there is no template.
+/// `templates::fill` (as New from Template, with `title` = the file name without `.md`), or
+/// `# <title>\n\n` with the cursor at the end when there is no template.
 pub fn initial_text_from_template(
     template: Option<&str>,
     components: &crate::templates::Components,
+    title: &str,
 ) -> Filled {
-    let date = components.date_string();
     match template {
-        Some(t) => crate::templates::fill(t, components, &date),
+        Some(t) => crate::templates::fill(t, components, title),
         None => {
-            let text = format!("# {date}\n\n");
+            let text = format!("# {title}\n\n");
             let cursor = text.chars().count();
             Filled { text, cursor }
         }
@@ -78,9 +86,13 @@ pub fn initial_text_from_template(
 }
 
 /// Resolves what a new daily note in `daily_folder` starts with: reads `Template.md` if present
-/// and readable, or falls back to `# <date>\n\n`.
-pub fn initial_text(daily_folder: &Path, components: &crate::templates::Components) -> Filled {
-    initial_text_from_template(load_template(daily_folder).as_deref(), components)
+/// and readable, or falls back to `# <title>\n\n`.
+pub fn initial_text(
+    daily_folder: &Path,
+    components: &crate::templates::Components,
+    title: &str,
+) -> Filled {
+    initial_text_from_template(load_template(daily_folder).as_deref(), components, title)
 }
 
 /// Writes `text` to `path` (creating its folders) unless something is already there; true
@@ -112,61 +124,65 @@ pub fn create_if_missing(path: &Path, text: &str) -> io::Result<bool> {
     }
 }
 
-/// `name` read as `YYYY-MM-DD.md` with a real calendar date: the date part.
-pub fn date_of_name(name: &str) -> Option<&str> {
-    let date = name.strip_suffix(".md")?;
-    let b = date.as_bytes();
-    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
-        return None;
-    }
-    if !b
-        .iter()
-        .enumerate()
-        .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
-    {
-        return None;
-    }
-    let year: u32 = date[..4].parse().ok()?;
-    let month: u32 = date[5..7].parse().ok()?;
-    let day: u32 = date[8..].parse().ok()?;
-    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
-    let last = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if leap => 29,
-        2 => 28,
-        _ => return None,
-    };
-    (1..=last).contains(&day).then_some(date)
+/// The date (`YYYY-MM-DD`) of `path` when it is a daily note: its path relative to the daily
+/// notes folder parses with `pattern`.
+pub fn date_of_path(root: &Path, setting: &str, pattern: &Pattern, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(folder(root, setting)).ok()?.to_str()?;
+    let (year, month, day) = pattern.parse(relative)?;
+    Some(date_string(year, month, day))
 }
 
-/// The date of `path` when it is a daily note: `YYYY-MM-DD.md` directly in the daily notes
-/// folder.
-pub fn date_of_path(root: &Path, setting: &str, path: &Path) -> Option<String> {
-    if path.parent()? != folder(root, setting) {
-        return None;
+/// Every daily note under `folder`: its date (`YYYY-MM-DD`) and path, sorted by date, one per
+/// date. Looks into subfolders only as deep as the pattern has parts, skipping hidden ones;
+/// files whose relative path does not parse are ignored. A missing folder = none.
+pub fn notes(folder: &Path, pattern: &Pattern) -> Vec<(String, PathBuf)> {
+    fn walk(
+        dir: &Path,
+        prefix: &str,
+        depth: usize,
+        pattern: &Pattern,
+        out: &mut Vec<(String, PathBuf)>,
+    ) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let path = entry.path();
+            let relative = format!("{prefix}{name}");
+            if path.is_dir() {
+                if depth > 1 && !name.starts_with('.') {
+                    walk(&path, &format!("{relative}/"), depth - 1, pattern, out);
+                }
+            } else if let Some((y, m, d)) = pattern.parse(&relative) {
+                out.push((date_string(y, m, d), path));
+            }
+        }
     }
-    date_of_name(path.file_name()?.to_str()?).map(str::to_owned)
+    let mut found = Vec::new();
+    walk(folder, "", pattern.depth(), pattern, &mut found);
+    found.sort();
+    found.dedup_by(|a, b| a.0 == b.0);
+    found
 }
 
-/// The existing daily note nearest before (`forward` false) or after `from` (a date) in
-/// `folder`; `from` None = the most recent one (Previous from a note that is not a daily
-/// note), and no later one for Next. Names that are not `YYYY-MM-DD.md` files are ignored.
-pub fn neighbour(folder: &Path, from: Option<&str>, forward: bool) -> Option<PathBuf> {
-    let mut dates: Vec<String> = fs::read_dir(folder)
-        .ok()?
-        .flatten()
-        .filter(|e| e.path().is_file())
-        .filter_map(|e| date_of_name(e.file_name().to_str()?).map(str::to_owned))
-        .collect();
-    dates.sort();
+/// The existing daily note nearest before (`forward` false) or after `from` (a date) among
+/// `notes`; `from` None = the most recent one (Previous from a note that is not a daily
+/// note), and no later one for Next.
+pub fn neighbour(
+    notes: &[(String, PathBuf)],
+    from: Option<&str>,
+    forward: bool,
+) -> Option<PathBuf> {
     let found = match (from, forward) {
-        (Some(d), true) => dates.into_iter().find(|x| x.as_str() > d),
-        (Some(d), false) => dates.into_iter().rev().find(|x| x.as_str() < d),
-        (None, false) => dates.pop(),
+        (Some(d), true) => notes.iter().find(|x| x.0.as_str() > d),
+        (Some(d), false) => notes.iter().rev().find(|x| x.0.as_str() < d),
+        (None, false) => notes.last(),
         (None, true) => None,
     }?;
-    Some(folder.join(format!("{found}.md")))
+    Some(found.1.clone())
 }
 
 /// `now` with its date replaced by `year`-`month`-`day` (weekday recomputed): Daily Note for
@@ -186,46 +202,33 @@ pub fn components_for_date(
     }
 }
 
-/// Daily Note for Date…'s line under the calendar: what Open does with `<date>.md`.
-pub fn date_label(date: &str, exists: bool, has_template: bool) -> String {
+/// Daily Note for Date…'s line under the calendar: what Open does with `<name>.md` (the
+/// path relative to the daily notes folder).
+pub fn date_label(name: &str, exists: bool, has_template: bool) -> String {
     if exists {
-        format!("Opens {date}.md")
+        format!("Opens {name}.md")
     } else if has_template {
-        format!("Creates {date}.md from {TEMPLATE_FILE}")
+        format!("Creates {name}.md from {TEMPLATE_FILE}")
     } else {
-        format!("Creates {date}.md with the default title")
+        format!("Creates {name}.md with the default title")
     }
 }
 
-/// The days of `year`-`month` that have a daily note among `names` (file names in the daily
-/// notes folder), sorted, for the calendar's marks.
+/// The days of `year`-`month` among `dates` (`YYYY-MM-DD`, the daily notes' dates from
+/// `notes`), sorted, for the calendar's marks.
 pub fn marked_days<'a>(
-    names: impl IntoIterator<Item = &'a str>,
+    dates: impl IntoIterator<Item = &'a str>,
     year: i32,
     month: u32,
 ) -> Vec<u32> {
     let prefix = format!("{year:04}-{month:02}-");
-    let mut days: Vec<u32> = names
+    let mut days: Vec<u32> = dates
         .into_iter()
-        .filter_map(date_of_name)
         .filter_map(|d| d.strip_prefix(prefix.as_str())?.parse().ok())
         .collect();
     days.sort_unstable();
     days.dedup();
     days
-}
-
-/// The `.md` file names directly in `folder` (for `marked_days`); a missing folder = none.
-pub fn note_names(folder: &Path) -> Vec<String> {
-    fs::read_dir(folder)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|e| e.path().is_file())
-                .filter_map(|e| e.file_name().into_string().ok())
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -297,14 +300,17 @@ mod tests {
     fn initial_text_without_template() {
         let c = sample_components();
         assert_eq!(
-            initial_text_from_template(None, &c).text,
+            initial_text_from_template(None, &c, &c.date_string()).text,
             "# 2026-10-25\n\n"
         );
 
         let (folder, _guard) = make_temp_dir("no-tpl");
-        assert_eq!(initial_text(&folder, &c).text, "# 2026-10-25\n\n");
         assert_eq!(
-            initial_text(&folder.join("missing"), &c).text,
+            initial_text(&folder, &c, &c.date_string()).text,
+            "# 2026-10-25\n\n"
+        );
+        assert_eq!(
+            initial_text(&folder.join("missing"), &c, &c.date_string()).text,
             "# 2026-10-25\n\n"
         );
     }
@@ -313,7 +319,7 @@ mod tests {
     fn template_with_placeholders() {
         let c = sample_components();
         let template = "# {{title}}\n\nCreated: {{date}}\nLog for {{date}}:\n";
-        let rendered = initial_text_from_template(Some(template), &c).text;
+        let rendered = initial_text_from_template(Some(template), &c, &c.date_string()).text;
         assert_eq!(
             rendered,
             "# 2026-10-25\n\nCreated: 2026-10-25\nLog for 2026-10-25:\n"
@@ -321,14 +327,14 @@ mod tests {
 
         let (folder, _guard) = make_temp_dir("with-placeholders");
         fs::write(folder.join(TEMPLATE_FILE), template).unwrap();
-        assert_eq!(initial_text(&folder, &c).text, rendered);
+        assert_eq!(initial_text(&folder, &c, &c.date_string()).text, rendered);
     }
 
     #[test]
     fn template_with_date_and_time_formats() {
         let c = crate::templates::Components::from_ymd_hms(2026, 11, 1, 9, 5, 7);
         let template = "# {{title}}\n\nDate: {{date:dddd, MMMM D, YYYY}}\nTime: {{time:h:mm A}}\n";
-        let rendered = initial_text_from_template(Some(template), &c).text;
+        let rendered = initial_text_from_template(Some(template), &c, &c.date_string()).text;
         assert_eq!(
             rendered,
             "# 2026-11-01\n\nDate: Sunday, November 1, 2026\nTime: 9:05 AM\n"
@@ -336,19 +342,19 @@ mod tests {
 
         let (folder, _guard) = make_temp_dir("with-formats");
         fs::write(folder.join(TEMPLATE_FILE), template).unwrap();
-        assert_eq!(initial_text(&folder, &c).text, rendered);
+        assert_eq!(initial_text(&folder, &c, &c.date_string()).text, rendered);
     }
 
     #[test]
     fn template_without_placeholders() {
         let c = sample_components();
         let template = "# Journal\n\n## Plan\n\n## Notes\n";
-        let rendered = initial_text_from_template(Some(template), &c).text;
+        let rendered = initial_text_from_template(Some(template), &c, &c.date_string()).text;
         assert_eq!(rendered, template);
 
         let (folder, _guard) = make_temp_dir("no-placeholders");
         fs::write(folder.join(TEMPLATE_FILE), template).unwrap();
-        assert_eq!(initial_text(&folder, &c).text, template);
+        assert_eq!(initial_text(&folder, &c, &c.date_string()).text, template);
     }
 
     #[test]
@@ -359,12 +365,18 @@ mod tests {
 
         // Template.md is a directory.
         fs::create_dir_all(&tpl_path).unwrap();
-        assert_eq!(initial_text(&folder, &c).text, "# 2026-10-25\n\n");
+        assert_eq!(
+            initial_text(&folder, &c, &c.date_string()).text,
+            "# 2026-10-25\n\n"
+        );
         fs::remove_dir(&tpl_path).unwrap();
 
         // Template.md contains non-UTF-8 bytes.
         fs::write(&tpl_path, [0xFF, 0xFE, 0xFD]).unwrap();
-        assert_eq!(initial_text(&folder, &c).text, "# 2026-10-25\n\n");
+        assert_eq!(
+            initial_text(&folder, &c, &c.date_string()).text,
+            "# 2026-10-25\n\n"
+        );
     }
 
     #[test]
@@ -380,7 +392,10 @@ mod tests {
             .collect();
         if entries.iter().any(|e| e == "template.md") && !entries.iter().any(|e| e == "Template.md")
         {
-            assert_eq!(initial_text(&folder, &c).text, "# 2026-10-25\n\n");
+            assert_eq!(
+                initial_text(&folder, &c, &c.date_string()).text,
+                "# 2026-10-25\n\n"
+            );
         }
     }
 
@@ -396,15 +411,15 @@ mod tests {
             second: 0,
         };
         let template = "# {{title}}\n\n{{time}} — {{cursor}}\n\n## Later\n{{cursor}}";
-        let filled = initial_text_from_template(Some(template), &c);
+        let filled = initial_text_from_template(Some(template), &c, &c.date_string());
         assert_eq!(filled.text, "# 2026-10-25\n\n08:05 — \n\n## Later\n");
         assert_eq!(filled.cursor, "# 2026-10-25\n\n08:05 — ".chars().count());
 
         let (folder, _guard) = make_temp_dir("time-cursor");
         fs::write(folder.join(TEMPLATE_FILE), template).unwrap();
-        assert_eq!(initial_text(&folder, &c), filled);
+        assert_eq!(initial_text(&folder, &c, &c.date_string()), filled);
 
-        let fallback = initial_text_from_template(None, &c);
+        let fallback = initial_text_from_template(None, &c, &c.date_string());
         assert_eq!(fallback.cursor, fallback.text.chars().count());
     }
 
@@ -413,7 +428,7 @@ mod tests {
         let (root, _guard) = make_temp_dir("creates-once");
         let note = path(&root, "Daily/Sub", "2026-10-25");
         let c = sample_components();
-        let text = initial_text(&root.join("Daily/Sub"), &c).text;
+        let text = initial_text(&root.join("Daily/Sub"), &c, &c.date_string()).text;
         assert_eq!(text, "# 2026-10-25\n\n");
         assert!(create_if_missing(&note, &text).unwrap());
         assert_eq!(fs::read_to_string(&note).unwrap(), text);
@@ -429,21 +444,8 @@ mod tests {
         fs::write(dir.join(name), "x").unwrap();
     }
 
-    #[test]
-    fn names_must_be_real_dates() {
-        assert_eq!(date_of_name("2026-11-01.md"), Some("2026-11-01"));
-        assert_eq!(date_of_name("2028-02-29.md"), Some("2028-02-29"));
-        for bad in [
-            "2026-02-29.md",
-            "2026-13-01.md",
-            "2026-11-1.md",
-            "2026-11-01.txt",
-            "x.md",
-            "2026-11-01 b.md",
-            "٢٠٢٦-11-01.md",
-        ] {
-            assert_eq!(date_of_name(bad), None, "{bad}");
-        }
+    fn default_notes(dir: &Path) -> Vec<(String, PathBuf)> {
+        notes(dir, &Pattern::from_setting(crate::dailyname::DEFAULT))
     }
 
     #[test]
@@ -456,44 +458,127 @@ mod tests {
             "notes.md",
             "2026-10-31.txt",
             "2026-99-99.md",
+            "Template.md",
         ] {
             touch(&dir, n);
         }
         fs::create_dir(dir.join("2026-10-29.md")).unwrap();
+        fs::create_dir(dir.join("2026")).unwrap();
+        touch(&dir.join("2026"), "2026-10-27.md");
+        let list = default_notes(&dir);
         let name =
             |p: Option<PathBuf>| p.map(|p| p.file_name().unwrap().to_string_lossy().into_owned());
         assert_eq!(
-            name(neighbour(&dir, Some("2026-10-30"), false)).as_deref(),
+            name(neighbour(&list, Some("2026-10-30"), false)).as_deref(),
             Some("2026-10-28.md")
         );
         assert_eq!(
-            name(neighbour(&dir, Some("2026-10-30"), true)).as_deref(),
+            name(neighbour(&list, Some("2026-10-30"), true)).as_deref(),
             Some("2026-11-01.md")
         );
-        assert_eq!(name(neighbour(&dir, Some("2026-11-01"), true)), None);
-        assert_eq!(name(neighbour(&dir, Some("2026-10-28"), false)), None);
+        assert_eq!(name(neighbour(&list, Some("2026-11-01"), true)), None);
+        assert_eq!(name(neighbour(&list, Some("2026-10-28"), false)), None);
         assert_eq!(
-            name(neighbour(&dir, Some("2026-10-29"), false)).as_deref(),
+            name(neighbour(&list, Some("2026-10-29"), false)).as_deref(),
             Some("2026-10-28.md")
         );
         assert_eq!(
-            name(neighbour(&dir, None, false)).as_deref(),
+            name(neighbour(&list, None, false)).as_deref(),
             Some("2026-11-01.md")
         );
-        assert_eq!(name(neighbour(&dir, None, true)), None);
+        assert_eq!(name(neighbour(&list, None, true)), None);
     }
 
     #[test]
     fn neighbours_of_empty_or_missing_folder() {
         let (dir, _g) = make_temp_dir("nbe");
-        assert_eq!(neighbour(&dir, Some("2026-11-01"), false), None);
-        assert_eq!(neighbour(&dir, None, false), None);
-        assert_eq!(neighbour(&dir.join("none"), None, false), None);
+        assert_eq!(
+            neighbour(&default_notes(&dir), Some("2026-11-01"), false),
+            None
+        );
+        assert_eq!(neighbour(&default_notes(&dir), None, false), None);
+        assert!(default_notes(&dir.join("none")).is_empty());
+    }
+
+    #[test]
+    fn notes_in_dated_subfolders() {
+        let (dir, _g) = make_temp_dir("nested");
+        let pattern = Pattern::new("YYYY/MM/YYYY-MM-DD").unwrap();
+        for (sub, n) in [
+            ("2026/10", "2026-10-30.md"),
+            ("2026/11", "2026-11-02.md"),
+            ("2025/12", "2025-12-31.md"),
+            ("2026/11", "notes.md"),
+            ("2026/10", "2026-11-01.md"),
+            ("2026/11/deeper", "2026-11-03.md"),
+            (".trash/11", "2026-11-04.md"),
+        ] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+            touch(&dir.join(sub), n);
+        }
+        touch(&dir, "2026-11-05.md");
+        touch(&dir, TEMPLATE_FILE);
+        let list = notes(&dir, &pattern);
+        let dates: Vec<&str> = list.iter().map(|(d, _)| d.as_str()).collect();
+        assert_eq!(dates, ["2025-12-31", "2026-10-30", "2026-11-02"]);
+        assert_eq!(
+            neighbour(&list, Some("2026-10-30"), false),
+            Some(dir.join("2025/12/2025-12-31.md"))
+        );
+        assert_eq!(
+            neighbour(&list, Some("2026-10-30"), true),
+            Some(dir.join("2026/11/2026-11-02.md"))
+        );
+        assert_eq!(
+            neighbour(&list, None, false),
+            Some(dir.join("2026/11/2026-11-02.md"))
+        );
+        assert_eq!(marked_days(dates.iter().copied(), 2026, 11), vec![2]);
+        let root = dir.parent().unwrap();
+        let setting = dir.file_name().unwrap().to_str().unwrap();
+        assert_eq!(
+            date_of_path(root, setting, &pattern, &dir.join("2026/11/2026-11-02.md")).as_deref(),
+            Some("2026-11-02")
+        );
+        assert_eq!(
+            date_of_path(root, setting, &pattern, &dir.join("2026-11-05.md")),
+            None
+        );
+    }
+
+    #[test]
+    fn a_new_note_in_subfolders_takes_the_root_template() {
+        let (root, _g) = make_temp_dir("nested-new");
+        let pattern = Pattern::new("YYYY/MM/YYYY-MM-DD dddd").unwrap();
+        let c = crate::templates::Components::from_ymd_hms(2026, 11, 2, 9, 5, 0);
+        let name = pattern.format(&c);
+        assert_eq!(name, "2026/11/2026-11-02 Monday");
+        assert_eq!(title(&name), "2026-11-02 Monday");
+        assert_eq!(title("2026-11-02"), "2026-11-02");
+        let daily = folder(&root, "Daily");
+        fs::create_dir_all(&daily).unwrap();
+        fs::write(daily.join(TEMPLATE_FILE), "# {{title}}\n{{date}}\n").unwrap();
+        let note = path(&root, "Daily", &name);
+        assert_eq!(note, root.join("Daily/2026/11/2026-11-02 Monday.md"));
+        let filled = initial_text(&daily, &c, title(&name));
+        assert_eq!(filled.text, "# 2026-11-02 Monday\n2026-11-02\n");
+        assert!(create_if_missing(&note, &filled.text).unwrap());
+        assert_eq!(
+            date_of_path(&root, "Daily", &pattern, &note).as_deref(),
+            Some("2026-11-02")
+        );
+        assert_eq!(
+            initial_text_from_template(None, &c, title(&name)).text,
+            "# 2026-11-02 Monday\n\n"
+        );
     }
 
     #[test]
     fn daily_path_must_sit_in_the_daily_folder() {
         let root = Path::new("/r");
+        let p = Pattern::from_setting(crate::dailyname::DEFAULT);
+        let date_of_path =
+            |root: &Path, setting: &str, path: &Path| date_of_path(root, setting, &p, path);
         assert_eq!(
             date_of_path(root, "Daily", Path::new("/r/Daily/2026-11-01.md")).as_deref(),
             Some("2026-11-01")
@@ -525,10 +610,11 @@ mod tests {
             c,
             crate::templates::Components::from_ymd_hms(2026, 10, 31, 9, 5, 0)
         );
-        let filled = initial_text_from_template(Some("# {{title}} {{date}} {{time}}"), &c);
+        let filled =
+            initial_text_from_template(Some("# {{title}} {{date}} {{time}}"), &c, &c.date_string());
         assert_eq!(filled.text, "# 2026-10-31 2026-10-31 09:05");
         assert_eq!(
-            initial_text_from_template(None, &c).text,
+            initial_text_from_template(None, &c, &c.date_string()).text,
             "# 2026-10-31\n\n"
         );
     }
@@ -548,15 +634,8 @@ mod tests {
 
     #[test]
     fn marks_days_with_notes_in_the_month() {
-        let names = [
-            "2026-11-09.md",
-            "2026-11-02.md",
-            "2026-10-02.md",
-            "2026-11-31.md",
-            "Template.md",
-            "2026-11-05.markdown",
-        ];
-        assert_eq!(marked_days(names, 2026, 11), vec![2, 9]);
-        assert!(marked_days(names, 2025, 11).is_empty());
+        let dates = ["2026-11-09", "2026-11-02", "2026-10-02", "2026-11-02"];
+        assert_eq!(marked_days(dates, 2026, 11), vec![2, 9]);
+        assert!(marked_days(dates, 2025, 11).is_empty());
     }
 }

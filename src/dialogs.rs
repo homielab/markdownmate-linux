@@ -408,6 +408,39 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
             editor.remember();
         }
     ));
+    // Saved when valid (trimmed); otherwise the problem shows in the row below and the last
+    // valid pattern stays in use.
+    let daily_name = adw::EntryRow::builder()
+        .title("Daily Note Name")
+        .text(prefs.daily_name.as_str())
+        .build();
+    let daily_name_problem = adw::ActionRow::builder()
+        .use_markup(false)
+        .title_lines(0)
+        .activatable(false)
+        .css_classes(["error"])
+        .visible(false)
+        .build();
+    daily_name.connect_changed(clone!(
+        #[strong]
+        editor,
+        #[weak]
+        daily_name_problem,
+        move |row| match crate::dailyname::Pattern::new(&row.text()) {
+            Ok(pattern) => {
+                row.remove_css_class("error");
+                daily_name_problem.set_visible(false);
+                editor.prefs.borrow_mut().daily_name = pattern.text().to_string();
+                editor.remember();
+                editor.update_history_actions();
+            }
+            Err(problem) => {
+                row.add_css_class("error");
+                daily_name_problem.set_title(&problem);
+                daily_name_problem.set_visible(true);
+            }
+        }
+    ));
     // Saved as typed; the main menu reads it each time it opens.
     let templates = adw::EntryRow::builder()
         .title("Templates Folder")
@@ -435,9 +468,11 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
     ));
     let notes_group = adw::PreferencesGroup::builder()
         .title("Notes")
-        .description("Today's Note (Ctrl+D) opens YYYY-MM-DD.md in this folder of the open folder; empty: the open folder itself. A Template.md in this folder sets the initial text for new daily notes, replacing {{date}}, {{time}} and {{title}} with today's date and time (formats like {{date:dddd, MMMM D, YYYY}}). New from Template (main menu) lists the .md notes of the Templates Folder and creates an Untitled note from one, with {{date}}, {{time}}, {{title}} and {{cursor}}. Attachments Folder: images you paste or drop are saved here, next to the note. Start with / for a folder at the top of the open folder.")
+        .description("Today's Note (Ctrl+D) opens YYYY-MM-DD.md in this folder of the open folder; empty: the open folder itself. Daily Note Name sets another name from the date tokens YYYY YY MMMM MMM MM M DD D dddd ddd, with [text] kept as written and / for subfolders: YYYY/MM/YYYY-MM-DD keeps 2026-11-02.md in 2026/11. A Template.md in this folder sets the initial text for new daily notes, replacing {{date}}, {{time}} and {{title}} (the file name) with today's date and time (formats like {{date:dddd, MMMM D, YYYY}}). New from Template (main menu) lists the .md notes of the Templates Folder and creates an Untitled note from one, with {{date}}, {{time}}, {{title}} and {{cursor}}. Attachments Folder: images you paste or drop are saved here, next to the note. Start with / for a folder at the top of the open folder.")
         .build();
     notes_group.add(&daily);
+    notes_group.add(&daily_name);
+    notes_group.add(&daily_name_problem);
     let open_today = adw::SwitchRow::builder()
         .title("Open Today's Note at Launch")
         .active(prefs.open_today_at_launch)
@@ -1997,7 +2032,11 @@ pub(crate) fn daily_note_for_date(editor: &Rc<Editor>) {
         return;
     };
     let folder = crate::daily::folder(&root, &editor.prefs.borrow().daily_folder);
-    let names = crate::daily::note_names(&folder);
+    let pattern = editor.daily_pattern();
+    let dates: Vec<String> = crate::daily::notes(&folder, &pattern)
+        .into_iter()
+        .map(|(date, _)| date)
+        .collect();
     let has_template = crate::daily::load_template(&folder).is_some();
     let calendar = gtk::Calendar::new();
     let label = gtk::Label::builder()
@@ -2009,17 +2048,16 @@ pub(crate) fn daily_note_for_date(editor: &Rc<Editor>) {
         (d.year(), d.month() as u32, d.day_of_month() as u32)
     };
     let refresh = {
-        let names = names.clone();
         let folder = folder.clone();
         move |c: &gtk::Calendar, label: &gtk::Label| {
             let (y, m, d) = date_of(c);
             c.clear_marks();
-            for day in crate::daily::marked_days(names.iter().map(String::as_str), y, m) {
+            for day in crate::daily::marked_days(dates.iter().map(String::as_str), y, m) {
                 c.mark_day(day);
             }
-            let date = crate::daily::date_string(y, m, d);
-            let exists = folder.join(format!("{date}.md")).is_file();
-            label.set_label(&crate::daily::date_label(&date, exists, has_template));
+            let name = pattern.format(&crate::templates::Components::from_ymd(y, m, d));
+            let exists = folder.join(format!("{name}.md")).is_file();
+            label.set_label(&crate::daily::date_label(&name, exists, has_template));
         }
     };
     refresh(&calendar, &label);

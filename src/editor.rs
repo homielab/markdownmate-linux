@@ -1005,15 +1005,18 @@ impl Editor {
     fn daily_target(&self, forward: bool) -> Option<PathBuf> {
         let root = self.root.borrow().clone()?;
         let setting = self.prefs.borrow().daily_folder.clone();
+        let pattern = self.daily_pattern();
         let current = self.path.borrow().clone();
         let from = current
             .as_deref()
-            .and_then(|p| crate::daily::date_of_path(&root, &setting, p));
-        crate::daily::neighbour(
-            &crate::daily::folder(&root, &setting),
-            from.as_deref(),
-            forward,
-        )
+            .and_then(|p| crate::daily::date_of_path(&root, &setting, &pattern, p));
+        let notes = crate::daily::notes(&crate::daily::folder(&root, &setting), &pattern);
+        crate::daily::neighbour(&notes, from.as_deref(), forward)
+    }
+
+    /// The daily note name of `Prefs::daily_name` (the default when it is not valid).
+    pub(crate) fn daily_pattern(&self) -> crate::dailyname::Pattern {
+        crate::dailyname::Pattern::from_setting(&self.prefs.borrow().daily_name)
     }
 
     /// Greys out Back / Forward (and the daily note steps) when there is no note to go to.
@@ -2152,11 +2155,11 @@ impl Editor {
         }
     }
 
-    /// Today's Note (Ctrl+D): opens `<open folder>/<daily notes folder>/YYYY-MM-DD.md` for the
-    /// local date (`daily`); a missing one is created (with its folders) from `Template.md`
-    /// (filled in like New from Template) or `# YYYY-MM-DD` and a blank line, and opens with
-    /// the cursor at the template's first `{{cursor}}`, else at its end. Nothing without an
-    /// open folder.
+    /// Today's Note (Ctrl+D): opens `<open folder>/<daily notes folder>/<daily note name>.md`
+    /// for the local date (`daily`, `dailyname`); a missing one is created (with its folders)
+    /// from `Template.md` (filled in like New from Template) or `# <name>` and a blank line,
+    /// and opens with the cursor at the template's first `{{cursor}}`, else at its end.
+    /// Nothing without an open folder.
     pub(crate) fn todays_note(self: &Rc<Self>) {
         if let Some(now) = self.now() {
             self.open_daily(now);
@@ -2175,14 +2178,15 @@ impl Editor {
     }
 
     /// Opens the daily note for `components`' date, creating it (with its folders) from
-    /// `Template.md` filled for that date, or `# YYYY-MM-DD` and a blank line. Shared by
-    /// Today's Note and Daily Note for Date…; nothing without an open folder.
+    /// `Template.md` at the daily notes folder's root filled for that date, or `# <name>` and
+    /// a blank line. Shared by Today's Note and Daily Note for Date…; nothing without an open
+    /// folder.
     pub(crate) fn open_daily(self: &Rc<Self>, components: templates::Components) {
         let Some(root) = self.root.borrow().clone() else {
             return;
         };
-        let date = components.date_string();
-        let path = crate::daily::path(&root, &self.prefs.borrow().daily_folder, &date);
+        let name = self.daily_pattern().format(&components);
+        let path = crate::daily::path(&root, &self.prefs.borrow().daily_folder, &name);
         if self.path.borrow().as_deref() == Some(path.as_path()) {
             return;
         }
@@ -2190,7 +2194,8 @@ impl Editor {
             return;
         }
         let daily_folder = crate::daily::folder(&root, &self.prefs.borrow().daily_folder);
-        let filled = crate::daily::initial_text(&daily_folder, &components);
+        let filled =
+            crate::daily::initial_text(&daily_folder, &components, crate::daily::title(&name));
         let created = match crate::daily::create_if_missing(&path, &filled.text) {
             Ok(created) => created,
             Err(e) => {

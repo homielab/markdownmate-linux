@@ -7,6 +7,7 @@ mod broken;
 mod cli;
 mod complete;
 mod daily;
+mod dailyname;
 mod diagrams;
 mod dialogs;
 mod droplink;
