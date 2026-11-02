@@ -43,6 +43,7 @@ mod plain;
 mod preview;
 mod previewfind;
 mod previewhover;
+mod query;
 mod quick;
 mod reheading;
 mod relink;

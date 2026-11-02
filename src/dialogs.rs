@@ -9,7 +9,7 @@ use gtk::glib::{self, clone};
 
 use crate::editor::Editor;
 use crate::file_name;
-use crate::{attachments, broken, find, goto, naming, quick, render, sidebar, state, tasks};
+use crate::{attachments, broken, find, goto, naming, query, quick, render, sidebar, state, tasks};
 
 /// Desktop id of `packaging/com.homielab.MarkdownMate.desktop`.
 const DESKTOP_ID: &str = "com.homielab.MarkdownMate.desktop";
@@ -976,8 +976,9 @@ pub(crate) fn highlight(text: &str, ranges: &[std::ops::Range<usize>]) -> String
 /// read from disk: unsaved edits of the open note are not searched). Runs on a background
 /// thread, 250 ms after typing stops; a newer query cancels the older one. Activating a
 /// matching line opens the note at that line. With Regex on, an invalid pattern shows its error
-/// under the box and no results. Replace All replaces the listed matches after a confirmation
-/// (`replace_all`). Esc closes.
+/// under the box and no results. `tag:name` / `path:folder/` words (`query.rs`) narrow the notes
+/// searched; with no text left they list the matching notes, which Replace All leaves alone.
+/// Replace All replaces the listed matches after a confirmation (`replace_all`). Esc closes.
 pub(crate) fn find_in_folder(editor: &Rc<Editor>) {
     open_find(editor, None, FindMode::Text);
 }
@@ -1054,7 +1055,7 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
     let open_note = Rc::new(RefCell::new(snapshot()));
 
     let entry = gtk::SearchEntry::builder()
-        .placeholder_text("Text in notes")
+        .placeholder_text("Text in notes, tag:name path:folder/")
         .search_delay(250)
         .build();
     let match_case = gtk::CheckButton::builder()
@@ -1240,6 +1241,15 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
             let rows = result_rows(&list, &root, files.collect());
             let count = rows.len();
             targets.replace(rows);
+            if found.notes_only {
+                status.set_label(&match (count, found.more) {
+                    (_, true) => format!("First {count} matching notes (more not shown)"),
+                    (0, _) => "No matching notes".to_string(),
+                    (1, _) => "1 matching note".to_string(),
+                    _ => format!("{count} matching notes"),
+                });
+                return;
+            }
             status.set_label(&match (count, found.more) {
                 (_, true) => format!("First {count} matching lines (more not shown)"),
                 (0, _) if empty => String::new(),
@@ -1257,7 +1267,7 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
         let (match_case, whole_word, regex) =
             (match_case.clone(), whole_word.clone(), regex.clone());
         let (error, list, status) = (error.clone(), list.clone(), status.clone());
-        let targets = targets.clone();
+        let (targets, root) = (targets.clone(), root.clone());
         move |query: String| {
             listed.replace(None);
             replace.set_sensitive(false);
@@ -1267,7 +1277,8 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
                 whole_word: whole_word.is_active(),
                 regex: regex.is_active(),
             };
-            let query = match find::Query::new(&query, options) {
+            let query::Parsed { text, operators } = query::parse(&query);
+            let query = match find::Query::new(&text, options) {
                 Ok(query) => query,
                 Err(reason) => {
                     error.set_label(&reason);
@@ -1282,14 +1293,19 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
             };
             error.set_visible(false);
             let (notes, open_note) = (notes.borrow().clone(), open_note.borrow().clone());
-            let (generation, show) = (generation.clone(), show.clone());
+            let (generation, show, root) = (generation.clone(), show.clone(), root.clone());
             glib::spawn_future_local(async move {
                 let g = generation.clone();
                 let q = query.clone();
                 let found = gio::spawn_blocking(move || {
-                    find::search(&notes, open_note.as_ref().as_ref(), &q, &|| {
-                        g.load(Ordering::SeqCst) != mine
-                    })
+                    find::search(
+                        &notes,
+                        open_note.as_ref().as_ref(),
+                        &q,
+                        &operators,
+                        &root,
+                        &|| g.load(Ordering::SeqCst) != mine,
+                    )
                 })
                 .await;
                 if let Ok(Some(found)) = found

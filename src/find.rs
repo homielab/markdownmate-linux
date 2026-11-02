@@ -21,6 +21,10 @@
 //!
 //! Scope: the sidebar's Find in “Folder”… searches only the notes under one folder of the open
 //! folder (`in_scope`, recursive). Replace All replaces the listed matches, so it stays inside.
+//!
+//! Operators (`query.rs`): `tag:` / `path:` words narrow the notes before the text search. With
+//! operators and no text, `search` lists each matching note once with its first non-empty line
+//! (`Found::notes_only`); nothing there is a match, so Replace All has nothing to replace.
 
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
@@ -28,8 +32,10 @@ use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
+use crate::query::{self, Operators};
 use crate::relink::{Edit, apply};
 use crate::save;
+use crate::tags;
 
 /// Most matching lines returned over all files.
 pub const LIMIT: usize = 500;
@@ -182,8 +188,11 @@ pub struct FileHits {
 #[derive(Debug, Default)]
 pub struct Found {
     pub files: Vec<FileHits>,
-    /// More lines matched than `LIMIT`.
+    /// More lines matched than `LIMIT` (notes, with `notes_only`).
     pub more: bool,
+    /// Operators without text: one row per matching note (its first non-empty line, no
+    /// match ranges).
+    pub notes_only: bool,
 }
 
 /// Unicode lowercase, char by char.
@@ -264,7 +273,7 @@ pub fn snippet(line: &str, ranges: Vec<Range<usize>>) -> (String, Vec<Range<usiz
     if line.chars().count() <= SNIPPET_CHARS {
         return (line.to_string(), ranges);
     }
-    let first = ranges[0].start;
+    let first = ranges.first().map_or(0, |r| r.start);
     let lead: usize = line[..first]
         .chars()
         .rev()
@@ -313,22 +322,35 @@ pub fn find_in_text(text: &str, query: &Query, limit: usize) -> (Vec<LineHit>, b
     (hits, false)
 }
 
-/// Searches `paths` for `query`. Files that cannot be read or are not UTF-8 are skipped. `open` is the open note's (path, buffer text): it is searched instead of
-/// the disk copy so unsaved edits are found. Returns None as soon as `cancelled()` is true.
+/// Searches `paths` for `query`, in the notes that pass `operators` (`path:` relative to
+/// `root`, `tag:` by the note's tags as `tags::names` reads them). Files that cannot be read or
+/// are not UTF-8 are skipped. `open` is the open note's (path, buffer text): it is searched
+/// instead of the disk copy so unsaved edits are found. With operators and an empty `query`,
+/// lists the matching notes (`Found::notes_only`, at most `LIMIT`). Returns None as soon as
+/// `cancelled()` is true.
 pub fn search(
     paths: &[PathBuf],
     open: Option<&(PathBuf, String)>,
     query: &Query,
+    operators: &Operators,
+    root: &Path,
     cancelled: &dyn Fn() -> bool,
 ) -> Option<Found> {
-    let mut found = Found::default();
-    if query.is_empty() {
+    let mut found = Found {
+        notes_only: query.is_empty() && !operators.is_empty(),
+        ..Found::default()
+    };
+    if query.is_empty() && operators.is_empty() {
         return Some(found);
     }
     let mut left = LIMIT;
     for path in paths {
         if cancelled() {
             return None;
+        }
+        let relative = path.strip_prefix(root).unwrap_or(path);
+        if !operators.path_ok(&relative.to_string_lossy()) {
+            continue;
         }
         let text = match open {
             Some((p, text)) if p == path => text.clone(),
@@ -337,6 +359,29 @@ pub fn search(
                 None => continue,
             },
         };
+        if operators.has_tags() && !operators.tags_ok(&tags::names(&text)) {
+            continue;
+        }
+        if found.notes_only {
+            if left == 0 {
+                found.more = true;
+                break;
+            }
+            left -= 1;
+            let (line, first) = query::first_line(&text);
+            let (snippet, _) = snippet(first, Vec::new());
+            found.files.push(FileHits {
+                path: path.clone(),
+                lines: vec![LineHit {
+                    line,
+                    snippet,
+                    ranges: Vec::new(),
+                    count: 0,
+                }],
+                version: version(&text),
+            });
+            continue;
+        }
         let (lines, more) = find_in_text(&text, query, left);
         left -= lines.len();
         if !lines.is_empty() {
@@ -671,6 +716,8 @@ mod tests {
             &[a.clone(), b.clone()],
             None,
             &q("OLD", Options::default()),
+            &Operators::default(),
+            Path::new(""),
             &|| false,
         )
         .unwrap();
@@ -722,7 +769,15 @@ mod tests {
         std::fs::write(&c, "apple\n".repeat(LIMIT)).unwrap();
         let paths = vec![a.clone(), b, c.clone(), dir.join("missing.md")];
 
-        let found = search(&paths, None, &q("  APPLE ", Options::default()), &|| false).unwrap();
+        let found = search(
+            &paths,
+            None,
+            &q("  APPLE ", Options::default()),
+            &Operators::default(),
+            Path::new(""),
+            &|| false,
+        )
+        .unwrap();
         let files: Vec<_> = found.files.iter().map(|f| &f.path).collect();
         assert_eq!(files, [&a, &c]);
         assert_eq!(found.files[0].lines.len(), 2);
@@ -731,12 +786,29 @@ mod tests {
         assert!(found.more);
 
         assert!(
-            search(&paths, None, &q("", Options::default()), &|| false)
-                .unwrap()
-                .files
-                .is_empty()
+            search(
+                &paths,
+                None,
+                &q("", Options::default()),
+                &Operators::default(),
+                Path::new(""),
+                &|| false
+            )
+            .unwrap()
+            .files
+            .is_empty()
         );
-        assert!(search(&paths, None, &q("apple", Options::default()), &|| true).is_none());
+        assert!(
+            search(
+                &paths,
+                None,
+                &q("apple", Options::default()),
+                &Operators::default(),
+                Path::new(""),
+                &|| true
+            )
+            .is_none()
+        );
 
         // The open note's unsaved buffer replaces its disk copy.
         let open = (a.clone(), "x\nfresh APPLE".to_string());
@@ -744,6 +816,8 @@ mod tests {
             &paths[..1],
             Some(&open),
             &q("apple", Options::default()),
+            &Operators::default(),
+            Path::new(""),
             &|| false,
         )
         .unwrap();
@@ -779,7 +853,15 @@ mod tests {
         let scope = root.join("Work");
         let scoped = in_scope(&notes, Some(&scope));
         assert_eq!(scoped, [work.clone(), deep.clone()]);
-        let found = search(&scoped, None, &query, &|| false).unwrap();
+        let found = search(
+            &scoped,
+            None,
+            &query,
+            &Operators::default(),
+            Path::new(""),
+            &|| false,
+        )
+        .unwrap();
         let files: Vec<_> = found.files.iter().map(|f| &f.path).collect();
         assert_eq!(files, [&work, &deep]);
 
@@ -798,9 +880,96 @@ mod tests {
 
         // Clearing the scope searches every note again.
         assert_eq!(in_scope(&notes, None), notes);
-        let found = search(&in_scope(&notes, None), None, &query, &|| false).unwrap();
+        let found = search(
+            &in_scope(&notes, None),
+            None,
+            &query,
+            &Operators::default(),
+            Path::new(""),
+            &|| false,
+        )
+        .unwrap();
         let files: Vec<_> = found.files.iter().map(|f| &f.path).collect();
         assert_eq!(files, [&top, &workout]);
+    }
+
+    #[test]
+    fn operators_narrow_the_notes_and_list_them_without_text() {
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = std::env::temp_dir().join(format!("mm-find-ops-{}", std::process::id()));
+        let _cleanup = Cleanup(root.clone());
+        std::fs::create_dir_all(root.join("Archive")).unwrap();
+        std::fs::create_dir_all(root.join("Old Notes")).unwrap();
+        let work = root.join("work.md");
+        let urgent = root.join("urgent.md");
+        let archived = root.join("Archive").join("old.md");
+        let home = root.join("home.md");
+        let old = root.join("Old Notes").join("n.md");
+        std::fs::write(
+            &work,
+            "---\ntags: [Work]\n---\n\nBudget 2025\nbudget again\n",
+        )
+        .unwrap();
+        std::fs::write(&urgent, "#work/urgent\nthe budget\n").unwrap();
+        std::fs::write(&archived, "#work budget\n").unwrap();
+        std::fs::write(&home, "#home budget\n").unwrap();
+        std::fs::write(&old, "\nold budget\n").unwrap();
+        let notes = vec![
+            work.clone(),
+            urgent.clone(),
+            archived.clone(),
+            home.clone(),
+            old.clone(),
+        ];
+        let run = |input: &str, options: Options| {
+            let parsed = query::parse(input);
+            let query = q(&parsed.text, options);
+            search(&notes, None, &query, &parsed.operators, &root, &|| false).unwrap()
+        };
+        fn paths(found: &Found) -> Vec<&PathBuf> {
+            found.files.iter().map(|f| &f.path).collect()
+        }
+
+        // Text in notes tagged #work (front matter or nested) outside Archive/.
+        let found = run("budget tag:work -path:Archive/", Options::default());
+        assert!(!found.notes_only);
+        assert_eq!(paths(&found), [&work, &urgent]);
+        assert_eq!(found.files[0].lines.len(), 2);
+
+        // Match Case applies to the text part only.
+        let case = Options {
+            match_case: true,
+            ..Options::default()
+        };
+        let found = run("tag:WORK Budget", case);
+        assert_eq!(paths(&found), [&work]);
+        assert_eq!(found.files[0].lines.len(), 1);
+
+        // Operators alone: each note once, its first non-empty line, nothing to replace.
+        let found = run("tag:work", Options::default());
+        assert!(found.notes_only);
+        assert_eq!(paths(&found), [&work, &urgent, &archived]);
+        let first = &found.files[0].lines[0];
+        assert_eq!(
+            (first.line, first.snippet.as_str(), first.count),
+            (5, "Budget 2025", 0)
+        );
+        assert!(first.ranges.is_empty());
+
+        // Quoted path with a space.
+        let found = run("path:\"Old Notes/\"", Options::default());
+        assert_eq!(paths(&found), [&old]);
+        assert_eq!(found.files[0].lines[0].line, 2);
+
+        // A bare `tag:` is text.
+        assert!(run("tag:", Options::default()).files.is_empty());
+        std::fs::write(&home, "tag: here\n").unwrap();
+        assert_eq!(paths(&run("tag:", Options::default())), [&home]);
     }
 
     #[test]
@@ -870,10 +1039,17 @@ mod tests {
         assert_eq!(q("  x ", RE).text, "x");
         assert!(q("   ", RE).is_empty());
         assert!(
-            search(&[], None, &q("", RE), &|| false)
-                .unwrap()
-                .files
-                .is_empty()
+            search(
+                &[],
+                None,
+                &q("", RE),
+                &Operators::default(),
+                Path::new(""),
+                &|| false
+            )
+            .unwrap()
+            .files
+            .is_empty()
         );
     }
 
@@ -949,7 +1125,15 @@ mod tests {
         std::fs::write(&a, "- [ ] one\n- [x] two\n").unwrap();
         std::fs::write(&b, "- [ ] three\n").unwrap();
         let query = q(r"^- \[( |x)\] (\w+)", RE);
-        let found = search(&[a.clone(), b.clone()], None, &query, &|| false).unwrap();
+        let found = search(
+            &[a.clone(), b.clone()],
+            None,
+            &query,
+            &Operators::default(),
+            Path::new(""),
+            &|| false,
+        )
+        .unwrap();
         let lines = |f: &FileHits| f.lines.iter().map(|h| h.line).collect::<Vec<_>>();
         let (fa, fb) = (&found.files[0], &found.files[1]);
         std::fs::write(&b, "- [ ] three\nmore\n").unwrap();
@@ -1003,7 +1187,15 @@ mod tests {
             let mut lines = 0;
             for _ in 0..5 {
                 let start = std::time::Instant::now();
-                let found = search(&paths, None, &query, &|| false).unwrap();
+                let found = search(
+                    &paths,
+                    None,
+                    &query,
+                    &Operators::default(),
+                    Path::new(""),
+                    &|| false,
+                )
+                .unwrap();
                 best = best.min(start.elapsed());
                 lines = found.files.iter().map(|f| f.lines.len()).sum::<usize>();
             }
