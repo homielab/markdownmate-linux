@@ -19,9 +19,9 @@ use crate::{
     STATUS_DELAY, TABLE_STYLE, TAG_STYLE, UNTITLED, file_name, state_file,
 };
 use crate::{
-    aliases, backlinks, complete, extract, favorites, find, images, links, lists, mentions, naming,
-    notes, outline, quick, reheading, relink, render, retag, save, sidebar, state, stats, tags,
-    templates, timing, title, url,
+    aliases, backlinks, complete, extract, favorites, find, images, links, lists, mentions,
+    multisel, naming, notes, outline, quick, reheading, relink, render, retag, save, sidebar,
+    state, stats, tags, templates, timing, title, url,
 };
 
 /// Find in Folder's scope setter (`Editor::find_set_scope`).
@@ -162,6 +162,9 @@ pub(crate) struct Editor {
     pub(crate) history_target: Cell<Option<usize>>,
     /// An entry the next sidebar build scrolls to and focuses (`reveal_in_sidebar`).
     pub(crate) sidebar_reveal: RefCell<Option<PathBuf>>,
+    /// Entries the next sidebar build selects instead of the current selection (after a move:
+    /// the moved entries at their new place).
+    pub(crate) sidebar_select: RefCell<Option<Vec<PathBuf>>>,
     pub(crate) find_match_case: Cell<bool>,
     pub(crate) find_whole_word: Cell<bool>,
     pub(crate) find_regex: Cell<bool>,
@@ -2332,23 +2335,53 @@ impl Editor {
         self.relocate(from, "rename", |from| naming::rename(from, &name));
     }
 
-    /// Moves a note or folder dropped on folder `dir` into it (sidebar drag and drop, Move to
-    /// Folder…), only inside the open folder; never replaces an existing entry. The open note
-    /// follows. Returns the new path if it moved.
-    pub(crate) fn move_into(self: &Rc<Self>, from: &Path, dir: &Path) -> Option<PathBuf> {
-        let root = self.scan_dir.borrow().clone()?;
-        match naming::move_target(from, dir, &root) {
-            // `to` is under the folder's real path; keep the paths the sidebar lists.
-            Ok(Some(to)) => {
-                let to = relink::rebase(&to, &root);
-                self.relocate(from, "move", |from| naming::move_to(from, &to))
-            }
-            Ok(None) => None,
-            Err(msg) => {
-                self.toast(&format!("Cannot move {}: {msg}", file_name(from)));
-                None
+    /// Moves the sidebar entries `froms` into folder `dir` (drag and drop, Move to Folder…), only
+    /// inside the open folder; never replaces an existing entry. An entry inside another one of
+    /// `froms` goes with its folder (`multisel::move_set`). The open note follows; one question
+    /// offers the link updates for all; one toast names what could not move. The next sidebar
+    /// build selects the moved entries at their new place and scrolls to the first.
+    pub(crate) fn move_all(self: &Rc<Self>, froms: &[PathBuf], dir: &Path) {
+        let Some(root) = self.scan_dir.borrow().clone() else {
+            return;
+        };
+        let before = self.note_list.borrow().to_vec();
+        let set = multisel::move_set(froms);
+        // Dropped on one of the selected folders: nothing moves, as with a single folder.
+        if set.len() > 1 && set.iter().any(|f| dir.starts_with(f)) {
+            return self.toast("Cannot move a folder into itself.");
+        }
+        let (mut moves, mut placed, mut failed) = (Vec::new(), Vec::new(), Vec::new());
+        for from in set {
+            match naming::move_target(&from, dir, &root) {
+                // `to` is under the folder's real path; keep the paths the sidebar lists.
+                Ok(Some(to)) => {
+                    let to = relink::rebase(&to, &root);
+                    match self.relocate_quiet(&from, |from| naming::move_to(from, &to)) {
+                        Ok(to) => {
+                            placed.push(to.clone());
+                            if to != from {
+                                moves.push((from, to));
+                            }
+                        }
+                        Err(Some(e)) => failed.push((file_name(&from), e.to_string())),
+                        Err(None) => {}
+                    }
+                }
+                Ok(None) => placed.push(from),
+                Err(msg) => failed.push((file_name(&from), msg)),
             }
         }
+        if let Some(msg) = multisel::failed_moves(&failed) {
+            self.toast(&msg);
+        }
+        if moves.is_empty() {
+            return;
+        }
+        if let Some(first) = placed.first() {
+            self.reveal_in_sidebar(first);
+        }
+        self.sidebar_select.replace(Some(placed));
+        self.offer_link_updates(moves, before);
     }
 
     /// Shows `path` in the sidebar once the rescan lists it: its folders open and its row
@@ -2367,20 +2400,43 @@ impl Editor {
     }
 
     /// Runs `op` (a rename/move of `from` returning the new path) with the open note saved
-    /// first; the open note and the expanded folders follow the new path. Then offers to
-    /// update the links to it (`offer_link_updates`). Returns the new path if `op` succeeded.
+    /// first (`relocate_quiet`), then offers to update the links to it (`offer_link_updates`).
+    /// Returns the new path if `op` succeeded.
     fn relocate(
         self: &Rc<Self>,
         from: &Path,
         verb: &str,
         op: impl FnOnce(&Path) -> std::io::Result<PathBuf>,
     ) -> Option<PathBuf> {
+        let before = self.note_list.borrow().to_vec();
+        match self.relocate_quiet(from, op) {
+            Ok(to) => {
+                if to != from {
+                    self.offer_link_updates(vec![(from.to_path_buf(), to.clone())], before);
+                }
+                Some(to)
+            }
+            Err(Some(e)) => {
+                self.toast(&format!("Cannot {verb} {}: {e}", file_name(from)));
+                None
+            }
+            Err(None) => None,
+        }
+    }
+
+    /// Runs `op` (a rename/move of `from` returning the new path) with the open note saved
+    /// first; the open note, history, Favorites and the expanded folders follow the new path.
+    /// Err(None) when the open note could not be saved (nothing ran), Err(Some) when `op` failed.
+    fn relocate_quiet(
+        self: &Rc<Self>,
+        from: &Path,
+        op: impl FnOnce(&Path) -> std::io::Result<PathBuf>,
+    ) -> Result<PathBuf, Option<std::io::Error>> {
         let Ok(open) = self.release_note(from) else {
-            return None;
+            return Err(None);
         };
         match op(from) {
             Ok(to) => {
-                let before = self.note_list.borrow().to_vec();
                 self.update_note_list(Some(from), Some(&to));
                 for p in self.positions.borrow_mut().iter_mut() {
                     if let Some(new) = moved(&p.note, from, &to) {
@@ -2401,17 +2457,13 @@ impl Editor {
                 let (f, t) = (from.to_path_buf(), to.clone());
                 self.change_favorites(move |list, root| favorites::follow(list, root, &f, &t));
                 self.schedule_rescan();
-                if to != from {
-                    self.offer_link_updates(vec![(from.to_path_buf(), to.clone())], before);
-                }
-                Some(to)
+                Ok(to)
             }
             Err(e) => {
                 if let Some(p) = &open {
                     self.show_path(p);
                 }
-                self.toast(&format!("Cannot {verb} {}: {e}", file_name(from)));
-                None
+                Err(Some(e))
             }
         }
     }
@@ -3024,36 +3076,57 @@ impl Editor {
         }
     }
 
-    /// Duplicate (sidebar right-click): copies the note or folder `path` next to itself as
+    /// Duplicate (sidebar right-click): copies each note or folder of `paths` next to itself as
     /// "Name copy.md" / "Name copy" (`naming::duplicate`), the open note saved first if it is
-    /// inside. The sidebar then shows the copy, and a note copy opens.
-    pub(crate) fn duplicate(self: &Rc<Self>, path: &Path) {
+    /// inside one. The sidebar then shows the copies, selected; the copy of a single note opens
+    /// (several leave the note shown alone).
+    pub(crate) fn duplicate(self: &Rc<Self>, paths: &[PathBuf]) {
         let inside = self
             .path
             .borrow()
             .as_ref()
-            .is_some_and(|p| p.starts_with(path));
+            .is_some_and(|p| paths.iter().any(|path| p.starts_with(path)));
         if inside && !self.save() {
             return;
         }
-        let (src, weak) = (path.to_path_buf(), Rc::downgrade(self));
+        let (srcs, weak) = (paths.to_vec(), Rc::downgrade(self));
         glib::spawn_future_local(async move {
-            let job = src.clone();
-            let result = gio::spawn_blocking(move || naming::duplicate(&job)).await;
+            let job = srcs.clone();
+            let results = gio::spawn_blocking(move || {
+                job.iter()
+                    .map(|src| naming::duplicate(src))
+                    .collect::<Vec<_>>()
+            })
+            .await;
             let Some(editor) = weak.upgrade() else {
                 return;
             };
-            match result {
-                Ok(Ok(copy)) => {
-                    if notes::is_note(&copy) && copy.is_file() {
-                        editor.update_note_list(None, Some(&copy));
-                        editor.open(&copy);
+            let Ok(results) = results else {
+                return editor.toast("Cannot duplicate");
+            };
+            let mut copies = Vec::new();
+            for (src, result) in srcs.iter().zip(results) {
+                match result {
+                    Ok(copy) => {
+                        if notes::is_note(&copy) && copy.is_file() {
+                            editor.update_note_list(None, Some(&copy));
+                        }
+                        copies.push(copy);
                     }
-                    editor.reveal_in_sidebar(&copy);
-                    editor.schedule_rescan();
+                    Err(e) => editor.toast(&format!("Cannot duplicate {}: {e}", file_name(src))),
                 }
-                Ok(Err(e)) => editor.toast(&format!("Cannot duplicate {}: {e}", file_name(&src))),
-                Err(_) => editor.toast(&format!("Cannot duplicate {}", file_name(&src))),
+            }
+            if let [copy] = copies.as_slice()
+                && srcs.len() == 1
+                && notes::is_note(copy)
+                && copy.is_file()
+            {
+                editor.open(copy);
+            }
+            if let Some(first) = copies.first() {
+                editor.reveal_in_sidebar(first);
+                editor.sidebar_select.replace(Some(copies));
+                editor.schedule_rescan();
             }
         });
     }

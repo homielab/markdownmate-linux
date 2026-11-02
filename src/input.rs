@@ -600,7 +600,8 @@ pub(crate) fn image_input(view: &sourceview5::View, editor: &Rc<Editor>) {
     ));
     view.add_controller(drop);
 
-    // An entry dragged from the sidebar (its private type, a move there): linked here.
+    // Entries dragged from the sidebar (its private type, a move there): linked here, one per
+    // line.
     let entry = gtk::DropTargetAsync::new(
         Some(gtk::gdk::ContentFormats::new(&[crate::sidebar::DRAG_MIME])),
         gtk::gdk::DragAction::MOVE,
@@ -618,15 +619,15 @@ pub(crate) fn image_input(view: &sourceview5::View, editor: &Rc<Editor>) {
             place_drop(target.widget().as_ref(), &editor, x, y);
             let drop = drop.clone();
             glib::spawn_future_local(async move {
-                let path = crate::sidebar::read_path(&drop).await;
+                let paths = crate::sidebar::read_paths(&drop).await;
                 // Nothing moves: the sidebar ignores how its drag ended.
-                drop.finish(if path.is_some() {
-                    gtk::gdk::DragAction::MOVE
-                } else {
+                drop.finish(if paths.is_empty() {
                     gtk::gdk::DragAction::empty()
+                } else {
+                    gtk::gdk::DragAction::MOVE
                 });
-                if let Some(path) = path {
-                    insert_dropped(&editor, &[path]);
+                if !paths.is_empty() {
+                    insert_dropped(&editor, &paths);
                 }
             });
             true

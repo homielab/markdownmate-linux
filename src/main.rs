@@ -32,6 +32,7 @@ mod links;
 mod lists;
 mod math;
 mod mentions;
+mod multisel;
 mod naming;
 mod notes;
 mod outline;

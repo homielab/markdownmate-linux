@@ -69,6 +69,15 @@ mod tests {
     }
 
     #[test]
+    fn several_sidebar_notes_one_wiki_link_per_line() {
+        let lines: Vec<String> = ["/n/A.md", "/n/x/Dup.md", "/n/Up.MD"]
+            .iter()
+            .map(|p| link(p, false))
+            .collect();
+        assert_eq!(lines.join("\n"), "[[A]]\n[[x/Dup]]\n[[Up]]");
+    }
+
+    #[test]
     fn mixed_files_one_per_line() {
         let lines: Vec<String> = [
             ("/n/A.md", false),

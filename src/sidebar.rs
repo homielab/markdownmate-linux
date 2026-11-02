@@ -3,6 +3,9 @@
 //! folder of thousands of notes stays fast. Right-click: New Note, New Folder…, Find in
 //! “Folder”…, Rename…, Duplicate, Add to / Remove from Favorites, Move to Trash, Move to
 //! Folder…, Sort By. Drag an entry onto a folder (or empty space = the open folder) to move it.
+//! Ctrl / Shift-click and Shift+↑↓ select several entries (`gtk::MultiSelection`); a plain click
+//! opens a note or opens/closes a folder. With several selected, the right-click menu, Delete
+//! and a drag act on all of them (`multisel`).
 //! Entries are in the scan's order (`notes::SortOrder`); under a date order a note whose date
 //! changed moves in place (`resort_note`). Above it, the Favorites panel (`favorites_panel`);
 //! below it, the Tags panel (`tags_panel`).
@@ -15,7 +18,7 @@ use std::time::SystemTime;
 use adw::prelude::*;
 use gtk::{gio, glib};
 
-use crate::{Editor, UNTITLED, complete, favorites, file_name, notes};
+use crate::{Editor, UNTITLED, complete, favorites, file_name, multisel, notes};
 
 /// One sidebar entry; `children` (the folder's entries) is None for a note. `date`: the one
 /// the order sorts by (`notes::Node::Note`).
@@ -202,6 +205,32 @@ pub fn sidebar(editor: &Rc<Editor>, tree: &[notes::Node], root: &Path) -> gtk::S
         }
     });
 
+    // The selection of the tree being replaced (a rescan), or the entries just moved.
+    let keep: Vec<PathBuf> = editor.sidebar_select.take().unwrap_or_else(|| {
+        editor
+            .sidebar_view
+            .borrow()
+            .as_ref()
+            .and_then(selection_of)
+            .map(|s| selected(&s).into_iter().map(|(path, _)| path).collect())
+            .unwrap_or_default()
+    });
+    let selection = gtk::MultiSelection::new(Some(model.clone()));
+    if !keep.is_empty() {
+        let keep: std::collections::HashSet<PathBuf> = keep.into_iter().collect();
+        let picked = gtk::Bitset::new_empty();
+        for i in 0..model.n_items() {
+            if model
+                .row(i)
+                .and_then(|r| r.item())
+                .is_some_and(|obj| keep.contains(&item(&obj).path))
+            {
+                picked.add(i);
+            }
+        }
+        selection.set_selection(&picked, &gtk::Bitset::new_range(0, model.n_items()));
+    }
+
     // After Move to Folder…: the moved entry's row (its folders were opened above).
     let reveal = editor.sidebar_reveal.take().and_then(|path| {
         (0..model.n_items()).find(|&i| {
@@ -213,7 +242,7 @@ pub fn sidebar(editor: &Rc<Editor>, tree: &[notes::Node], root: &Path) -> gtk::S
     });
 
     let factory = gtk::SignalListItemFactory::new();
-    let w = weak.clone();
+    let (w, sel) = (weak.clone(), selection.downgrade());
     factory.connect_setup(move |_, obj| {
         let Some(li) = obj.downcast_ref::<gtk::ListItem>() else {
             return;
@@ -223,8 +252,9 @@ pub fn sidebar(editor: &Rc<Editor>, tree: &[notes::Node], root: &Path) -> gtk::S
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .build();
         let expander = gtk::TreeExpander::builder().child(&label).build();
-        context_menu(&expander, &w);
-        drag_source(&expander);
+        open_on_click(&expander, &w);
+        context_menu(&expander, &w, &sel);
+        drag_source(&expander, &sel);
         li.set_child(Some(&expander));
     });
     factory.connect_bind(|_, obj| {
@@ -254,34 +284,30 @@ pub fn sidebar(editor: &Rc<Editor>, tree: &[notes::Node], root: &Path) -> gtk::S
         }
     });
 
+    // Not single_click_activate: that selects rows on hover and never on a click.
+    // `open_on_click` opens on a plain click instead; Enter still activates.
     let view = gtk::ListView::builder()
-        .model(&gtk::NoSelection::new(Some(model)))
+        .model(&selection)
         .factory(&factory)
-        .single_click_activate(true)
         .build();
     view.add_css_class("navigation-sidebar");
     view.add_css_class("sidebar-tree");
     editor.sidebar_view.replace(Some(view.clone()));
     drop_target(&view, &weak, root);
+    trash_key(&view, &weak);
     if let Some(i) = reveal {
         let view = view.clone();
         // Once the view is in the window.
         glib::idle_add_local_once(move || view.scroll_to(i, gtk::ListScrollFlags::FOCUS, None));
     }
-    // Click: a folder opens/closes, a note opens in the editor.
+    // Enter on a row: as a plain click.
     view.connect_activate(move |view, pos| {
-        let Some(row) = view
+        if let Some(row) = view
             .model()
             .and_then(|m| m.item(pos))
             .and_downcast::<gtk::TreeListRow>()
-        else {
-            return;
-        };
-        if folder_path(&row).is_some() {
-            row.set_expanded(!row.is_expanded());
-        } else if let (Some(editor), Some(obj)) = (weak.upgrade(), row.item()) {
-            let path = item(&obj).path.clone();
-            editor.open(&path);
+        {
+            activate(&weak, &row);
         }
     });
     gtk::ScrolledWindow::builder()
@@ -289,6 +315,160 @@ pub fn sidebar(editor: &Rc<Editor>, tree: &[notes::Node], root: &Path) -> gtk::S
         .vexpand(true)
         .child(&view)
         .build()
+}
+
+/// A plain click or Enter on `row`: a folder opens/closes, a note opens in the editor.
+fn activate(editor: &Weak<Editor>, row: &gtk::TreeListRow) {
+    if folder_path(row).is_some() {
+        row.set_expanded(!row.is_expanded());
+    } else if let (Some(editor), Some(obj)) = (editor.upgrade(), row.item()) {
+        let path = item(&obj).path.clone();
+        editor.open(&path);
+    }
+}
+
+/// A plain left click on the row `widget` activates it (`activate`); with Ctrl or Shift held
+/// it only changes the selection (the list does that), so the note shown stays. A double
+/// click is taken here, so it does not activate the row a second time.
+fn open_on_click(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
+    let gesture = gtk::GestureClick::builder()
+        .button(gtk::gdk::BUTTON_PRIMARY)
+        .build();
+    gesture.connect_pressed(|gesture, n_press, _, _| {
+        if n_press > 1 {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+        }
+    });
+    let weak = editor.clone();
+    gesture.connect_released(move |gesture, n_press, _, _| {
+        let extend = gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::SHIFT_MASK;
+        if n_press != 1 || gesture.current_event_state().intersects(extend) {
+            return;
+        }
+        if let Some(row) = gesture
+            .widget()
+            .and_downcast::<gtk::TreeExpander>()
+            .and_then(|e| e.list_row())
+        {
+            activate(&weak, &row);
+        }
+    });
+    widget.add_controller(gesture);
+}
+
+/// The tree's selection model of sidebar `view`.
+fn selection_of(view: &gtk::ListView) -> Option<gtk::MultiSelection> {
+    view.model().and_downcast::<gtk::MultiSelection>()
+}
+
+/// The selected entries of `selection` in tree order: path, and whether it is a note.
+fn selected(selection: &gtk::MultiSelection) -> Vec<(PathBuf, bool)> {
+    let set = selection.selection();
+    (0..set.size())
+        .filter_map(|n| u32::try_from(n).ok())
+        .filter_map(|n| selection.item(set.nth(n)))
+        .filter_map(|obj| obj.downcast::<gtk::TreeListRow>().ok()?.item())
+        .map(|obj| {
+            let it = item(&obj);
+            (it.path.clone(), it.children.is_none())
+        })
+        .collect()
+}
+
+/// The entries a right-click menu, Delete or a drag on the row at `pos` acts on: the whole
+/// selection when that row is part of a selection of several, else the row alone (None).
+fn several(selection: &gtk::MultiSelection, pos: u32) -> Option<Vec<(PathBuf, bool)>> {
+    (selection.is_selected(pos) && selection.selection().size() > 1).then(|| selected(selection))
+}
+
+/// Delete in the tree: moves the selected entries to the Trash, asking first when there
+/// are several (`trash_all`).
+fn trash_key(view: &gtk::ListView, editor: &Weak<Editor>) {
+    let keys = gtk::EventControllerKey::new();
+    let (weak, v) = (editor.clone(), view.downgrade());
+    keys.connect_key_pressed(move |_, key, _, state| {
+        let mods = state & gtk::accelerator_get_default_mod_mask();
+        if !matches!(key, gtk::gdk::Key::Delete | gtk::gdk::Key::KP_Delete) || !mods.is_empty() {
+            return glib::Propagation::Proceed;
+        }
+        let (Some(editor), Some(sel)) =
+            (weak.upgrade(), v.upgrade().as_ref().and_then(selection_of))
+        else {
+            return glib::Propagation::Proceed;
+        };
+        let entries = selected(&sel);
+        if entries.is_empty() {
+            return glib::Propagation::Proceed;
+        }
+        trash_all(&editor, &entries);
+        glib::Propagation::Stop
+    });
+    view.add_controller(keys);
+}
+
+/// Moves `entries` (path, is a note) to the Trash: one entry at once, as the menu always did;
+/// several after one confirmation naming how many (`multisel::trash_question`). An entry
+/// inside a selected folder goes with it.
+fn trash_all(editor: &Rc<Editor>, entries: &[(PathBuf, bool)]) {
+    let paths: Vec<PathBuf> = entries.iter().map(|(p, _)| p.clone()).collect();
+    let set = multisel::move_set(&paths);
+    if let [path] = set.as_slice() {
+        return editor.trash(path);
+    }
+    let notes = entries
+        .iter()
+        .filter(|(p, is_note)| *is_note && set.contains(p))
+        .count();
+    let (heading, body) = multisel::trash_question(notes, set.len() - notes);
+    let dialog = adw::AlertDialog::builder()
+        .heading(heading)
+        .body(body)
+        .default_response("trash")
+        .close_response("cancel")
+        .build();
+    dialog.add_responses(&[("cancel", "Cancel"), ("trash", "Move to Trash")]);
+    dialog.set_response_appearance("trash", adw::ResponseAppearance::Destructive);
+    let weak = Rc::downgrade(editor);
+    dialog.connect_response(Some("trash"), move |_, _| {
+        if let Some(editor) = weak.upgrade() {
+            for path in &set {
+                editor.trash(path);
+            }
+        }
+    });
+    dialog.present(Some(&editor.window));
+}
+
+/// Show in Files for several entries: Files opens their folders with them selected (the
+/// FileManager1 D-Bus call Files and most file managers answer); without it, the first
+/// entry the usual way (`show_in_files`).
+fn show_all_in_files(editor: &Rc<Editor>, paths: &[PathBuf]) {
+    let uris: Vec<String> = paths
+        .iter()
+        .map(|p| gio::File::for_path(p).uri().to_string())
+        .collect();
+    let (weak, first) = (Rc::downgrade(editor), paths.first().cloned());
+    glib::spawn_future_local(async move {
+        let shown = match gio::bus_get_future(gio::BusType::Session).await {
+            Ok(bus) => bus
+                .call_future(
+                    Some("org.freedesktop.FileManager1"),
+                    "/org/freedesktop/FileManager1",
+                    "org.freedesktop.FileManager1",
+                    "ShowItems",
+                    Some(&(uris, String::new()).to_variant()),
+                    None,
+                    gio::DBusCallFlags::NONE,
+                    -1,
+                )
+                .await
+                .is_ok(),
+            Err(_) => false,
+        };
+        if let (false, Some(editor), Some(first)) = (shown, weak.upgrade(), first) {
+            show_in_files(&editor, &first);
+        }
+    });
 }
 
 /// Opens Files at `path`'s folder with `path` selected (sidebar menu ▸ Show in Files, Find
@@ -309,9 +489,7 @@ pub(crate) fn show_in_files(editor: &Rc<Editor>, path: &Path) {
 /// Scrolls the tree to `path` and focuses its row, opening the folders above it first (a
 /// Favorites folder, Open Quickly). Nothing happens for a path the tree does not list.
 pub fn reveal(view: &gtk::ListView, path: &Path) {
-    let Some(model) = view
-        .model()
-        .and_downcast::<gtk::NoSelection>()
+    let Some(model) = selection_of(view)
         .and_then(|s| s.model())
         .and_downcast::<gtk::TreeListModel>()
     else {
@@ -340,20 +518,29 @@ pub fn reveal(view: &gtk::ListView, path: &Path) {
 /// Right-click menu of a sidebar entry: New Note, New Folder… and Find in “Folder”… (folders),
 /// Rename…, Duplicate, Add to / Remove from Favorites, Show in Files, Copy Path, Copy Wiki Link
 /// (notes), Move to Trash, Move to Folder…, then Sort By (the current order checked).
+/// On an entry of a selection of several: only the actions that apply to all of them
+/// (`multisel::actions`), each acting on all.
 /// The entry is read at click time: list rows are recycled for other entries.
-fn context_menu(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
+fn context_menu(
+    widget: &gtk::TreeExpander,
+    editor: &Weak<Editor>,
+    selection: &glib::WeakRef<gtk::MultiSelection>,
+) {
     let gesture = gtk::GestureClick::builder()
         .button(gtk::gdk::BUTTON_SECONDARY)
         .build();
-    let weak = editor.clone();
+    let (weak, sel) = (editor.clone(), selection.clone());
     gesture.connect_pressed(move |gesture, _, x, y| {
         let (Some(editor), Some(widget)) = (weak.upgrade(), gesture.widget()) else {
             return;
         };
-        let Some(obj) = widget
+        let Some(row) = widget
             .downcast_ref::<gtk::TreeExpander>()
-            .and_then(|e| e.item())
+            .and_then(|e| e.list_row())
         else {
+            return;
+        };
+        let Some(obj) = row.item() else {
             return;
         };
         let (path, is_note) = {
@@ -361,6 +548,15 @@ fn context_menu(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
             (it.path.clone(), it.children.is_none())
         };
         gesture.set_state(gtk::EventSequenceState::Claimed);
+        let many = sel.upgrade().and_then(|s| several(&s, row.position()));
+        let root = editor.root.borrow().clone().unwrap_or_default();
+        let actions = many.as_ref().map(|entries| {
+            let favs = editor.favorites.borrow();
+            multisel::actions(entries, &root, |p| favorites::contains(&favs, &root, p))
+        });
+        if actions.as_ref().is_some_and(Vec::is_empty) {
+            return;
+        }
         let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let popover = gtk::Popover::builder()
             .child(&menu)
@@ -387,6 +583,28 @@ fn context_menu(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
             });
             menu.append(&button);
         };
+        if let (Some(entries), Some(actions)) = (many, actions) {
+            menu.append(
+                &gtk::Label::builder()
+                    .label(format!("{} Items", entries.len()))
+                    .xalign(0.0)
+                    .margin_start(12)
+                    .margin_top(6)
+                    .margin_bottom(3)
+                    .css_classes(["dim-label", "caption-heading"])
+                    .build(),
+            );
+            let entries = Rc::new(entries);
+            for action in actions {
+                let (e, entries) = (Rc::clone(&editor), Rc::clone(&entries));
+                item(
+                    action.title(),
+                    Box::new(move || run_on_all(&e, action, &entries)),
+                );
+            }
+            popover.popup();
+            return;
+        }
         let (e, d) = (Rc::clone(&editor), dir.clone());
         item("New Note", Box::new(move || e.new_note(&d, UNTITLED)));
         if !is_note {
@@ -418,8 +636,10 @@ fn context_menu(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
             }),
         );
         let (e, p) = (Rc::clone(&editor), path.clone());
-        item("Duplicate", Box::new(move || e.duplicate(&p)));
-        let root = editor.root.borrow().clone().unwrap_or_default();
+        item(
+            "Duplicate",
+            Box::new(move || e.duplicate(std::slice::from_ref(&p))),
+        );
         let favourite = favorites::contains(&editor.favorites.borrow(), &root, &path);
         let (e, p) = (Rc::clone(&editor), path.clone());
         item(
@@ -458,7 +678,10 @@ fn context_menu(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
         let (e, p) = (Rc::clone(&editor), path.clone());
         item("Move to Trash", Box::new(move || e.trash(&p)));
         let (e, p) = (Rc::clone(&editor), path.clone());
-        item("Move to Folder…", Box::new(move || move_to_folder(&e, &p)));
+        item(
+            "Move to Folder…",
+            Box::new(move || move_to_folder(&e, std::slice::from_ref(&p))),
+        );
         menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         let heading = gtk::Label::builder()
             .label("Sort By")
@@ -500,33 +723,65 @@ fn context_menu(widget: &gtk::TreeExpander, editor: &Weak<Editor>) {
     widget.add_controller(gesture);
 }
 
-/// Private mime type of a sidebar drag: the entry's path. Not text or a file list, so other
-/// apps (Files) ignore it; the sidebar moves the entry, the editor links to it.
+/// Runs a right-click `action` on all selected `entries` (path, is a note).
+fn run_on_all(editor: &Rc<Editor>, action: multisel::Action, entries: &[(PathBuf, bool)]) {
+    use multisel::Action;
+    let paths: Vec<PathBuf> = entries.iter().map(|(p, _)| p.clone()).collect();
+    match action {
+        Action::Duplicate => editor.duplicate(&paths),
+        Action::AddToFavorites | Action::RemoveFromFavorites => {
+            let on = action == Action::AddToFavorites;
+            editor.change_favorites(move |list, root| {
+                for path in &paths {
+                    favorites::toggle(list, root, path, on);
+                }
+            });
+        }
+        Action::ShowInFiles => show_all_in_files(editor, &paths),
+        Action::CopyPath => {
+            editor
+                .window
+                .clipboard()
+                .set_text(&multisel::copy_paths(&paths));
+            editor.toast("Paths copied");
+        }
+        Action::MoveToTrash => trash_all(editor, entries),
+        Action::MoveToFolder => move_to_folder(editor, &paths),
+    }
+}
+
+/// Private mime type of a sidebar drag: the entries' paths (`multisel::encode`). Not text or a
+/// file list, so other apps (Files) ignore it; the sidebar moves the entries, the editor links
+/// to them.
 pub(crate) const DRAG_MIME: &str = "application/x-markdownmate-entry";
 
 thread_local! {
-    /// The entry being dragged from this sidebar, so drop targets can be highlighted while
+    /// The entries being dragged from this sidebar, so drop targets can be highlighted while
     /// hovering (the drag data itself is only readable on drop).
-    static DRAGGED: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    static DRAGGED: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Lets a row be dragged; the entry is read at drag time since rows are recycled.
-fn drag_source(widget: &gtk::TreeExpander) {
+/// Lets a row be dragged: the whole selection when the row is part of a selection of several,
+/// else the row's entry. Read at drag time since rows are recycled.
+fn drag_source(widget: &gtk::TreeExpander, selection: &glib::WeakRef<gtk::MultiSelection>) {
     let source = gtk::DragSource::builder()
         .actions(gtk::gdk::DragAction::MOVE)
         .build();
-    source.connect_prepare(|source, _, _| {
-        use std::os::unix::ffi::OsStrExt;
-        let obj = source
+    let sel = selection.clone();
+    source.connect_prepare(move |source, _, _| {
+        let row = source
             .widget()?
             .downcast_ref::<gtk::TreeExpander>()?
-            .item()?;
-        let path = item(&obj).path.clone();
-        let bytes = glib::Bytes::from(path.as_os_str().as_bytes());
-        DRAGGED.set(Some(path));
+            .list_row()?;
+        let paths: Vec<PathBuf> = match sel.upgrade().and_then(|s| several(&s, row.position())) {
+            Some(entries) => entries.into_iter().map(|(p, _)| p).collect(),
+            None => vec![item(&row.item()?).path.clone()],
+        };
+        let bytes = glib::Bytes::from_owned(multisel::encode(&paths));
+        DRAGGED.set(paths);
         Some(gtk::gdk::ContentProvider::for_bytes(DRAG_MIME, &bytes))
     });
-    source.connect_drag_end(|_, _, _| DRAGGED.set(None));
+    source.connect_drag_end(|_, _, _| DRAGGED.set(Vec::new()));
     widget.add_controller(source);
 }
 
@@ -566,10 +821,11 @@ fn folder_row(view: &gtk::Widget, dir: &Path) -> Option<gtk::Widget> {
     })
 }
 
-/// Dropping a dragged entry on a folder row moves it into that folder; on a note row, into the
-/// note's folder; on empty space, into the open folder `root`. While dragging, the folder that
-/// would receive it is highlighted (CSS class `drop-target`): its row, or the whole list for `root`;
-/// nothing where the move is refused or a no-op (`naming::move_target`).
+/// Dropping dragged entries on a folder row moves them into that folder; on a note row, into the
+/// note's folder; on empty space, into the open folder `root` (`Editor::move_all`). While
+/// dragging, the folder that would receive them is highlighted (CSS class `drop-target`): its
+/// row, or the whole list for `root`; nothing where every move is refused or a no-op
+/// (`naming::move_target`).
 /// Files dropped from another app (a file list) are copied into that folder instead
 /// (`Editor::copy_in`); the drop folder is highlighted the same way.
 fn drop_target(view: &gtk::ListView, editor: &Weak<Editor>, root: &Path) {
@@ -613,9 +869,11 @@ fn drop_target(view: &gtk::ListView, editor: &Weak<Editor>, root: &Path) {
                 // An outside drop is a copy: any folder takes it.
                 let ok = !internal
                     || DRAGGED.with_borrow(|from| {
-                        from.as_ref().is_some_and(|f| {
-                            matches!(crate::naming::move_target(f, &dir, &r), Ok(Some(_)))
-                        })
+                        let set = multisel::move_set(from);
+                        !set.iter().any(|f| dir.starts_with(f))
+                            && set.iter().any(|f| {
+                                matches!(crate::naming::move_target(f, &dir, &r), Ok(Some(_)))
+                            })
                     });
                 let mut h = h.borrow_mut();
                 (h.dir, h.ok) = (Some(dir.clone()), ok);
@@ -692,16 +950,16 @@ fn drop_target(view: &gtk::ListView, editor: &Weak<Editor>, root: &Path) {
             return true;
         }
         glib::spawn_future_local(async move {
-            let from = read_path(&drop).await;
-            drop.finish(if from.is_some() {
-                gtk::gdk::DragAction::MOVE
-            } else {
+            let from = read_paths(&drop).await;
+            drop.finish(if from.is_empty() {
                 gtk::gdk::DragAction::empty()
+            } else {
+                gtk::gdk::DragAction::MOVE
             });
-            // `from` comes from any app that offers DRAG_MIME: move_into checks it is inside
+            // `from` comes from any app that offers DRAG_MIME: move_all checks each is inside
             // the open folder.
-            if let (Some(editor), Some(from)) = (weak.upgrade(), from) {
-                editor.move_into(&from, &dir);
+            if let (Some(editor), false) = (weak.upgrade(), from.is_empty()) {
+                editor.move_all(&from, &dir);
             }
         });
         true
@@ -714,25 +972,28 @@ fn is_internal(drop: &gtk::gdk::Drop) -> bool {
     drop.formats().contain_mime_type(DRAG_MIME)
 }
 
-/// The path carried by a sidebar drag (DRAG_MIME).
-pub(crate) async fn read_path(drop: &gtk::gdk::Drop) -> Option<PathBuf> {
-    use std::os::unix::ffi::OsStrExt;
-    let (stream, _) = drop
+/// The paths carried by a sidebar drag (DRAG_MIME); empty if it could not be read.
+pub(crate) async fn read_paths(drop: &gtk::gdk::Drop) -> Vec<PathBuf> {
+    let Ok((stream, _)) = drop
         .read_future(&[DRAG_MIME], glib::Priority::DEFAULT)
         .await
-        .ok()?;
+    else {
+        return Vec::new();
+    };
     let mut bytes = Vec::new();
     loop {
-        let chunk = stream
+        let Ok(chunk) = stream
             .read_bytes_future(4096, glib::Priority::DEFAULT)
             .await
-            .ok()?;
+        else {
+            return Vec::new();
+        };
         if chunk.is_empty() {
             break;
         }
         bytes.extend_from_slice(&chunk);
     }
-    (!bytes.is_empty()).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(&bytes)))
+    multisel::decode(&bytes)
 }
 
 /// The folders of sidebar `store` and below, in its order, each with its `depth` (1 for the
@@ -747,17 +1008,12 @@ fn folders(store: &gio::ListStore, depth: usize, out: &mut Vec<(PathBuf, usize)>
     }
 }
 
-/// Whether Move to Folder… can move `entry` into folder `dir`: not where it already is, not
-/// into itself or one of its own folders.
-fn can_move_into(entry: &Path, dir: &Path) -> bool {
-    entry.parent() != Some(dir) && !dir.starts_with(entry)
-}
-
-/// Move to Folder…: the open folder and its folders as an indented tree (sidebar order), the
-/// entry's own folder, the entry and its subfolders greyed out. Move (or Enter / a double-click
-/// on a row) moves it exactly like dropping it on that folder: same refusal of a taken name,
-/// same offer to update links; then the sidebar shows it. Cancel or Esc changes nothing.
-fn move_to_folder(editor: &Rc<Editor>, entry: &Path) {
+/// Move to Folder… for `entries` (one, or a selection of several): the open folder and its
+/// folders as an indented tree (sidebar order), greyed out where nothing would move or a folder
+/// would move into itself (`multisel::can_move_into`). Move (or Enter / a double-click on a row)
+/// moves them exactly like dropping them on that folder: same refusal of a taken name, one offer
+/// to update links; then the sidebar shows them, selected. Cancel or Esc changes nothing.
+fn move_to_folder(editor: &Rc<Editor>, entries: &[PathBuf]) {
     let (Some(root), Some(store)) = (
         editor.root.borrow().clone(),
         editor.sidebar_store.borrow().clone(),
@@ -766,6 +1022,7 @@ fn move_to_folder(editor: &Rc<Editor>, entry: &Path) {
     };
     let mut choices = vec![(root.clone(), 0)];
     folders(&store, 1, &mut choices);
+    let moving = multisel::move_set(entries);
     let list = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::Single)
         // A click picks the folder; Move, Enter or a double-click moves.
@@ -784,7 +1041,7 @@ fn move_to_folder(editor: &Rc<Editor>, entry: &Path) {
                 .build(),
         );
         let row = gtk::ListBoxRow::builder().child(&row).build();
-        let allowed = can_move_into(entry, dir);
+        let allowed = multisel::can_move_into(&moving, dir);
         row.set_sensitive(allowed);
         row.set_selectable(allowed);
         row.set_activatable(allowed);
@@ -812,13 +1069,16 @@ fn move_to_folder(editor: &Rc<Editor>, entry: &Path) {
             .build(),
     ));
     let dialog = adw::Dialog::builder()
-        .title(format!("Move “{}” to", file_name(entry)))
+        .title(match moving.as_slice() {
+            [entry] => format!("Move “{}” to", file_name(entry)),
+            _ => format!("Move {} Items to", moving.len()),
+        })
         .content_width(380)
         .content_height(420)
         .child(&content)
         .build();
     let (weak, d) = (Rc::downgrade(editor), dialog.downgrade());
-    let (entry, choices) = (entry.to_path_buf(), Rc::new(choices));
+    let choices = Rc::new(choices);
     let run = Rc::new(move |row: &gtk::ListBoxRow| {
         let dir = usize::try_from(row.index())
             .ok()
@@ -829,9 +1089,7 @@ fn move_to_folder(editor: &Rc<Editor>, entry: &Path) {
         if let Some(d) = d.upgrade() {
             d.close();
         }
-        if let Some(to) = editor.move_into(&entry, dir) {
-            editor.reveal_in_sidebar(&to);
-        }
+        editor.move_all(&moving, dir);
     });
     let b = move_button.clone();
     list.connect_row_selected(move |_, row| b.set_sensitive(row.is_some()));
@@ -1194,21 +1452,6 @@ mod tests {
         folders(&store(&tree, Path::new("/r")), 1, &mut out);
         let p = PathBuf::from;
         assert_eq!(out, [(p("/r/b"), 1), (p("/r/b/c"), 2), (p("/r/a"), 1)]);
-    }
-
-    #[test]
-    fn move_to_folder_greys_out_its_own_folder_and_itself() {
-        let p = Path::new;
-        // A note: anywhere but its own folder.
-        assert!(!can_move_into(p("/r/b/m.md"), p("/r/b")));
-        assert!(can_move_into(p("/r/b/m.md"), p("/r")));
-        assert!(can_move_into(p("/r/b/m.md"), p("/r/b/c")));
-        // A folder: not its parent, itself or below it; a sibling with a longer name is fine.
-        assert!(!can_move_into(p("/r/b"), p("/r")));
-        assert!(!can_move_into(p("/r/b"), p("/r/b")));
-        assert!(!can_move_into(p("/r/b"), p("/r/b/c")));
-        assert!(can_move_into(p("/r/b"), p("/r/bb")));
-        assert!(can_move_into(p("/r/b/c"), p("/r")));
     }
 
     #[test]

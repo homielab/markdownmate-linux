@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Select several sidebar items: Ctrl-click, Shift-click or Shift+↑↓ select notes and folders, then Move to Folder…, Move to Trash (one confirmation, or Delete), Add to / Remove from Favorites, Duplicate, Copy Path and Show in Files act on all of them, and dragging moves them all with one question about updating links. Dropping several notes into the editor inserts one `[[link]]` per line. Same as the macOS app.
 - Export as Word… in the main menu: save a note as a `.docx` that opens in Word and LibreOffice Writer with headings in Heading 1–6 styles, working links, embedded images (PNG, JPEG, GIF), lists, tables, quotes, code and callouts, so you no longer convert an RTF export by hand. Same as the macOS app.
 - Block references: a `^id` alone on its line after one blank line, as Obsidian writes it below a list, table, quote, code block or paragraph, now names that block and is hidden in the preview. Hover previews no longer show `^id` markers. Same as the macOS app.
 - Block references from Obsidian: a `^id` at the end of a paragraph, list item, quote or table is hidden in the preview, print and exports, `[[Note#^id]]` and `[[#^id]]` links open the note at that block (Ctrl+click, the preview, the hover tooltip, `[[Note#^` completion), and `![[Note#^id]]` shows just that block. Find Broken Links lists links to a block that no longer exists. Same as the macOS app.
