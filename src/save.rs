@@ -74,6 +74,11 @@ fn conflict_path(path: &Path) -> PathBuf {
 
 /// Replaces `path`'s contents with `text` via temp file + rename in the same folder.
 pub fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
+    write_atomic_bytes(path, text.as_bytes())
+}
+
+/// `write_atomic` for any bytes (Export as Word's `.docx`).
+pub fn write_atomic_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
     // Follow a symlinked note so the rename replaces the target, not the link.
     let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let perms = fs::metadata(&target).ok().map(|m| m.permissions());
@@ -83,7 +88,7 @@ pub fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
             .write(true)
             .create_new(true)
             .open(&tmp)?;
-        file.write_all(text.as_bytes())?;
+        file.write_all(bytes)?;
         if let Some(perms) = perms {
             file.set_permissions(perms)?;
         }

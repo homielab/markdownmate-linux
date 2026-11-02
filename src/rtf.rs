@@ -19,20 +19,20 @@ pub fn rtf(md: &str) -> String {
     rtf_with(md, crate::smart::enabled())
 }
 
-/// `rtf`, with smart punctuation only if `smart`.
-fn rtf_with(md: &str, smart: bool) -> String {
-    let arena = comrak::Arena::new();
+/// The comrak AST the RTF and Word exports walk: `%%comments%%` and block ids left out, smart
+/// punctuation applied if `smart`, highlights split over lines undone, alerts and callouts made.
+pub(crate) fn document<'a>(arena: &'a comrak::Arena<'a>, md: &str, smart: bool) -> &'a AstNode<'a> {
     let mut options = crate::render::options();
     if smart {
         crate::smart::prepare(&mut options);
     }
     let md = crate::render::strip_comments(md);
-    let root = comrak::parse_document(&arena, &md, &options);
+    let root = comrak::parse_document(arena, &md, &options);
     crate::blocks::strip(root, &md);
     if smart {
         crate::smart::apply(root);
     }
-    crate::render::unmark_multiline(&arena, root);
+    crate::render::unmark_multiline(arena, root);
     let quotes: Vec<_> = root
         .descendants()
         .filter(|n| matches!(n.data().value, NodeValue::BlockQuote))
@@ -40,6 +40,13 @@ fn rtf_with(md: &str, smart: bool) -> String {
     for quote in quotes {
         crate::render::make_alert(quote);
     }
+    root
+}
+
+/// `rtf`, with smart punctuation only if `smart`.
+fn rtf_with(md: &str, smart: bool) -> String {
+    let arena = comrak::Arena::new();
+    let root = document(&arena, md, smart);
     // Colours: 1 link, 2 code shading, then one per alert group (`ALERT_COLOURS` order), then
     // `HIGHLIGHT`.
     let mut colours = String::from("\\red0\\green82\\blue204;\\red240\\green240\\blue240;");

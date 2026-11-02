@@ -11,6 +11,7 @@ mod daily;
 mod dailyname;
 mod diagrams;
 mod dialogs;
+mod docx;
 mod droplink;
 mod editor;
 mod extract;

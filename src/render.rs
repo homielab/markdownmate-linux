@@ -683,7 +683,7 @@ fn mark_embeds<'a>(
 }
 
 /// The byte ranges of the `![[target]]` / `![[target|option]]` in `text`.
-fn embed_spans(text: &str) -> Vec<std::ops::Range<usize>> {
+pub(crate) fn embed_spans(text: &str) -> Vec<std::ops::Range<usize>> {
     let mut found = Vec::new();
     let mut from = 0;
     while let Some(start) = text[from..].find("![[").map(|i| from + i) {
@@ -866,7 +866,7 @@ fn image_tag(src: &Path, name: &str, option: Option<&str>) -> String {
 /// An image size as Obsidian writes it after `|`: `300` → (300, None), `300x200` (or
 /// `300X200`) → (300, Some(200)), spaces around the numbers allowed; None for anything else
 /// (digits only, each above 0: `0`, `+300`, `300px`, empty).
-fn image_size(option: &str) -> Option<(u32, Option<u32>)> {
+pub(crate) fn image_size(option: &str) -> Option<(u32, Option<u32>)> {
     let number = |text: &str| {
         let digits = text.trim();
         if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {

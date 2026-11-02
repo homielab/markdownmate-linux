@@ -591,11 +591,19 @@ fn finished_page(view: &webkit6::WebView, done: impl FnOnce(Option<String>) + 's
     );
 }
 
-/// Writes an exported HTML page off the main thread, then says how it went.
-fn write_export(editor: &Rc<Editor>, dest: std::path::PathBuf, html: String) {
+/// Writes an exported file off the main thread, then says how it went.
+fn write_export(
+    editor: &Rc<Editor>,
+    dest: std::path::PathBuf,
+    html: impl AsRef<[u8]> + Send + 'static,
+) {
     let editor = Rc::clone(editor);
     glib::spawn_future_local(async move {
-        match gio::spawn_blocking(move || save::write_atomic(&dest, &html).map(|()| dest)).await {
+        match gio::spawn_blocking(move || {
+            save::write_atomic_bytes(&dest, html.as_ref()).map(|()| dest)
+        })
+        .await
+        {
             Ok(Ok(dest)) => editor.toast(&format!("Exported {}", file_name(&dest))),
             Ok(Err(e)) => editor.toast(&format!("Could not export: {e}")),
             Err(_) => editor.toast("Could not export the note"),
@@ -619,9 +627,27 @@ pub(crate) fn export_rtf(editor: &Rc<Editor>) {
     export_converted(editor, "Export as RTF", "rtf", crate::rtf::rtf);
 }
 
+/// Export as Word…: the same with `docx::docx`, suggesting `<note>.docx`; images relative to
+/// the note and `![[name]]` images of the open folder are embedded.
+pub(crate) fn export_word(editor: &Rc<Editor>) {
+    let Some(note) = editor.path.borrow().clone() else {
+        return;
+    };
+    let dir = note.parent().unwrap_or(Path::new("/")).to_path_buf();
+    let links = editor.links();
+    export_converted(editor, "Export as Word", "docx", move |text| {
+        crate::docx::docx(text, &dir, &links)
+    });
+}
+
 /// Save dialog titled `title` suggesting `<note>.<ext>` next to the note, then writes
 /// `convert` of the editor's text (unsaved edits included).
-fn export_converted(editor: &Rc<Editor>, title: &str, ext: &str, convert: fn(&str) -> String) {
+fn export_converted<T: AsRef<[u8]> + Send + 'static>(
+    editor: &Rc<Editor>,
+    title: &str,
+    ext: &str,
+    convert: impl FnOnce(&str) -> T + Send + 'static,
+) {
     let Some(note) = editor.path.borrow().clone() else {
         return;
     };
