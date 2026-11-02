@@ -6,6 +6,8 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+## 0.10.0
+
 - Large folders open faster in the background: Backlinks and Open Quickly's heading search are ready about twice as soon after opening a folder of 10,000 notes, because its notes are now read on several processor cores.
 - Open Quickly (Ctrl+P) searches headings: type `#` and part of a heading, such as `#budget`, to list matching headings from every note as “Heading — Note”, and Enter opens that note scrolled to the heading, so you can jump straight to a section without knowing which note holds it. Same as the macOS app.
 - Pasted Images and Scale Down To in Preferences ▸ Notes: save images pasted from the clipboard as PNG or JPEG and shrink wide ones to 1200, 1600 or 2000 px, so screenshots no longer bloat Git- or Syncthing-synced folders. Keep Format and Off (the defaults) change nothing; dropped image files, GIF and SVG are stored as they are. Same as the macOS app.

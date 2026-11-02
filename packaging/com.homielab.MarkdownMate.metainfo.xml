@@ -106,6 +106,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.10.0" date="2026-11-02">
+      <description>
+        <p>Obsidian-style embeds, callouts that fold, block references and image sizes, front matter as a properties table, an attachments folder setting, Rename Heading in the Outline, wiki link hover previews in the preview, daily note names and Daily Note for Date, heading search and aliases in Open Quickly, tag: and path: operators in Find in Folder, selecting several sidebar items, Export as Word, scaled-down pasted images, and faster large folders.</p>
+      </description>
+    </release>
     <release version="0.9.0" date="2026-11-01">
       <description>
         <p>Find Broken Links, Find Open Tasks and Find Unused Attachments, Find in Folder from the sidebar, Export Folder as HTML, wiki link hover previews, front-matter tags and aliases, New Note from Selection, Previous and Next Daily Note, template improvements, auto-pairing of brackets and quotes, smart punctuation, and builds for Ubuntu 26.04 LTS and 26.10.</p>

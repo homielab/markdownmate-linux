@@ -5,6 +5,17 @@
 # ignored, so the next release's entry can be written ahead.
 
 [[release]]
+version = "0.10.0"
+show = true
+notes = [
+    "Obsidian vaults render as they do there: ![[embeds]], foldable callouts of every kind, block references, image sizes and front matter as a properties table.",
+    "Open Quickly finds aliases and, with #, headings; Find in Folder narrows with tag: and path:; Rename Heading in the Outline updates every link.",
+    "Daily Note for Date, your own daily note name format, Open Today's Note at Launch, and an Attachments Folder setting.",
+    "Select several sidebar items and act on all of them; Export as Word; pasted images saved as PNG or JPEG and scaled down.",
+    "Hover a wiki link in the preview to see the note; large folders open faster.",
+]
+
+[[release]]
 version = "0.9.0"
 show = true
 notes = [
