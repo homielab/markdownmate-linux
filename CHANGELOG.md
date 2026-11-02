@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Block references: a `^id` alone on its line after one blank line, as Obsidian writes it below a list, table, quote, code block or paragraph, now names that block and is hidden in the preview. Hover previews no longer show `^id` markers. Same as the macOS app.
 - Block references from Obsidian: a `^id` at the end of a paragraph, list item, quote or table is hidden in the preview, print and exports, `[[Note#^id]]` and `[[#^id]]` links open the note at that block (Ctrl+click, the preview, the hover tooltip, `[[Note#^` completion), and `![[Note#^id]]` shows just that block. Find Broken Links lists links to a block that no longer exists. Same as the macOS app.
 - Daily Note Name in Preferences ▸ Notes: name daily notes the way your vault already does, such as `YYYY/MM/YYYY-MM-DD` for `Daily/2026/11/2026-11-02.md` or `YYYY-MM-DD dddd` for `2026-11-02 Monday.md` (`YYYY-MM-DD` by default). Today's Note, Daily Note for Date…, Previous / Next Daily Note and Open Today's Note at Launch find and create notes with that name, with `Template.md` kept at the top of the daily notes folder. Same as the macOS app.
 - Preview polish: a folded callout you opened or closed stays that way while you type elsewhere in the note; Find in Preview finds text inside closed callouts and opens them; tag chips look and act clickable only when a folder is open; Ctrl+hover over links and tags stays smooth in very large notes.

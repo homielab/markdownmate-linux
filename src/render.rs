@@ -494,6 +494,20 @@ fn mark_blocks<'a>(
             NodeValue::Paragraph => (Some(block), "p"),
             NodeValue::Item(_) | NodeValue::TaskItem(_) => (Some(block), "li"),
             NodeValue::BlockQuote => (Some(block), "blockquote"),
+            NodeValue::List(list) => (
+                block.first_child().and_then(|item| item.first_child()),
+                if list.list_type == comrak::nodes::ListType::Ordered {
+                    "ol"
+                } else {
+                    "ul"
+                },
+            ),
+            NodeValue::CodeBlock(_) => {
+                // A leaf: the marker goes in a paragraph before it, given to the next tag.
+                let p = arena.alloc(NodeValue::Paragraph.into());
+                block.insert_before(p);
+                (Some(&*p), NEXT)
+            }
             NodeValue::Table(_) => (
                 block.first_child().and_then(|row| row.first_child()),
                 "table",
@@ -525,6 +539,23 @@ fn put_block_ids(html: &str) -> String {
             .rmatch_indices(&open)
             .map(|(i, _)| i + open.len())
             .find(|&i| before[i..].starts_with([' ', '>']));
+        if tag == NEXT {
+            // `<p>marker</p>` before a code block: dropped, the block's opening tag gets the id.
+            let before = before.strip_suffix("<p>").unwrap_or(before);
+            out.push_str(before);
+            rest = &marker[tag.len() + id.len() + 2 * BLOCK_END.len_utf8()..];
+            rest = rest.strip_prefix("</p>").unwrap_or(rest);
+            rest = rest.strip_prefix('\n').unwrap_or(rest);
+            let at = rest
+                .find('<')
+                .and_then(|i| rest[i + 1..].find([' ', '>']).map(|n| i + 1 + n));
+            if let Some(at) = at {
+                out.push_str(&rest[..at]);
+                out.push_str(&format!(" id=\"^{id}\" data-block=\"{id}\""));
+                rest = &rest[at..];
+            }
+            continue;
+        }
         match at {
             Some(at) => {
                 out.push_str(&before[..at]);
@@ -2066,6 +2097,8 @@ const SIZE_END: char = '\u{E00F}';
 /// A block id's place: BLOCK, its tag, BLOCK_END, the id, BLOCK_END (`mark_blocks`).
 const BLOCK: char = '\u{E01A}';
 const BLOCK_END: char = '\u{E01B}';
+/// `mark_blocks` tag for a block marked just before it (a code block).
+const NEXT: &str = "+";
 /// `'0'`…`'9'` of a formula's index.
 const MATH_DIGITS: std::ops::RangeInclusive<char> = '\u{E010}'..='\u{E019}';
 

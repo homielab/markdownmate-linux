@@ -2,7 +2,9 @@
 //! `[[Note#^id]]` links to it and `![[Note#^id]]` embeds it. The id (ASCII letters, digits, `-`)
 //! ends the last line of a paragraph, a list item's line or a quote line after one or more
 //! spaces, or stands alone on the line right after the block (no blank line between); a table
-//! takes it at the end of its last row or alone on the line after it. A list item's id names
+//! takes it at the end of its last row or alone on the line after it. Alone after exactly one
+//! blank line it names the paragraph, list, quote, code block or table above (two or more blank
+//! lines: plain text). A list item's id names
 //! the item with its children; a quote's (on its last paragraph) the whole quote. Not on a
 //! heading line, in code, math or front matter. The first block with an id wins. The marker
 //! stays in the editor and is left out of everything rendered (`strip`). Pure, no GTK.
@@ -139,14 +141,23 @@ fn in_paragraph<'a>(p: &'a AstNode<'a>, lines: &[&str]) -> Option<Found<'a>> {
     };
     if alone {
         if pos.start.line == pos.end.line {
-            // `^id` alone right under a table (comrak may leave it out of the table).
-            let table = p.previous_sibling().filter(|t| {
-                matches!(t.data().value, NodeValue::Table(_))
-                    && t.data().sourcepos.end.line + 1 == pos.start.line
+            // `^id` alone right under a table (comrak may leave it out of the table), or after
+            // one blank line under a paragraph, list, quote, code block or table.
+            let block = p.previous_sibling().filter(|b| {
+                let end = b.data().sourcepos.end.line;
+                let gap = end + 2 == pos.start.line && line_at(lines, end + 1).trim().is_empty();
+                match b.data().value {
+                    NodeValue::Table(_) => gap || end + 1 == pos.start.line,
+                    NodeValue::Paragraph
+                    | NodeValue::List(_)
+                    | NodeValue::BlockQuote
+                    | NodeValue::CodeBlock(_) => gap,
+                    _ => false,
+                }
             })?;
             return Some(Found {
-                end: table,
-                ..found(table, Cut::Node(p))
+                end: block,
+                ..found(block, Cut::Node(p))
             });
         }
         // On its own line: a line break must come before it.
@@ -219,7 +230,12 @@ pub fn scan(md: &str) -> Vec<Block> {
         let marker = text.len() - found.id.len() - 1..text.len();
         out.push(Block {
             id: found.id,
-            lines: pos.start.line..=pos.end.line.max(found.line),
+            // An id after a blank line is not part of its block's lines.
+            lines: if found.line > pos.end.line + 1 {
+                pos.start.line..=pos.end.line
+            } else {
+                pos.start.line..=pos.end.line.max(found.line)
+            },
             column: pos.start.column,
             marker: (found.line - 1, marker),
         });
@@ -254,6 +270,17 @@ pub fn source(md: &str, block: &Block) -> String {
         out.push_str(text.get(cut..).unwrap_or(text));
     }
     out
+}
+
+/// `line` as a hover preview shows it: without a ` ^id` at its end; None when it is only `^id`.
+pub fn strip_line(line: &str) -> Option<&str> {
+    match line_id(line) {
+        Some((_, true)) => None,
+        Some((id, false)) => {
+            Some(line.trim_end()[..line.trim_end().len() - id.len() - 1].trim_end())
+        }
+        None => Some(line),
+    }
 }
 
 /// Removes every block id from the document `root` parsed from `md` (before its source lines
@@ -363,6 +390,40 @@ mod tests {
     }
 
     #[test]
+    fn alone_after_one_blank_line() {
+        let table = "| a | b |\n|---|---|\n| 1 | 2 |\n";
+        for (md, lines) in [
+            ("one\ntwo\n\n^x\n".to_string(), 1..=2),
+            ("- a\n- b\n  - c\n\n^x\n".to_string(), 1..=3),
+            ("1. a\n2. b\n\n^x\n".to_string(), 1..=2),
+            ("> one\n> two\n\n^x\n".to_string(), 1..=2),
+            ("```\ncode\n```\n\n^x\n".to_string(), 1..=3),
+            (format!("{table}\n^x\n"), 1..=3),
+        ] {
+            assert_eq!(ids(&md), [("x".into(), lines)], "{md}");
+            assert!(!html(&md).contains("^x<"), "{md}");
+            assert!(html(&md).contains("id=\"^x\" data-block=\"x\""), "{md}");
+        }
+        assert!(html("- a\n\n^x\n").contains("<ul id=\"^x\""));
+        assert!(html("1. a\n\n^x\n").contains("<ol id=\"^x\""));
+        assert!(html("```\ncode\n```\n\n^x\n").starts_with("<pre id=\"^x\""));
+        // Two blank lines: plain text.
+        assert!(ids("text\n\n\n^x\n").is_empty());
+        assert!(ids("- a\n\n\n^x\n").is_empty());
+        assert!(html("text\n\n\n^x\n").contains("^x"));
+        // Under a heading: plain text.
+        assert!(ids("# Title\n\n^x\n").is_empty());
+    }
+
+    #[test]
+    fn hover_lines_without_ids() {
+        assert_eq!(strip_line("Some text ^abc  "), Some("Some text"));
+        assert_eq!(strip_line("  ^abc"), None);
+        assert_eq!(strip_line("x^abc"), Some("x^abc"));
+        assert_eq!(strip_line("plain"), Some("plain"));
+    }
+
+    #[test]
     fn not_in_code_front_matter_or_headings() {
         for md in [
             "# Heading ^h\n",
@@ -374,7 +435,7 @@ mod tests {
             "$x ^c$\n",
             "---\ntitle: x ^f\n---\n\ntext\n",
             "^alone\n",
-            "text\n\n^after-blank\n",
+            "text\n\n\n^after-two-blanks\n",
             "# Heading\n^h\n",
             "```\ncode\n```\n^c\n",
             "text^glued\n",

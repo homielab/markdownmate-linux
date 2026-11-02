@@ -166,9 +166,9 @@ struct Collector {
 }
 
 impl Collector {
-    /// Adds `line` unless it is empty; true once nothing more fits.
+    /// Adds `line` (block ids left out, `blocks::strip_line`) unless it is empty; true once nothing more fits.
     fn push(&mut self, line: &str) -> bool {
-        let line = line.trim_end();
+        let line = crate::blocks::strip_line(line).unwrap_or("").trim_end();
         if self.full || line.trim_start().is_empty() {
             return self.full;
         }
@@ -412,8 +412,10 @@ mod tests {
     #[test]
     fn starts_at_a_block() {
         let md = "---\nk: v\n---\n\nIntro.\n\n- one\n- two ^b\n  - child\n\nend ^e\n";
-        assert_eq!(ex(md, Some("^b")), "- two ^b\n  - child\nend ^e");
-        assert_eq!(ex(md, Some("^e")), "end ^e");
+        assert_eq!(ex(md, Some("^b")), "- two\n  - child\nend");
+        assert_eq!(ex(md, Some("^e")), "end");
+        // Own-line ids are left out too.
+        assert_eq!(ex("- a\n\n^l\n\nnext\n", Some("^l")), "- a\nnext");
         // An unknown block: the note's top.
         assert_eq!(ex(md, Some("^nope")), ex(md, None));
     }
