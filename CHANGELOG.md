@@ -8,6 +8,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 - Format ▸ Callout in the main menu inserts a callout of any kind — Note, Tip, Important, Warning, Caution and the Obsidian kinds — so you no longer need to remember the `> [!kind]` syntax. With lines selected, they become the callout's body. Same as the macOS app.
 - Copy Link to Block in the editor's right-click menu and main menu ▸ Edit: copies `[[Note#^id]]` for the paragraph, list item, quote or table at the cursor, first adding a `^id` to it if it has none, so linking to a block no longer means inventing an id and typing it twice. Same as the macOS app.
+- Hovering a footnote reference in the preview shows the footnote's text in a small box next to it, so reading a footnote no longer means jumping to the end of the note and back. A click still jumps to it. Same as the macOS app.
 
 ## 0.10.0
 

@@ -1036,6 +1036,44 @@ span.tag:hover { text-decoration: underline; }",
     }
 }
 
+/// Hovering a footnote reference shows the footnote's rendered text (its ↩ back links
+/// removed) in a small scrolling box after the note-link hover delay; leaving the
+/// reference or the box hides it, a click still jumps. Built from the page's own footnote
+/// list, outside `body` so incremental patches and Find in Preview don't see it; only the
+/// on-screen preview gets this script, and print hides the box.
+const FOOTNOTE_HOVER: &str = "(function(){var pop=null,timer=0,hideT=0;\
+function ref(e){var a=e.target&&e.target.closest?e.target.closest('sup.footnote-ref a,a[data-footnote-ref]'):null;\
+return a&&(a.getAttribute('href')||'').charAt(0)==='#'?a:null}\
+function hide(){clearTimeout(timer);clearTimeout(hideT);if(pop){pop.remove();pop=null}}\
+function show(a){hide();var id=decodeURIComponent(a.getAttribute('href').slice(1)),t=document.getElementById(id);\
+if(t&&t.tagName!=='LI')t=t.closest('li');if(!t)return;var c=t.cloneNode(true);\
+c.querySelectorAll('a.footnote-backref,a[data-footnote-backref]').forEach(function(b){b.remove()});\
+c.querySelectorAll('[id]').forEach(function(n){n.removeAttribute('id')});if(!c.textContent.trim())return;\
+pop=document.createElement('div');pop.className='mm-footnote-pop';\
+var bs=getComputedStyle(document.body),bg=bs.backgroundColor;\
+if(!bg||bg==='transparent'||bg==='rgba(0, 0, 0, 0)')bg=getComputedStyle(document.documentElement).backgroundColor;\
+if(!bg||bg==='rgba(0, 0, 0, 0)')bg='Canvas';\
+pop.style.cssText='position:absolute;z-index:2147483647;max-width:320px;max-height:240px;overflow:auto;\
+box-sizing:border-box;padding:6px 10px;border:1px solid rgba(128,128,128,.45);border-radius:6px;\
+box-shadow:0 2px 8px rgba(0,0,0,.25);font-size:.9em;line-height:1.4;background:'+bg+';color:'+bs.color+';\
+font-family:'+bs.fontFamily;\
+while(c.firstChild)pop.appendChild(c.firstChild);\
+pop.addEventListener('mouseenter',function(){clearTimeout(hideT)});\
+pop.addEventListener('mouseleave',function(){hideT=setTimeout(hide,150)});\
+document.documentElement.appendChild(pop);var r=a.getBoundingClientRect(),w=pop.offsetWidth,\
+x=Math.max(4,Math.min(r.left,document.documentElement.clientWidth-w-4)),y=r.bottom+4;\
+if(y+pop.offsetHeight>innerHeight&&r.top-pop.offsetHeight-4>0)y=r.top-pop.offsetHeight-4;\
+pop.style.left=(x+scrollX)+'px';pop.style.top=(y+scrollY)+'px'}\
+document.addEventListener('mouseover',function(e){var a=ref(e);if(!a)return;clearTimeout(hideT);\
+clearTimeout(timer);timer=setTimeout(function(){show(a)},600)},true);\
+document.addEventListener('mouseout',function(e){if(!ref(e))return;clearTimeout(timer);\
+if(pop)hideT=setTimeout(hide,150)},true);\
+document.addEventListener('mousedown',function(e){if(!pop||!pop.contains(e.target))hide()},true);\
+document.addEventListener('keydown',hide,true);\
+document.addEventListener('scroll',function(e){if(pop&&e.target!==pop)hide()},true);\
+var st=document.createElement('style');st.textContent='@media print{.mm-footnote-pop{display:none!important}}';\
+document.documentElement.appendChild(st)})();";
+
 fn tag_clicks(view: &webkit6::WebView) {
     let Some(manager) = view.user_content_manager() else {
         return;
@@ -1045,7 +1083,7 @@ fn tag_clicks(view: &webkit6::WebView) {
 var t=e.target&&e.target.closest?e.target.closest('span.tag'):null;\
 if(!t||t.closest('a')||getComputedStyle(t).cursor!=='pointer')return;e.preventDefault();\
 location.href='{}'+encodeURIComponent(t.textContent.replace(/^#/,''))}},true);\
-{MARK_FOLDS}mmMarkFolds(document);",
+{MARK_FOLDS}mmMarkFolds(document);{FOOTNOTE_HOVER}",
         render::TAG_URI
     );
     manager.add_script(&webkit6::UserScript::for_world(
