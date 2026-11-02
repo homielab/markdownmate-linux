@@ -139,6 +139,15 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
                     submenu.append_item(&item);
                 }
                 if title == "Format" {
+                    let callout = gio::Menu::new();
+                    for kinds in crate::lines::CALLOUTS {
+                        let section = gio::Menu::new();
+                        for (label, kind) in kinds {
+                            section.append(Some(label), Some(&format!("win.callout::{kind}")));
+                        }
+                        callout.append_section(None, &section);
+                    }
+                    submenu.append_submenu(Some("Callout"), &callout);
                     // A check item (stateful action); Shift+Ctrl+M is a window accelerator.
                     let bar = gio::Menu::new();
                     bar.append(Some("Format Bar"), Some("win.format-bar"));
@@ -804,6 +813,37 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         ));
         window.add_action(&action);
     }
+
+    // Format ▸ Callout (`lines::callout`): the kind is the action's target.
+    let callout = gio::SimpleAction::new("callout", Some(glib::VariantTy::STRING));
+    callout.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, kind| {
+            let Some(kind) = kind.and_then(|k| k.str()) else {
+                return;
+            };
+            let Some(kind) = crate::lines::CALLOUTS
+                .iter()
+                .flat_map(|k| k.iter())
+                .map(|(_, k)| *k)
+                .find(|k| *k == kind)
+            else {
+                return;
+            };
+            if editor.path.borrow().is_none() {
+                return;
+            }
+            if editor.mode.get() == state::Mode::Preview {
+                editor.set_mode(state::Mode::Edit);
+            }
+            editor.view.grab_focus();
+            if !line_command(editor.view.upcast_ref(), LineCommand::Callout(kind)) {
+                editor.view.error_bell();
+            }
+        }
+    ));
+    window.add_action(&callout);
 
     // Table commands (`table.rs`) for the Table menu and the table bar; their keys are handled
     // in the editor (`input.rs`). Enabled only while the cursor is in a table (`table_context`);

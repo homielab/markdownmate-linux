@@ -450,6 +450,8 @@ fn table_shortcut(keys: &gtk::EventControllerKey, command: table::Command) -> bo
 pub(crate) enum LineCommand {
     ToggleTask,
     Footnote,
+    /// Format ▸ Callout with its kind (`[!kind]`).
+    Callout(&'static str),
     Move {
         up: bool,
     },
@@ -472,7 +474,7 @@ fn line_key(keys: &gtk::EventControllerKey, command: LineCommand) -> bool {
 
 /// Runs a line command on the view's buffer as one undo step and keeps the cursor in sight.
 /// False (nothing done) when there is nothing to do: no task on the lines, a footnote inside
-/// a code block, the first / last line, the empty line after a final newline, a format
+/// a code block, a callout in code or front matter, the first / last line, the empty line after a final newline, a format
 /// toggle on code only.
 pub(crate) fn line_command(view: &gtk::TextView, command: LineCommand) -> bool {
     let buffer = view.buffer();
@@ -523,6 +525,7 @@ pub(crate) fn line_command(view: &gtk::TextView, command: LineCommand) -> bool {
             buffer.end_user_action();
             true
         }
+        LineCommand::Callout(kind) => replace(lines::callout(&text, sel, kind)),
         LineCommand::Move { up } => replace(lines::move_lines(&text, sel, up)),
         LineCommand::Duplicate => replace(lines::duplicate_lines(&text, sel)),
         LineCommand::Heading => replace(lines::cycle_heading(&text, sel)),

@@ -6,6 +6,8 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Format ▸ Callout in the main menu inserts a callout of any kind — Note, Tip, Important, Warning, Caution and the Obsidian kinds — so you no longer need to remember the `> [!kind]` syntax. With lines selected, they become the callout's body. Same as the macOS app.
+
 ## 0.10.0
 
 - Large folders open faster in the background: Backlinks and Open Quickly's heading search are ready about twice as soon after opening a folder of 10,000 notes, because its notes are now read on several processor cores.

@@ -192,6 +192,96 @@ pub fn footnote(text: &str, sel: (usize, usize)) -> Option<Footnote> {
     })
 }
 
+/// The callout kinds of Format ▸ Callout: GitHub's five, then Obsidian's (menu label, kind).
+pub const CALLOUTS: [&[(&str, &str)]; 2] = [
+    &[
+        ("Note", "note"),
+        ("Tip", "tip"),
+        ("Important", "important"),
+        ("Warning", "warning"),
+        ("Caution", "caution"),
+    ],
+    &[
+        ("Abstract", "abstract"),
+        ("Info", "info"),
+        ("Todo", "todo"),
+        ("Success", "success"),
+        ("Question", "question"),
+        ("Failure", "failure"),
+        ("Danger", "danger"),
+        ("Bug", "bug"),
+        ("Example", "example"),
+        ("Quote", "quote"),
+    ],
+];
+
+/// Insert Callout: no selection → `> [!kind]` and `> ` on a blank line in place, or on a line
+/// with text as new lines above its paragraph (then a blank line, the paragraph unchanged);
+/// cursor after the second `> `; a selection → `> ` in front of every
+/// line it touches (`>` on blank ones; quoted lines get one more level) under a `> [!kind]`
+/// line, cursor at the end. None inside a code block or front matter.
+pub fn callout(text: &str, sel: (usize, usize), kind: &str) -> Option<Replace> {
+    let chars: Vec<char> = text.chars().collect();
+    let lines = split(&chars);
+    let code = code_lines(&chars, &lines);
+    let front = lists::front_matter_lines(text);
+    let (first, last) = block(&lines, sel);
+    if (first..=last).any(|n| code[n] || n < front) {
+        return None;
+    }
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let start = lines[first].start;
+    let header = format!("> [!{kind}]{newline}");
+    if sel.0 == sel.1 {
+        let blank = |n: usize| {
+            slice(&chars, lines[n].start, lines[n].body)
+                .trim()
+                .is_empty()
+        };
+        if blank(first) {
+            let new = format!("{header}> ");
+            let cursor = start + new.chars().count();
+            return Some(Replace {
+                start,
+                end: start,
+                text: new,
+                select: (cursor, cursor),
+            });
+        }
+        // A line with text: the callout goes above its paragraph, which stays as it is.
+        let mut top = first;
+        while top > front && !blank(top - 1) && !code[top - 1] {
+            top -= 1;
+        }
+        let start = lines[top].start;
+        let new = format!("{header}> {newline}{newline}");
+        let cursor = start + header.chars().count() + 2;
+        return Some(Replace {
+            start,
+            end: start,
+            text: new,
+            select: (cursor, cursor),
+        });
+    }
+    let end = lines[last].body;
+    let mut new = header;
+    for (n, l) in lines.iter().enumerate().take(last + 1).skip(first) {
+        let body = slice(&chars, l.start, l.body);
+        new += if body.trim().is_empty() { ">" } else { "> " };
+        new += &body;
+        if n < last {
+            new += &slice(&chars, l.body, l.end);
+        }
+    }
+    let cursor = start + new.chars().count();
+    Some(Replace {
+        start,
+        end,
+        text: new,
+        select: (cursor, cursor),
+    })
+}
+
 /// A footnote definition line: `[^label]:` indented at most 3 spaces.
 fn is_definition(line: &str) -> bool {
     let rest = line.trim_start_matches(' ');
@@ -551,6 +641,59 @@ pub fn toggle_code_block(text: &str, sel: (usize, usize)) -> Option<Replace> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn callout_on_empty_line() {
+        let r = callout("a\n\nb", (2, 2), "note").unwrap();
+        assert_eq!(apply("a\n\nb", &r), "a\n> [!note]\n> \nb");
+        assert_eq!(r.select, (14, 14));
+        assert_eq!(
+            apply("", &callout("", (0, 0), "tip").unwrap()),
+            "> [!tip]\n> "
+        );
+    }
+
+    #[test]
+    fn callout_on_line_with_text() {
+        let text = "intro\n\nfirst\nHello world";
+        let r = callout(text, (15, 15), "warning").unwrap();
+        assert_eq!(
+            apply(text, &r),
+            "intro\n\n> [!warning]\n> \n\nfirst\nHello world"
+        );
+        assert_eq!(r.select, (22, 22));
+        let crlf = callout("x\r\ny", (0, 0), "bug").unwrap();
+        assert_eq!(crlf.text, "> [!bug]\r\n> \r\n\r\n");
+        let fm = "---\na: b\n---\nbody";
+        assert_eq!(
+            apply(fm, &callout(fm, (15, 15), "tip").unwrap()),
+            "---\na: b\n---\n> [!tip]\n> \n\nbody"
+        );
+    }
+
+    #[test]
+    fn callout_around_selected_lines() {
+        let text = "one\ntwo\n\nthree\nrest";
+        let r = callout(text, (1, 15), "info").unwrap();
+        let out = apply(text, &r);
+        assert_eq!(out, "> [!info]\n> one\n> two\n>\n> three\nrest");
+        assert_eq!(r.select.0, out.find("\nrest").unwrap());
+    }
+
+    #[test]
+    fn callout_nests_quoted_lines() {
+        let text = "> a\n> b";
+        let r = callout(text, (0, 7), "quote").unwrap();
+        assert_eq!(apply(text, &r), "> [!quote]\n> > a\n> > b");
+    }
+
+    #[test]
+    fn callout_not_in_code_or_front_matter() {
+        assert_eq!(callout("```\ncode\n```", (5, 5), "note"), None);
+        assert_eq!(callout("x\n```\ncode\n```", (0, 8), "note"), None);
+        assert_eq!(callout("---\ntitle: a\n---\nbody", (6, 6), "note"), None);
+        assert!(callout("---\ntitle: a\n---\nbody", (17, 17), "note").is_some());
+    }
 
     fn apply(text: &str, r: &Replace) -> String {
         let chars: Vec<char> = text.chars().collect();
