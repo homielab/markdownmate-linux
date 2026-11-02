@@ -135,10 +135,12 @@ impl LinkIndex {
             let order = &self.order;
             self.lines.retain(|note, _| order.contains_key(note));
             self.headings.retain(|note, _| order.contains_key(note));
-            for note in notes {
-                if changed.contains(note) || !self.lines.contains_key(note) {
-                    self.scan(note);
-                }
+            let todo: Vec<&PathBuf> = notes
+                .iter()
+                .filter(|n| changed.contains(*n) || !self.lines.contains_key(*n))
+                .collect();
+            for (note, read) in todo.iter().zip(read_all(&todo)) {
+                self.store(note, read);
             }
             self.back.clear();
             for note in notes {
@@ -158,15 +160,12 @@ impl LinkIndex {
 
     /// Reads `note`'s link lines and headings (none if unreadable).
     fn scan(&mut self, note: &Path) {
-        let text = read(note);
-        let text = text.as_deref().unwrap_or("");
-        self.lines
-            .insert(note.to_path_buf(), link_lines(text, note));
-        let headings = if might_have_headings(text) {
-            quick::Heading::all(text)
-        } else {
-            Vec::new()
-        };
+        self.store(note, read_note(note));
+    }
+
+    /// Keeps `note`'s link lines and headings as `read_note` found them.
+    fn store(&mut self, note: &Path, (lines, headings): NoteLinks) {
+        self.lines.insert(note.to_path_buf(), lines);
         if headings.is_empty() {
             self.headings.remove(note);
         } else {
@@ -265,6 +264,46 @@ impl LinkIndex {
         }
         out
     }
+}
+
+/// A note's link lines and headings.
+type NoteLinks = (Vec<LinkLine>, Vec<quick::Heading>);
+
+/// Below this many notes `read_all` stays on the calling thread.
+const PARALLEL_FROM: usize = 64;
+
+/// The link lines and headings of `note` (none if unreadable).
+fn read_note(note: &Path) -> NoteLinks {
+    let text = read(note);
+    let text = text.as_deref().unwrap_or("");
+    let headings = if might_have_headings(text) {
+        quick::Heading::all(text)
+    } else {
+        Vec::new()
+    };
+    (link_lines(text, note), headings)
+}
+
+/// `read_note` of each of `notes`, in order. A folder's first sync reads every note and
+/// parses each one's headings: a large list is split over several threads (up to 8).
+fn read_all(notes: &[&PathBuf]) -> Vec<NoteLinks> {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .clamp(1, 8);
+    if threads == 1 || notes.len() < PARALLEL_FROM {
+        return notes.iter().map(|n| read_note(n)).collect();
+    }
+    let chunk = notes.len().div_ceil(threads);
+    std::thread::scope(|scope| {
+        let parts: Vec<_> = notes
+            .chunks(chunk)
+            .map(|part| scope.spawn(|| part.iter().map(|n| read_note(n)).collect::<Vec<_>>()))
+            .collect();
+        parts
+            .into_iter()
+            .flat_map(|p| p.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    })
 }
 
 /// Whether `text` may hold a heading: a `#`, or a line of only `=` or `-` (a Setext
@@ -605,5 +644,106 @@ mod tests {
             .map(|b| (b.path.clone(), b.line))
             .collect();
         assert_eq!(found, [(home.clone(), 2), (home, 3)]);
+    }
+
+    #[test]
+    fn a_large_folder_is_read_in_parts_in_order() {
+        let dir = std::env::temp_dir().join(format!("mm-linkparts-{}", std::process::id()));
+        struct Clean(PathBuf);
+        impl Drop for Clean {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _clean = Clean(dir.clone());
+        std::fs::create_dir_all(&dir).unwrap();
+        let count = PARALLEL_FROM * 3 + 5;
+        let notes: Vec<PathBuf> = (0..count)
+            .map(|i| {
+                let note = dir.join(format!("n{i}.md"));
+                let text = format!(
+                    "# Note {i}\n\n[[n{}]] and [[n{}]]\n\n## Part {i}\n",
+                    (i + 1) % count,
+                    i * 7 % count
+                );
+                std::fs::write(&note, text).unwrap();
+                note
+            })
+            .collect();
+        let mut index = LinkIndex::default();
+        index.sync(&notes, &Aliases::default(), &dir, &HashSet::new());
+        same_as_scan(&index, &notes, &dir);
+        let headings = index.headings(None);
+        assert_eq!(headings.len(), count);
+        for (i, (note, list)) in headings.iter().enumerate() {
+            assert_eq!(note, &notes[i]);
+            let titles: Vec<&str> = list.iter().map(|h| h.title.as_str()).collect();
+            assert_eq!(titles, [format!("Note {i}"), format!("Part {i}")]);
+        }
+    }
+
+    /// The folder-open indexes on a large folder (`examples/generate_notes`), each alone and,
+    /// as at launch, the three at once; best and median of 5, page cache warm:
+    /// `MM_LINK_NOTES=<dir> cargo test --release backlinks::tests::time_indexes -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn time_indexes() {
+        use std::time::{Duration, Instant};
+        let root = PathBuf::from(std::env::var("MM_LINK_NOTES").expect("MM_LINK_NOTES"));
+        fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if crate::notes::is_note(&path) {
+                    out.push(path);
+                }
+            }
+        }
+        let mut notes = Vec::new();
+        walk(&root, &mut notes);
+        notes.sort();
+        let links = || {
+            let start = Instant::now();
+            let mut index = LinkIndex::default();
+            index.sync(&notes, &Aliases::default(), &root, &HashSet::new());
+            start.elapsed()
+        };
+        let tags = || {
+            let start = Instant::now();
+            crate::tags::index(&notes);
+            start.elapsed()
+        };
+        let aliases = || {
+            let start = Instant::now();
+            crate::aliases::index(&notes);
+            start.elapsed()
+        };
+        let report = |what: &str, mut runs: Vec<Duration>| {
+            runs.sort();
+            println!(
+                "{what:>22}: best {:>4} ms, median {:>4} ms",
+                runs[0].as_millis(),
+                runs[2].as_millis()
+            );
+        };
+        links();
+        println!("{} notes", notes.len());
+        report("links alone", (0..5).map(|_| links()).collect());
+        report("tags alone", (0..5).map(|_| tags()).collect());
+        report("aliases alone", (0..5).map(|_| aliases()).collect());
+        let (mut l, mut t, mut a) = (Vec::new(), Vec::new(), Vec::new());
+        for _ in 0..5 {
+            std::thread::scope(|s| {
+                let jobs = [s.spawn(links), s.spawn(tags), s.spawn(aliases)];
+                let [x, y, z] = jobs.map(|j| j.join().unwrap());
+                l.push(x);
+                t.push(y);
+                a.push(z);
+            });
+        }
+        report("links, all three", l);
+        report("tags, all three", t);
+        report("aliases, all three", a);
     }
 }

@@ -166,6 +166,7 @@ three, a relative link to a note of its folder.
 ```sh
 ./dev.sh scripts/measure-folder.sh          # 10,000 notes, 3 launches; or: <notes> <launches>
 ./dev.sh env SORT=modified scripts/measure-folder.sh   # sidebar by Date Modified (or created)
+./dev.sh sh -c 'cargo run -q --release --example generate_notes -- /tmp/notes 10000 && MM_LINK_NOTES=/tmp/notes cargo test --release backlinks::tests::time_indexes -- --ignored --nocapture'   # the folder-open indexes alone
 ```
 
 Each launch reopens the folder with every subfolder expanded and `Area 0/Topic 0/Note 0.md` in
@@ -279,6 +280,60 @@ software rasteriser: with `GSK_RENDERER=cairo` (`./dev.sh sh -c 'GSK_RENDERER=ca
 scripts/measure-folder.sh 10000 1'`) the app uses 183 MB with 10,000 notes and 195 MB with 20. Breakdown and
 what the app trims: [Memory](#memory).
 
+### After 0.9.0
+
+Re-measured on 2026-11-02 (same machine, folder and script; release builds of 0.6.0, which the
+tables above measured, and of 0.9.0, run one after the other so they share the machine's
+state). Other builds were running on the Mac, so whole launches moved by up to 2× between
+rounds: compare the columns of one table, not with the tables above. Medians; in-app durations
+run from the request until the app takes the result, so they include waiting for the main
+thread.
+
+0.6.0 against 0.9.0, quietest round (load average ≈ 2.6), 5 launches each:
+
+| Step | 0.6.0 | 0.9.0 | |
+|------|------:|------:|---:|
+| window shown | 190 ms | 230 ms | +21 % |
+| note opened | 117 ms | 140 ms | +20 % |
+| folder scanned (until the app takes it) | 63 ms | 83 ms | +32 % |
+| sidebar filled | 132 ms | 164 ms | +24 % |
+| tags indexed | 155 ms | 187 ms | +21 % |
+| aliases indexed | — | 133 ms | new |
+| **links indexed** | **285 ms** | **451 ms** | **+58 %** |
+| Backlinks: Outline shown / note switch / note changed | 5 / 1 / 4 ms | 7 / 1 / 2 ms | |
+| memory after launch: app + WebKit | 305 + 0 MB | 330 + 0 MB | +8 % |
+
+The link index grew because it now also keeps every note's headings for Open Quickly's `#`
+search, and finding them parses the whole note with comrak. A folder's first sync now reads and
+parses its notes on up to 8 threads (`backlinks::read_all`; under 64 notes, and for the single
+notes a later sync reads, it stays on one thread). The index alone, with the files in the page
+cache (`backlinks::tests::time_indexes`, best of 5 / median of 5):
+
+| Index, 10,000 notes | 1 thread (before) | 2 threads | 4 threads | 8 threads (after) |
+|---|---:|---:|---:|---:|
+| links alone | 341 / 363 ms | 203 / 205 ms | 113 / 121 ms | 76 / 85 ms |
+| links, tags and aliases at once: links | 356 / 362 ms | 202 / 205 ms | 116 / 119 ms | 87 / 96 ms |
+| the same: tags / aliases | 94 / 27 ms | 95 / 28 ms | 90 / 28 ms | 99 / 34 ms |
+
+In the app, one round (load average ≈ 4), 3 launches each, median [range]:
+
+| Step | 0.6.0 | 0.9.0 | after |
+|------|------:|------:|------:|
+| links indexed | 415 [387–795] ms | 551 [484–833] ms | **204 [196–560] ms** |
+| tags indexed | 268 [222–780] ms | 289 [190–585] ms | 209 [192–549] ms |
+| aliases indexed | — | 174 [125–600] ms | 185 [131–564] ms |
+| sidebar filled | 260 [159–679] ms | 376 [174–455] ms | 200 [168–260] ms |
+| window shown | 396 [255–1154] ms | 481 [259–785] ms | 267 [230–579] ms |
+| memory after launch: app + WebKit | 305 + 0 MB | 329 + 0 MB | 333 + 0 MB |
+
+The change does not touch the steps up to the first frame; their spread here is the machine's
+load. What still makes them slower than 0.6.0: building the window takes 77 ms of the main
+thread instead of 47 ms, 16 ms of it the spell checker (libspelling's checker and buffer
+adapter, made with the editor) and the rest spread over the window's new widgets. "Folder
+scanned" counts until the main thread takes the result, so it grows with that; the walk itself
+did not change. Backlinks stay at a few ms (single runs up to 78 ms in every version: the
+background job waits for a free thread and the main loop).
+
 ### Find in Folder with Regex
 
 Searching the whole folder for a query that matches nothing (every note read and searched to the
@@ -368,6 +423,7 @@ and `diagrams drawn`, to time the first preview of a note.
 
 ## Further ideas
 
+- Create the spell checker after the window's first frame: 16 ms less before it is shown.
 - Debounce preview refreshes by note size, so typing in a 5 MB note renders less often.
 - Highlight code blocks lazily in the page (plain code first, highlighted as it scrolls into
   view).
