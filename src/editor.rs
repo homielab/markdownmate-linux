@@ -1428,7 +1428,8 @@ impl Editor {
     /// Puts the cursor on the heading of the open note that a link fragment names (its id or
     /// its text, `render::heading_at`) or on the first line of its block (`^id`, `blocks`),
     /// scrolled into view, without changing the mode. When
-    /// `reload` (a new page is loading) and the preview shows, it scrolls there once loaded.
+    /// `reload` (a new page is loading) and the preview shows, it scrolls there once loaded;
+    /// in Preview alone with the page already loaded, it scrolls there now.
     pub(crate) fn go_to_heading(&self, fragment: &str, reload: bool) {
         let (start, end) = self.buffer.bounds();
         let text = self.buffer.text(&start, &end, true);
@@ -1448,6 +1449,20 @@ impl Editor {
             .scroll_to_mark(&self.buffer.get_insert(), 0.0, true, 0.0, 0.3);
         if reload && self.mode.get() != state::Mode::Edit {
             self.preview_anchor.replace(Some(id));
+        } else if !reload
+            && self.mode.get() == state::Mode::Preview
+            && let Some(view) = self.preview_view.get()
+        {
+            view.evaluate_javascript(
+                &format!(
+                    "var e=document.getElementById({});if(e)e.scrollIntoView();0",
+                    render::js_string(&id)
+                ),
+                Some(crate::SCRIPT_WORLD),
+                None,
+                gio::Cancellable::NONE,
+                |_| {},
+            );
         }
     }
 

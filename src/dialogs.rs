@@ -836,7 +836,10 @@ pub(crate) fn go_to_line(editor: &Rc<Editor>) {
 /// Ctrl+P: search box over the notes of the open folder, their front-matter aliases ("Alias →
 /// Note" rows) and its Favorites (with a star). Up/Down select, Enter opens the selected note
 /// (a favourite folder is shown in the sidebar), or creates a note named after the query in
-/// the folder root when no name or alias matches. Esc closes (adw::Dialog default).
+/// the folder root when no name or alias matches. A query starting with `#` lists the headings
+/// of every note instead ("Heading — Note", from the link index; never a Create row), and Enter
+/// opens the note at that heading as a `[[Note#Heading]]` link does. Esc closes (adw::Dialog
+/// default).
 pub(crate) fn open_quickly(editor: &Rc<Editor>) {
     let Some(root) = editor.root.borrow().clone() else {
         return;
@@ -856,7 +859,7 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
     let aliases = Arc::clone(&editor.aliases.borrow());
 
     let entry = gtk::SearchEntry::builder()
-        .placeholder_text("Note name or alias")
+        .placeholder_text("Note name or alias, # for headings")
         // Results update on every key, so Enter never acts on a stale list.
         .search_delay(0)
         .build();
@@ -884,9 +887,14 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
         .child(&content)
         .build();
 
-    let shown: Rc<RefCell<Vec<PathBuf>>> = Rc::default();
+    // Each row's note and, for a heading row, the heading's link fragment.
+    type Shown = Vec<(PathBuf, Option<String>)>;
+    let shown: Rc<RefCell<Shown>> = Rc::default();
+    // Every note's headings, copied from the link index at the first `#` query.
+    let headings: Rc<RefCell<Option<Vec<quick::NoteHeadings>>>> = Rc::default();
     let fill = {
         let (list, notes, shown, root) = (list.clone(), notes.clone(), shown.clone(), root.clone());
+        let headings = headings.clone();
         move |query: &str| {
             let recent = quick::recent(
                 history.iter().map(PathBuf::as_path),
@@ -896,6 +904,23 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
             // ListBox::remove_all needs GTK 4.12; the crate targets 4.10.
             while let Some(row) = list.first_child() {
                 list.remove(&row);
+            }
+            if let Some(query) = quick::heading_query(query) {
+                let hits = headings
+                    .borrow()
+                    .as_ref()
+                    .map_or_else(Vec::new, |all| quick::headings(&query, all));
+                for hit in &hits {
+                    let rel = hit.path.strip_prefix(&root).unwrap_or(&hit.path);
+                    list.append(&quick_row(&hit.label(), &rel.to_string_lossy(), false));
+                }
+                list.select_row(list.row_at_index(0).as_ref());
+                shown.replace(
+                    hits.into_iter()
+                        .map(|hit| (hit.path, Some(hit.heading.fragment)))
+                        .collect(),
+                );
+                return;
             }
             // Nothing opened yet: favourites, else every note by path.
             let hits = quick::with_favorites(
@@ -910,14 +935,6 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
             for hit in &hits {
                 let path = &hit.path;
                 let rel = path.strip_prefix(&root).unwrap_or(path);
-                let row = gtk::Box::new(gtk::Orientation::Vertical, 2);
-                let name = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-                if hit.favorite {
-                    let star = gtk::Image::from_icon_name("starred-symbolic");
-                    star.set_tooltip_text(Some("Favorite"));
-                    star.update_property(&[gtk::accessible::Property::Label("Favorite")]);
-                    name.append(&star);
-                }
                 // As `[[` completion words it: "Alias → Note".
                 let label = match &hit.alias {
                     Some(alias) => {
@@ -926,37 +943,68 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
                     }
                     None => file_name(path),
                 };
-                name.append(&gtk::Label::builder().label(label).xalign(0.0).build());
-                row.append(&name);
-                let dim = gtk::Label::builder()
-                    .label(rel.to_string_lossy())
-                    .xalign(0.0)
-                    .ellipsize(gtk::pango::EllipsizeMode::Middle)
-                    .build();
-                dim.add_css_class("dim-label");
-                dim.add_css_class("caption");
-                row.append(&dim);
-                list.append(&row);
+                list.append(&quick_row(&label, &rel.to_string_lossy(), hit.favorite));
             }
             list.select_row(list.row_at_index(0).as_ref());
-            shown.replace(hits.into_iter().map(|hit| hit.path).collect());
+            shown.replace(hits.into_iter().map(|hit| (hit.path, None)).collect());
         }
     };
+    let fill = Rc::new(fill);
     fill("");
-    entry.connect_search_changed(move |e| fill(&e.text()));
+    let asked = std::cell::Cell::new(false);
+    let weak = Rc::downgrade(editor);
+    entry.connect_search_changed(move |e| {
+        let text = e.text();
+        // The first `#` query copies the headings off the link index in the background (it
+        // may still be building), with the open note's unsaved text; the list fills when
+        // they arrive.
+        if quick::heading_query(&text).is_some()
+            && !asked.replace(true)
+            && let Some(editor) = weak.upgrade()
+        {
+            let open = editor.path.borrow().clone().map(|path| {
+                let (start, end) = editor.buffer.bounds();
+                (path, editor.buffer.text(&start, &end, true).to_string())
+            });
+            let job = editor.links_job(move |index| {
+                index.headings(open.as_ref().map(|(p, t)| (p.as_path(), t.as_str())))
+            });
+            if let Some(job) = job {
+                let (fill, headings, entry) = (fill.clone(), headings.clone(), e.downgrade());
+                glib::spawn_future_local(async move {
+                    if let Ok(all) = gio::spawn_blocking(job).await {
+                        headings.replace(Some(all));
+                        if let Some(entry) = entry.upgrade() {
+                            fill(&entry.text());
+                        }
+                    }
+                });
+            }
+        }
+        fill(&text);
+    });
 
     let choose = {
         let (editor, dialog, list, shown) =
             (editor.clone(), dialog.downgrade(), list.clone(), shown);
         move |query: &str| {
             let index = list.selected_row().map(|r| r.index());
-            let path = index.and_then(|i| shown.borrow().get(i as usize).cloned());
+            let picked = index.and_then(|i| shown.borrow().get(i as usize).cloned());
             if let Some(dialog) = dialog.upgrade() {
                 dialog.close();
             }
-            match path {
-                Some(path) if path.is_dir() => editor.show_in_sidebar(&path),
-                Some(path) => editor.open(&path),
+            match picked {
+                Some((path, Some(heading))) => {
+                    let reload = editor.path.borrow().as_deref() != Some(path.as_path());
+                    editor.open(&path);
+                    if editor.path.borrow().as_deref() == Some(path.as_path()) {
+                        editor.go_to_heading(&heading, reload);
+                    }
+                }
+                Some((path, None)) if path.is_dir() => editor.show_in_sidebar(&path),
+                Some((path, None)) => editor.open(&path),
+                // A heading query never creates a note.
+                None if quick::heading_query(query).is_some() => {}
                 None if shown.borrow().is_empty() => match naming::note_name(query) {
                     Ok(name) => editor.new_note(&root, &name),
                     Err(msg) => editor.toast(msg),
@@ -1013,6 +1061,34 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
 
     dialog.present(Some(&editor.window));
     entry.grab_focus();
+}
+
+/// An Open Quickly row: `label` (after a star for a favourite) over the dimmed relative path.
+fn quick_row(label: &str, rel: &str, favorite: bool) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let name = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    if favorite {
+        let star = gtk::Image::from_icon_name("starred-symbolic");
+        star.set_tooltip_text(Some("Favorite"));
+        star.update_property(&[gtk::accessible::Property::Label("Favorite")]);
+        name.append(&star);
+    }
+    let label = gtk::Label::builder()
+        .label(label)
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .build();
+    name.append(&label);
+    row.append(&name);
+    let dim = gtk::Label::builder()
+        .label(rel)
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .build();
+    dim.add_css_class("dim-label");
+    dim.add_css_class("caption");
+    row.append(&dim);
+    row
 }
 
 /// Pango markup for a snippet with its match ranges in bold on a yellow background.

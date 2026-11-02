@@ -9,7 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use crate::aliases::Aliases;
 use crate::links::{self, Target};
 use crate::render::WikiIndex;
-use crate::{lists, state};
+use crate::{lists, quick, state};
 
 /// Snippets longer than this (in chars) are cut.
 const SNIPPET_CHARS: usize = 100;
@@ -105,6 +105,8 @@ pub struct LinkIndex {
     order: HashMap<PathBuf, usize>,
     /// The link lines of each note of the list (none if unreadable).
     lines: HashMap<PathBuf, Vec<LinkLine>>,
+    /// The headings of each note of the list that has any (Open Quickly's `#` search).
+    headings: HashMap<PathBuf, Vec<quick::Heading>>,
     /// Linked note → (position of the linking note, 1-based line), unsorted.
     back: HashMap<PathBuf, Vec<(usize, usize)>>,
 }
@@ -132,9 +134,10 @@ impl LinkIndex {
             self.order = notes.iter().cloned().zip(0..).collect();
             let order = &self.order;
             self.lines.retain(|note, _| order.contains_key(note));
+            self.headings.retain(|note, _| order.contains_key(note));
             for note in notes {
                 if changed.contains(note) || !self.lines.contains_key(note) {
-                    self.lines.insert(note.clone(), Self::scan(note));
+                    self.scan(note);
                 }
             }
             self.back.clear();
@@ -148,13 +151,27 @@ impl LinkIndex {
                 continue;
             }
             self.link(note, false);
-            self.lines.insert(note.clone(), Self::scan(note));
+            self.scan(note);
             self.link(note, true);
         }
     }
 
-    fn scan(note: &Path) -> Vec<LinkLine> {
-        read(note).map_or_else(Vec::new, |text| link_lines(&text, note))
+    /// Reads `note`'s link lines and headings (none if unreadable).
+    fn scan(&mut self, note: &Path) {
+        let text = read(note);
+        let text = text.as_deref().unwrap_or("");
+        self.lines
+            .insert(note.to_path_buf(), link_lines(text, note));
+        let headings = if might_have_headings(text) {
+            quick::Heading::all(text)
+        } else {
+            Vec::new()
+        };
+        if headings.is_empty() {
+            self.headings.remove(note);
+        } else {
+            self.headings.insert(note.to_path_buf(), headings);
+        }
     }
 
     /// Adds (or removes) `note`'s links to `back`.
@@ -211,6 +228,22 @@ impl LinkIndex {
         &self.wiki
     }
 
+    /// Every note's headings, in note list order (notes without any left out), as they were
+    /// on disk at the last sync; the `open` note's (path, editor text) read from that text.
+    pub fn headings(&self, open: Option<(&Path, &str)>) -> Vec<quick::NoteHeadings> {
+        self.wiki
+            .notes()
+            .iter()
+            .filter_map(|note| {
+                let list = match open {
+                    Some((path, text)) if path == note => quick::Heading::all(text),
+                    _ => self.headings.get(note)?.clone(),
+                };
+                (!list.is_empty()).then(|| (note.clone(), list))
+            })
+            .collect()
+    }
+
     /// The notes with a link that may lead nowhere: a wiki name that resolves to no note or
     /// has a heading part, or a file that `exists` says is missing. Find Broken Links reads
     /// only these (and checks what this does not know: front matter, absolute paths, headings).
@@ -232,6 +265,18 @@ impl LinkIndex {
         }
         out
     }
+}
+
+/// Whether `text` may hold a heading: a `#`, or a line of only `=` or `-` (a Setext
+/// underline), past quote markers and indentation. Most notes without headings skip parsing.
+fn might_have_headings(text: &str) -> bool {
+    text.contains('#')
+        || text.lines().any(|line| {
+            let t = line
+                .trim_start_matches(|c: char| c == '>' || c.is_whitespace())
+                .trim_end();
+            !t.is_empty() && (t.bytes().all(|b| b == b'=') || t.bytes().all(|b| b == b'-'))
+        })
 }
 
 /// 1-based lines of `text` (the note at `note`) with a link to `target`, outside fenced code
@@ -447,6 +492,57 @@ mod tests {
         index.sync(&inside, &Aliases::default(), &other, &none);
         same_as_scan(&index, &inside, &other);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn index_keeps_headings_up_to_date() {
+        let dir = std::env::temp_dir().join(format!("mm-headingindex-{}", std::process::id()));
+        struct Clean(PathBuf);
+        impl Drop for Clean {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _clean = Clean(dir.clone());
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b, c) = (dir.join("a.md"), dir.join("b.md"), dir.join("c.md"));
+        std::fs::write(&a, "# Plan\ntext\n## Budget\n").unwrap();
+        std::fs::write(&b, "no headings, [[a]]\n").unwrap();
+        std::fs::write(&c, "Setext\n===\n").unwrap();
+        let titles = |index: &LinkIndex| -> Vec<(String, Vec<String>)> {
+            index
+                .headings(None)
+                .into_iter()
+                .map(|(note, list)| {
+                    let name = note.file_name().unwrap().to_string_lossy().to_string();
+                    (name, list.into_iter().map(|h| h.title).collect())
+                })
+                .collect()
+        };
+        let s = |v: &[&str]| v.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        let mut notes = vec![a.clone(), b.clone(), c.clone()];
+        let mut index = LinkIndex::default();
+        let none = HashSet::new();
+        index.sync(&notes, &Aliases::default(), &dir, &none);
+        assert_eq!(
+            titles(&index),
+            [
+                ("a.md".to_string(), s(&["Plan", "Budget"])),
+                ("c.md".to_string(), s(&["Setext"])),
+            ]
+        );
+        // A change on disk, then a deleted note.
+        std::fs::write(&a, "# Plan\n").unwrap();
+        index.sync(&notes, &Aliases::default(), &dir, &HashSet::from([a]));
+        notes.pop();
+        index.sync(&notes, &Aliases::default(), &dir, &none);
+        assert_eq!(titles(&index), [("a.md".to_string(), s(&["Plan"]))]);
+        // The open note's unsaved text wins over the disk.
+        let open = index.headings(Some((&notes[1], "# Draft\n")));
+        assert_eq!(open[1].0, notes[1]);
+        assert_eq!(open[1].1[0].title, "Draft");
+        assert!(!might_have_headings("text\n- item\n> quote\n"));
+        assert!(might_have_headings("Title\n> ---\n"));
     }
 
     #[test]

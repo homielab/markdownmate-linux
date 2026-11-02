@@ -206,6 +206,18 @@ Link index (same machine and folder, 2026-10-25, three launches; before = the ta
 | Backlinks after switching note | 0.22–0.37 s | 1 ms |
 | Backlinks again after another note changed on disk | (not refreshed) | 1–2 ms |
 
+Open Quickly heading search (2026-11-02, `quick::tests::time_headings`, release build in the
+dev container, 10,000 generated notes with 49,916 headings). The link index also keeps each
+note's headings, so a `#` query reads no file; it costs time once, in the background index
+build at folder open.
+
+| Step | Before | After |
+|------|-------:|------:|
+| link index built (every note read once) | 0.23–0.25 s | 0.47 s |
+| headings copied from the index (first `#` query of a dialog) | — | 6 ms |
+| `#n` (50 rows) / `#zzqx` (no match) | — | 7 ms / 2 ms |
+| name query `n` / `zzqx`, for comparison | 3 ms / 2 ms | 3 ms / 2 ms |
+
 Sidebar sort orders (same machine and folder, 2026-10-26, two launches each; before = no sort
 setting). Dates come from the `stat` the scan already makes for every note, so sorting by them
 costs nothing measurable; a note changed on disk moves to its place in under 1 ms.

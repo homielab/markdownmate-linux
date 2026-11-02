@@ -5,6 +5,7 @@
 //! contains its characters in order; then the same three against the path relative to the
 //! open folder. Ties: shorter name, then relative path. The open folder's Favorites are
 //! listed and preferred, and front-matter aliases match like names (`with_favorites`).
+//! A query starting with `#` searches the headings of every note instead (`headings`).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -207,9 +208,158 @@ pub fn with_favorites(
     hits.into_iter().take(LIMIT).map(|(_, r)| r).collect()
 }
 
+/// A heading of a note, as Open Quickly lists it (`render::heading_targets`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Heading {
+    /// Plain text, as the Outline shows it.
+    pub title: String,
+    /// What follows `#` in a `[[Note#…]]` link to it, which opening it goes to.
+    pub fragment: String,
+}
+
+impl Heading {
+    /// The headings of `md` in order (any level; not in code blocks or front matter).
+    pub fn all(md: &str) -> Vec<Heading> {
+        crate::render::heading_targets(md)
+            .into_iter()
+            .map(|h| Heading {
+                title: h.title,
+                fragment: h.fragment,
+            })
+            .collect()
+    }
+}
+
+/// A note and its headings, in document order.
+pub type NoteHeadings = (PathBuf, Vec<Heading>);
+
+/// The heading part of an Open Quickly query, lowercase: what follows the leading `#`s of a
+/// query starting with `#`, trimmed (empty for `#` alone). None for a note query.
+pub fn heading_query(query: &str) -> Option<String> {
+    let rest = query.trim().strip_prefix('#')?;
+    Some(rest.trim_start_matches('#').trim().to_lowercase())
+}
+
+/// One heading row of Open Quickly: Enter opens `path` at `heading`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadingRow {
+    pub path: PathBuf,
+    pub heading: Heading,
+}
+
+impl HeadingRow {
+    /// "Heading — Note" (the note's file name without its extension).
+    pub fn label(&self) -> String {
+        let note = self.path.file_stem().unwrap_or_default().to_string_lossy();
+        format!("{} — {note}", self.heading.title)
+    }
+}
+
+/// The headings of `notes` (each note's, in document order) matching `query`
+/// (`heading_query`'s text) like `search` matches names: starting with it, then containing
+/// it in one piece, then its characters in order. Ties by note name, then in `notes` order
+/// and document order. Nothing for an empty `query`; at most `LIMIT`.
+pub fn headings(query: &str, notes: &[NoteHeadings]) -> Vec<HeadingRow> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let mut hits: Vec<((u8, String), &PathBuf, &Heading)> = Vec::new();
+    for (path, list) in notes {
+        let mut name = None;
+        for heading in list {
+            let Some(rank) = tier(query, &heading.title) else {
+                continue;
+            };
+            let name = name.get_or_insert_with(|| {
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_lowercase()
+            });
+            hits.push(((rank, name.clone()), path, heading));
+        }
+    }
+    // Stable: equal keys keep note and document order.
+    hits.sort_by(|a, b| a.0.cmp(&b.0));
+    hits.into_iter()
+        .take(LIMIT)
+        .map(|(_, path, heading)| HeadingRow {
+            path: path.clone(),
+            heading: heading.clone(),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn heading(title: &str) -> Heading {
+        Heading {
+            title: title.to_string(),
+            fragment: title.to_string(),
+        }
+    }
+
+    #[test]
+    fn heading_mode_starts_with_a_hash() {
+        assert_eq!(heading_query("#budget"), Some("budget".to_string()));
+        assert_eq!(
+            heading_query("  # Budget Q3 "),
+            Some("budget q3".to_string())
+        );
+        assert_eq!(heading_query("## Plan"), Some("plan".to_string()));
+        assert_eq!(heading_query("#"), Some(String::new()));
+        assert_eq!(heading_query("budget"), None);
+        assert_eq!(heading_query("a#b"), None);
+        assert_eq!(heading_query(""), None);
+        // `#` alone lists nothing.
+        let notes = [(PathBuf::from("/n/a.md"), vec![heading("Budget")])];
+        assert!(headings("", &notes).is_empty());
+    }
+
+    #[test]
+    fn headings_rank_like_names_then_by_note_name() {
+        let notes = [
+            (
+                PathBuf::from("/n/zeta.md"),
+                vec![heading("Budget"), heading("Old budget"), heading("Intro")],
+            ),
+            (PathBuf::from("/n/b/Alpha.md"), vec![heading("Q3 budget")]),
+            (PathBuf::from("/n/alpha.md"), vec![heading("Budget 2027")]),
+            (PathBuf::from("/n/beta.md"), vec![heading("B-u-d-g-e-t")]),
+        ];
+        let got: Vec<String> = headings("budget", &notes)
+            .iter()
+            .map(HeadingRow::label)
+            .collect();
+        assert_eq!(
+            got,
+            [
+                // Starts with it: alpha before zeta.
+                "Budget 2027 — alpha",
+                "Budget — zeta",
+                // In one piece.
+                "Q3 budget — Alpha",
+                "Old budget — zeta",
+                // Letters in order.
+                "B-u-d-g-e-t — beta",
+            ]
+        );
+        assert!(headings("nothing", &notes).is_empty());
+    }
+
+    #[test]
+    fn heading_rows_open_their_fragment_at_most_limit() {
+        let md = "---\ntitle: x\n---\n# Plan\n```\n# not a heading\n```\n## Plan\nSetext\n---\n";
+        let all = Heading::all(md);
+        let titles: Vec<&str> = all.iter().map(|h| h.title.as_str()).collect();
+        assert_eq!(titles, ["Plan", "Plan", "Setext"]);
+        // The repeated title is reached by its id, as Copy Link to Heading writes it.
+        assert_eq!(all[1].fragment, "plan-1");
+        let many = vec![(PathBuf::from("/n/a.md"), vec![heading("x"); LIMIT + 5])];
+        assert_eq!(headings("x", &many).len(), LIMIT);
+    }
 
     #[test]
     fn favorites_after_recent_notes_and_ranked_with_matches() {
@@ -521,5 +671,43 @@ mod tests {
         let mut out = Vec::new();
         note_paths(&tree, &mut out);
         assert_eq!(out, [PathBuf::from("/n/d/b.md"), PathBuf::from("/n/a.md")]);
+    }
+
+    /// Index build with headings, and a heading query against a name query, over a generated
+    /// folder (`examples/generate_notes.rs`):
+    /// `MM_QUICK_NOTES=<dir> cargo test --release quick::tests::time_headings -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn time_headings() {
+        fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "md") {
+                    out.push(path);
+                }
+            }
+        }
+        let root = PathBuf::from(std::env::var("MM_QUICK_NOTES").expect("MM_QUICK_NOTES"));
+        let mut notes = Vec::new();
+        walk(&root, &mut notes);
+        notes.sort();
+        let start = std::time::Instant::now();
+        let mut index = crate::backlinks::LinkIndex::default();
+        index.sync(&notes, &Aliases::default(), &root, &HashSet::new());
+        println!("{} notes indexed in {:?}", notes.len(), start.elapsed());
+        let start = std::time::Instant::now();
+        let all = index.headings(None);
+        let count: usize = all.iter().map(|(_, h)| h.len()).sum();
+        println!("{count} headings copied in {:?}", start.elapsed());
+        for query in ["#budget", "#zzqx", "#n", "budget", "zzqx", "n"] {
+            let start = std::time::Instant::now();
+            let found = match heading_query(query) {
+                Some(q) => headings(&q, &all).len(),
+                None => search(query, &notes, &root).len(),
+            };
+            println!("{query:>8}: {found} rows in {:?}", start.elapsed());
+        }
     }
 }

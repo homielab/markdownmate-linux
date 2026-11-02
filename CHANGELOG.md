@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Open Quickly (Ctrl+P) searches headings: type `#` and part of a heading, such as `#budget`, to list matching headings from every note as “Heading — Note”, and Enter opens that note scrolled to the heading, so you can jump straight to a section without knowing which note holds it. Same as the macOS app.
 - Pasted Images and Scale Down To in Preferences ▸ Notes: save images pasted from the clipboard as PNG or JPEG and shrink wide ones to 1200, 1600 or 2000 px, so screenshots no longer bloat Git- or Syncthing-synced folders. Keep Format and Off (the defaults) change nothing; dropped image files, GIF and SVG are stored as they are. Same as the macOS app.
 - Search operators in Find in Folder: `tag:work` and `path:Clients/` narrow the notes searched, `-tag:` / `-path:` leave notes out and quotes allow spaces (`path:"Old Notes/"`), so `budget tag:work -path:Archive/` finds "budget" only in the notes tagged #work (or #work/…) outside Archive. Operators alone list the matching notes. Same as the macOS app.
 - Select several sidebar items: Ctrl-click, Shift-click or Shift+↑↓ select notes and folders, then Move to Folder…, Move to Trash (one confirmation, or Delete), Add to / Remove from Favorites, Duplicate, Copy Path and Show in Files act on all of them, and dragging moves them all with one question about updating links. Dropping several notes into the editor inserts one `[[link]]` per line. Same as the macOS app.
