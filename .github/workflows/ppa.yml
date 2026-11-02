@@ -120,13 +120,13 @@ jobs:
           retention-days: 14
 
       # One after another: the first upload brings the .orig.tar.xz, the next ones carry the same file.
+      # A series whose upload fails (Launchpad's FTP sometimes answers 550) is tried again after
+      # 2, 5 and 10 minutes; the step fails, naming it, only if its last try fails too.
       - name: Upload to the PPA
         if: steps.new.outputs.yes == 'true'
         run: |
-          for s in $TODO; do
-            dput "$PPA" "dist/ppa/markdownmate_$DEB_VERSION~${s}1_source.changes"
-            echo "::notice::Uploaded $DEB_VERSION~${s}1 for $s. Launchpad emails contact@homielab.com when it's accepted (minutes, or hours when busy), then builds it."
-          done
+          read -r -a todo <<< "$TODO"
+          packaging/upload-ppa.sh "${todo[@]}"
 
       - name: Remove the key material
         if: always()
