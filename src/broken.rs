@@ -2,7 +2,8 @@
 //! the open folder's notes that lead nowhere. A `[[wiki link]]` is broken when its name
 //! resolves to no note and no alias (the resolver of Ctrl+click and the preview), or when its
 //! heading part (`[[Note#Heading]]`, `![[Note#Heading]]`, `[[#Heading]]` in the note itself)
-//! names no heading of that note (`render::find_heading`, the rule following the link uses);
+//! names no heading of that note (`render::find_heading`, the rule following the link uses) or
+//! its `^id` no block (`blocks`);
 //! an `![[name.png]]` embed when no image of the folder has that name (`[[name.png]]` without
 //! `!` is a note link); a relative Markdown link or image (`[t](a.md)`, `![](assets/x.png)`,
 //! `<raw path>`, percent-decoded) when its file does not exist relative to the note (its
@@ -34,13 +35,18 @@ pub struct NoteLinks {
     pub links: Vec<Link>,
 }
 
-/// The headings of the notes that links name a heading of, each note read once per scan.
+/// The headings and block ids of the notes that links name a heading or block of, each note
+/// read once per scan.
 pub struct Headings<'a> {
     /// A note's text (the editor's for the open note); None if it can't be read.
     read: &'a dyn Fn(&Path) -> Option<String>,
-    /// `render::heading_ids` of each note read; None when it couldn't be.
-    notes: HashMap<PathBuf, Option<Vec<(usize, String)>>>,
+    /// `render::heading_ids` and the block ids (`blocks::scan`) of each note read; None when it
+    /// couldn't be.
+    notes: HashMap<PathBuf, Option<Targets>>,
 }
+
+/// A note's headings (`render::heading_ids`) and block ids.
+type Targets = (Vec<(usize, String)>, Vec<String>);
 
 impl<'a> Headings<'a> {
     pub fn new(read: &'a dyn Fn(&Path) -> Option<String>) -> Self {
@@ -52,28 +58,36 @@ impl<'a> Headings<'a> {
 
     /// Whether `note` (whose text is `own`, when the caller has it) has a heading `fragment`
     /// names, as following the link finds it: by id or title, and, for a `%`-escaped part, the
-    /// way Ctrl+click decodes it. True for a note that can't be read (nothing to check).
+    /// way Ctrl+click decodes it; a block `^id` by its id. True for a note that can't be read
+    /// (nothing to check).
     fn has(&mut self, note: &Path, own: Option<&str>, fragment: &str) -> bool {
         let read = self.read;
-        let ids = self.notes.entry(note.to_path_buf()).or_insert_with(|| {
-            own.map(str::to_string)
-                .or_else(|| read(note))
-                .map(|text| render::heading_ids(&text))
+        let targets = self.notes.entry(note.to_path_buf()).or_insert_with(|| {
+            own.map(str::to_string).or_else(|| read(note)).map(|text| {
+                let blocks = crate::blocks::scan(&text).into_iter().map(|b| b.id);
+                (render::heading_ids(&text), blocks.collect())
+            })
         });
-        let Some(ids) = ids else {
+        let Some((ids, blocks)) = targets else {
             return true;
         };
-        heading_of(ids, fragment).is_some()
+        match crate::blocks::block_ref(fragment) {
+            Some(id) => blocks.iter().any(|b| b == id),
+            None => heading_of(ids, fragment).is_some(),
+        }
     }
 }
 
 /// The heading of `ids` (`render::heading_ids`) a link's heading part `fragment` reaches, as
 /// following the link finds it: `render::find_heading`, then, for a `%`-escaped part, the way
-/// Ctrl+click decodes it.
+/// Ctrl+click decodes it. None for a block (`^id`).
 pub(crate) fn heading_of<'a>(
     ids: &'a [(usize, String)],
     fragment: &str,
 ) -> Option<&'a (usize, String)> {
+    if crate::blocks::block_ref(fragment).is_some() {
+        return None;
+    }
     render::find_heading(ids, fragment).or_else(|| {
         let decoded = fragment
             .contains('%')
@@ -145,7 +159,10 @@ pub fn in_text(
                             let own = (*into == note).then_some(text);
                             !headings.has(into, own, part)
                         })
-                        .map(|_| format!("{name} — no such heading"))
+                        .map(|(_, part)| match crate::blocks::block_ref(part) {
+                            Some(_) => format!("{name} — no such block"),
+                            None => format!("{name} — no such heading"),
+                        })
                 }
                 Target::Href(href) => file_target(href, note)
                     .is_some_and(|f| !exists(&f))
@@ -278,7 +295,7 @@ mod tests {
     fn read(p: &Path) -> Option<String> {
         let text = match p.to_str()? {
             "/n/Name.md" => {
-                "# Intro\n\nSetext Part\n---\n\n## Plan\n\n## Plan\n\n```\n# Fenced\n```\n"
+                "# Intro\n\nSetext Part\n---\n\n## Plan\n\n## Plan\n\n```\n# Fenced\n```\n\n- item ^abc\n"
             }
             "/n/Sub/Other.md" => "---\ntitle: x\n# yaml\n---\n## Ideas & Plans\n",
             "/n/Sub/Name.md" | "/n/A.md" => "",
@@ -363,6 +380,22 @@ mod tests {
         assert!(broken("![[Name# Intro ]] [[Name#Setext%20Part]] [[Name#intro ]]").is_empty());
         // Markdown links: only the file is checked.
         assert!(broken("[a](Name.md#gone) [b](#gone)").is_empty());
+    }
+
+    #[test]
+    fn missing_block() {
+        assert!(broken("[[Name#^abc]] [[Name#^abc|x]] ![[Name#^abc]] [[#^own]] ^own").is_empty());
+        assert_eq!(
+            broken("[[Name#^nope]] ![[Name#^nope]] [[#^gone]] [[Name#^ABC]]"),
+            [
+                "Name#^nope — no such block",
+                "Name#^nope — no such block",
+                "#^gone — no such block",
+                "Name#^ABC — no such block",
+            ]
+        );
+        // A block id is no heading (Rename Heading leaves such links alone).
+        assert!(heading_of(&[(1, "abc".to_string())], "^abc").is_none());
     }
 
     #[test]

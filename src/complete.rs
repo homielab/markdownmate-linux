@@ -1,4 +1,4 @@
-//! Completion in the editor — `[[` note names, `[[Note#` headings, `#tag`s and code fence
+//! Completion in the editor — `[[` note names, `[[Note#` headings and block ids, `#tag`s and code fence
 //! languages: finds what is being typed, ranks suggestions and builds the text to insert.
 //! Pure logic; the list is `input::Completer`.
 
@@ -246,6 +246,34 @@ pub fn heading_suggestions<'a>(
         .collect()
 }
 
+/// `[[Note#query` completion in the note `md`: (label, text to insert). Its headings
+/// (`heading_suggestions`, indented by level), then its block ids (`blocks`) as `^id`; only
+/// the block ids when `query` starts with `^`. At most `LIMIT`.
+pub fn target_suggestions(query: &str, md: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let block_query = query.strip_prefix('^');
+    if block_query.is_none() {
+        let headings = render::heading_targets(md);
+        out.extend(heading_suggestions(query, &headings).into_iter().map(|h| {
+            let indent = "  ".repeat(usize::from(h.level.saturating_sub(1)));
+            (format!("{indent}{}", h.title), h.fragment.clone())
+        }));
+    }
+    let ids: Vec<String> = crate::blocks::scan(md)
+        .into_iter()
+        .map(|b| format!("^{}", b.id))
+        .collect();
+    let found = matching(block_query.unwrap_or(query), &ids, |id| &id[1..]);
+    let room = LIMIT - out.len();
+    out.extend(
+        found
+            .into_iter()
+            .take(room)
+            .map(|id| (id.clone(), id.clone())),
+    );
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,6 +505,30 @@ mod tests {
         assert_eq!(got("se"), ["Setup", "setup-1", "Use it"]);
         assert_eq!(got("in"), ["Install"]);
         assert!(got("zz").is_empty());
+    }
+
+    #[test]
+    fn block_ids_after_headings() {
+        let md = "# Setup\n\nText ^intro\n\n## Use\n\n- step ^step-1\n\n`code ^no`\n";
+        let got = |q| {
+            target_suggestions(q, md)
+                .into_iter()
+                .map(|(label, insert)| format!("{label}={insert}"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            got(""),
+            [
+                "Setup=Setup",
+                "  Use=Use",
+                "^intro=^intro",
+                "^step-1=^step-1"
+            ]
+        );
+        assert_eq!(got("^"), ["^intro=^intro", "^step-1=^step-1"]);
+        assert_eq!(got("^st"), ["^step-1=^step-1"]);
+        assert_eq!(got("s"), ["Setup=Setup", "  Use=Use", "^step-1=^step-1"]);
+        assert!(got("^zz").is_empty());
     }
 
     #[test]

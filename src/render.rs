@@ -172,6 +172,8 @@ pub(crate) fn render_body(md: &str, wiki: &dyn Links, body: &Body) -> Option<Ren
         }
         last.detach();
     }
+    // Block ids (`^id`) are read from the lines as written, before they shift.
+    let blocks = crate::blocks::strip(root, &md);
     if first_line > 1 {
         let shift = |p: &mut comrak::nodes::Sourcepos| {
             p.start.line += first_line - 1;
@@ -324,6 +326,7 @@ pub(crate) fn render_body(md: &str, wiki: &dyn Links, body: &Body) -> Option<Ren
         let text = format!("{TASK_OPEN}{line}{TASK_CLOSE}");
         node.prepend(arena.alloc(comrak::nodes::NodeValue::Text(text.into()).into()));
     }
+    let has_blocks = mark_blocks(&arena, blocks);
     let headings = written_headings.unwrap_or_else(|| heading_texts(root));
     let highlighter = Highlighter(if cached {
         highlight_all(code_blocks)
@@ -339,6 +342,9 @@ pub(crate) fn render_body(md: &str, wiki: &dyn Links, body: &Body) -> Option<Ren
         .expect("writing to a String");
     if rich && cached {
         *HIGHLIGHTED.lock().unwrap_or_else(PoisonError::into_inner) = highlighter.0;
+    }
+    if has_blocks {
+        html = put_block_ids(&html);
     }
     if smart && !headings.is_empty() {
         let mut anchorizer = comrak::Anchorizer::new();
@@ -470,15 +476,87 @@ pub(crate) fn render_body(md: &str, wiki: &dyn Links, body: &Body) -> Option<Ren
     })
 }
 
+/// Marks each block with an id (`blocks::strip`) for `put_block_ids`: `BLOCK`, its tag, `BLOCK_END`
+/// and the id as its first text (a table's: its first cell's), so its opening tag is the last
+/// one before. A quote that became an alert gives the id to its paragraph. Whether any.
+fn mark_blocks<'a>(
+    arena: &'a comrak::Arena<'a>,
+    blocks: Vec<(
+        &'a comrak::nodes::AstNode<'a>,
+        &'a comrak::nodes::AstNode<'a>,
+        String,
+    )>,
+) -> bool {
+    use comrak::nodes::NodeValue;
+    let mut any = false;
+    for (block, end, id) in blocks {
+        let (node, tag) = match block.data().value {
+            NodeValue::Paragraph => (Some(block), "p"),
+            NodeValue::Item(_) | NodeValue::TaskItem(_) => (Some(block), "li"),
+            NodeValue::BlockQuote => (Some(block), "blockquote"),
+            NodeValue::Table(_) => (
+                block.first_child().and_then(|row| row.first_child()),
+                "table",
+            ),
+            _ if matches!(end.data().value, NodeValue::Paragraph) => (Some(end), "p"),
+            _ => (None, ""),
+        };
+        if let Some(node) = node {
+            let text = format!("{BLOCK}{tag}{BLOCK_END}{id}{BLOCK_END}");
+            node.prepend(arena.alloc(NodeValue::Text(text.into()).into()));
+            any = true;
+        }
+    }
+    any
+}
+
+/// `html` with each `mark_blocks` marker dropped and its block's opening tag given
+/// `id="^id" data-block="id"` (ids are ASCII letters, digits and `-`).
+fn put_block_ids(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(start) = rest.find(BLOCK) {
+        let marker = &rest[start + BLOCK.len_utf8()..];
+        let mut parts = marker.splitn(3, BLOCK_END);
+        let (tag, id) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+        let before = &rest[..start];
+        let open = format!("<{tag}");
+        let at = before
+            .rmatch_indices(&open)
+            .map(|(i, _)| i + open.len())
+            .find(|&i| before[i..].starts_with([' ', '>']));
+        match at {
+            Some(at) => {
+                out.push_str(&before[..at]);
+                out.push_str(&format!(" id=\"^{id}\" data-block=\"{id}\""));
+                out.push_str(&before[at..]);
+            }
+            None => out.push_str(before),
+        }
+        rest = &marker[tag.len() + id.len() + 2 * BLOCK_END.len_utf8()..];
+        // A quote's marker sits on a line of its own.
+        if before.ends_with('\n') && rest.starts_with('\n') {
+            rest = &rest[1..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// The `href` of a wiki link to `target`: the note's path (`Links::note`) with the heading's id
-/// for `[[Note#Heading]]` (see `heading_at`), the id alone for `[[#Heading]]`, or `MISSING` +
+/// for `[[Note#Heading]]` (see `heading_at`) or `#^id` for a block (`blocks`), the id alone
+/// for `[[#Heading]]`, or `MISSING` +
 /// the target when no note has that name. An absolute path (no `file:` scheme, which comrak
 /// drops) resolves against the note's file:// URI and comes back to `link_action` as a
 /// `Link::Note`.
 fn wiki_href(links: &dyn Links, target: &str) -> String {
-    let anchor = target
-        .split_once('#')
-        .map(|(_, heading)| format!("#{}", comrak::Anchorizer::new().anchorize(heading)));
+    let anchor =
+        target
+            .split_once('#')
+            .map(|(_, fragment)| match crate::blocks::block_ref(fragment) {
+                Some(id) => format!("#^{id}"),
+                None => format!("#{}", comrak::Anchorizer::new().anchorize(fragment)),
+            });
     let anchor = anchor.filter(|a| a.len() > 1);
     match (links.note(target), anchor) {
         (_, Some(anchor)) if target.starts_with('#') => anchor,
@@ -659,7 +737,8 @@ fn escaped(text: &str) -> String {
 }
 
 /// The HTML of `written` (`![[target|option]]`): the image, the note (or its section from
-/// `#Heading` to the next heading of the same or a higher level) rendered inline, a wiki link
+/// `#Heading` to the next heading of the same or a higher level, or its block `#^id`: see
+/// `blocks::source`) rendered inline, a wiki link
 /// (an embed inside an embedded note, a note embedding itself, one that is not alone in a
 /// paragraph's text), or the text dimmed when the target is not found.
 fn embed_html(written: &str, links: &dyn Links, body: &Body, in_paragraph: bool) -> Embed {
@@ -773,7 +852,7 @@ fn image_size(option: &str) -> Option<(u32, Option<u32>)> {
 /// The HTML of the note `file` (or its section under `heading`) inside a page made with
 /// `links`: no front matter, task checkboxes, Copy buttons or table of contents; its headings
 /// without ids (the page's own are counted and linked to); its embeds one level deep (`Nested`).
-/// None when it cannot be read or has no such heading.
+/// None when it cannot be read or has no such heading or block.
 fn embedded_note(
     links: &dyn Links,
     file: &Path,
@@ -782,7 +861,10 @@ fn embedded_note(
 ) -> Option<String> {
     let text = links.read(file)?;
     let md = match heading {
-        Some(heading) => section(&text, heading)?,
+        Some(fragment) => match crate::blocks::block_ref(fragment) {
+            Some(id) => crate::blocks::source(&text, &crate::blocks::find(&text, id)?),
+            None => section(&text, fragment)?,
+        },
         None => text,
     };
     let nested = Nested {
@@ -809,6 +891,19 @@ fn embedded_note(
         done = id.end + 1;
     }
     out.push_str(&html[done..]);
+    // Its blocks' ids too (`data-block` stays): the text is escaped, so ` id="^` is one.
+    let attr = " id=\"^";
+    if out.contains(attr) {
+        let mut kept = String::with_capacity(out.len());
+        let mut rest = out.as_str();
+        while let Some(start) = rest.find(attr) {
+            kept.push_str(&rest[..start]);
+            let value = &rest[start + attr.len()..];
+            rest = &value[value.find('"').map_or(0, |end| end + 1)..];
+        }
+        kept.push_str(rest);
+        out = kept;
+    }
     Some(out)
 }
 
@@ -1968,13 +2063,16 @@ const FOLD_END: char = '\u{E00D}';
 /// Around an image's size at the end of its alt text (`size_image`).
 const SIZE: char = '\u{E00E}';
 const SIZE_END: char = '\u{E00F}';
+/// A block id's place: BLOCK, its tag, BLOCK_END, the id, BLOCK_END (`mark_blocks`).
+const BLOCK: char = '\u{E01A}';
+const BLOCK_END: char = '\u{E01B}';
 /// `'0'`…`'9'` of a formula's index.
 const MATH_DIGITS: std::ops::RangeInclusive<char> = '\u{E010}'..='\u{E019}';
 
 /// Whether `c` is one of the private-use chars `body_html` marks the AST with; the note's own
 /// copies are dropped before parsing.
 pub(crate) fn is_marker(c: char) -> bool {
-    matches!(c, TAG_OPEN..=SIZE_END) || MATH_DIGITS.contains(&c)
+    matches!(c, TAG_OPEN..=SIZE_END | BLOCK | BLOCK_END) || MATH_DIGITS.contains(&c)
 }
 
 /// `n` in `MATH_DIGITS`.
@@ -4851,6 +4949,94 @@ $$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> quote line\n\n";
         assert!(
             html.contains("href=\"") && html.contains("Note.md#part\""),
             "{html}"
+        );
+    }
+
+    #[test]
+    fn embeds_a_block() {
+        let folder = TestFolder::new(
+            "block",
+            &[
+                ("Home.md", ""),
+                (
+                    "Note.md",
+                    "Intro ^p\n\n- one\n- two ^li\n  - child\n\n    more\n- three\n\n\
+> quote\n> end ^q\n\n| a |\n|---|\n| 1 |\n^t\n",
+                ),
+            ],
+        );
+        let embed = |md: &str| embedded(&folder, md);
+        // A list item with its children, without the items around it.
+        let html = embed("![[Note#^li]]");
+        assert!(
+            html.contains("<div class=\"embed\" data-embed=\"Note#^li\">"),
+            "{html}"
+        );
+        assert!(html.contains("Note \u{203a} ^li</a></p>"), "{html}");
+        assert!(
+            html.contains("<li data-block=\"li\">") && html.contains("two"),
+            "{html}"
+        );
+        assert!(
+            html.contains("child") && html.contains("more") && !html.contains("^li\n"),
+            "{html}"
+        );
+        assert!(
+            !html.contains("one") && !html.contains("three") && !html.contains("Intro"),
+            "{html}"
+        );
+        assert!(!html.contains(" id=\"^"), "{html}");
+        // A paragraph, a quote, a table.
+        let html = embed("![[Note#^p]]");
+        assert!(
+            html.contains("<p data-block=\"p\">Intro</p>") && !html.contains("two"),
+            "{html}"
+        );
+        let html = embed("![[Note#^q]]");
+        assert!(html.contains("<blockquote data-block=\"q\">"), "{html}");
+        assert!(
+            html.contains("end</p>") && !html.contains("Intro"),
+            "{html}"
+        );
+        let html = embed("![[Note#^t]]");
+        assert!(html.contains("<table data-block=\"t\">"), "{html}");
+        assert!(
+            html.contains("<td>1</td>") && !html.contains("<td>^t"),
+            "{html}"
+        );
+        // Missing: dimmed.
+        assert!(
+            embed("![[Note#^nope]]")
+                .contains("<span class=\"embed-missing\">![[Note#^nope]]</span>")
+        );
+    }
+
+    #[test]
+    fn block_links() {
+        let folder = TestFolder::new("blocklinks", &[("Home.md", ""), ("Note.md", "x ^abc\n")]);
+        let root = folder.0.to_string_lossy().into_owned();
+        let html = embedded(
+            &folder,
+            "[[Note#^abc]] [[Note#^abc|text]] [[#^own]] x ^own\n",
+        );
+        assert_eq!(
+            html,
+            format!(
+                "<p id=\"^own\" data-block=\"own\">\
+<a href=\"{root}/Note.md#%5Eabc\" data-wikilink=\"true\">Note#^abc</a> \
+<a href=\"{root}/Note.md#%5Eabc\" data-wikilink=\"true\">text</a> \
+<a href=\"#%5Eown\" data-wikilink=\"true\">#^own</a> x</p>\n"
+            )
+        );
+        assert_eq!(
+            note_link(
+                &format!("file://{root}/Note.md#%5Eabc"),
+                "file:///x/Home.md"
+            ),
+            Some((
+                PathBuf::from(format!("{root}/Note.md")),
+                Some("^abc".into())
+            ))
         );
     }
 

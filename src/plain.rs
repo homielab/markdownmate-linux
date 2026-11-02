@@ -10,6 +10,7 @@ use comrak::nodes::{AstNode, ListType, NodeValue};
 pub fn plain_text(md: &str) -> String {
     let arena = comrak::Arena::new();
     let root = comrak::parse_document(&arena, md, &crate::render::options());
+    crate::blocks::strip(root, md);
     let text = blocks(root, "\n\n");
     if text.is_empty() { text } else { text + "\n" }
 }

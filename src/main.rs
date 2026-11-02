@@ -3,6 +3,7 @@ mod aliases;
 mod attachments;
 mod autopair;
 mod backlinks;
+mod blocks;
 mod broken;
 mod cli;
 mod complete;

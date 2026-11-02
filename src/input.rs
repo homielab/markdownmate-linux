@@ -14,7 +14,7 @@ use crate::{complete, droplink, format, images, lines, lists, paste, relink, ren
 enum Kind {
     /// Note names after `[[` (closed with `]]`).
     Note,
-    /// Headings after `[[Note#` / `[[#` (closed with `]]`).
+    /// Headings and block ids after `[[Note#` / `[[#` (closed with `]]`).
     Heading,
     /// `#tag`s (inserted as is).
     Tag,
@@ -136,14 +136,7 @@ impl Completer {
             }
             Kind::Heading => {
                 let text = self.heading_source(editor, &note, root.as_deref());
-                let headings = render::heading_targets(&text.unwrap_or_default());
-                complete::heading_suggestions(&query, &headings)
-                    .into_iter()
-                    .map(|h| {
-                        let indent = "  ".repeat(usize::from(h.level.saturating_sub(1)));
-                        (format!("{indent}{}", h.title), h.fragment.clone())
-                    })
-                    .collect()
+                complete::target_suggestions(&query, &text.unwrap_or_default())
             }
         };
         if self.dismissed.get() == Some(start) || names.is_empty() {
@@ -169,7 +162,7 @@ impl Completer {
         self.place_later();
     }
 
-    /// The Markdown whose headings `[[note#` offers: the editor's text for `[[#` or a link to
+    /// The Markdown whose headings and block ids `[[note#` offers: the editor's text for `[[#` or a link to
     /// the open note, else the linked note's file (None if it does not resolve or read).
     fn heading_source(
         &self,

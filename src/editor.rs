@@ -405,7 +405,7 @@ impl Editor {
         self.outline_timer.replace(Some(id));
     }
 
-    /// Re-colours the `#tags`, formulas and `==highlights==` of the editor and sets table lines in monospace (so
+    /// Re-colours the `#tags`, formulas, `==highlights==` and block ids of the editor and sets table lines in monospace (so
     /// columns aligned by `table` line up whatever the editor font) after OUTLINE_DELAY of quiet.
     pub(crate) fn schedule_tags(self: &Rc<Self>) {
         if let Some(id) = self.tag_timer.take() {
@@ -455,6 +455,11 @@ impl Editor {
                 apply(MARK_STYLE, ((line, a + 2), (line, b - 2)));
                 apply(MARK_MARKER_STYLE, ((line, a), (line, a + 2)));
                 apply(MARK_MARKER_STYLE, ((line, b - 2), (line, b)));
+            }
+            // Block ids (`^id`), dimmed as the `==`: the preview leaves them out.
+            for block in crate::blocks::scan(&text) {
+                let (line, r) = block.marker;
+                apply(MARK_MARKER_STYLE, ((line, r.start), (line, r.end)));
             }
         });
         self.tag_timer.replace(Some(id));
@@ -1418,13 +1423,22 @@ impl Editor {
     }
 
     /// Puts the cursor on the heading of the open note that a link fragment names (its id or
-    /// its text, `render::heading_at`), scrolled into view, without changing the mode. When
+    /// its text, `render::heading_at`) or on the first line of its block (`^id`, `blocks`),
+    /// scrolled into view, without changing the mode. When
     /// `reload` (a new page is loading) and the preview shows, it scrolls there once loaded.
     pub(crate) fn go_to_heading(&self, fragment: &str, reload: bool) {
         let (start, end) = self.buffer.bounds();
         let text = self.buffer.text(&start, &end, true);
-        let Some((line, id)) = render::heading_at(&text, fragment) else {
-            return self.toast(&format!("No heading “{fragment}” in this note"));
+        let found = match crate::blocks::block_ref(fragment) {
+            Some(id) => crate::blocks::find(&text, id)
+                .map(|block| (*block.lines.start(), format!("^{}", block.id)))
+                .ok_or(format!("No block “^{id}” in this note")),
+            None => render::heading_at(&text, fragment)
+                .ok_or(format!("No heading “{fragment}” in this note")),
+        };
+        let (line, id) = match found {
+            Ok(found) => found,
+            Err(message) => return self.toast(&message),
         };
         self.buffer.place_cursor(&self.line_iter(line, None));
         self.view

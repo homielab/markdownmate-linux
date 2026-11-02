@@ -162,6 +162,11 @@ fn cuttable(md: &str) -> bool {
     if md.contains("[^") || md.chars().any(render::is_marker) || render::has_block_comment(md) {
         return false;
     }
+    // A block id written twice: only the first block gets it, which a chunk cannot tell.
+    let ids = crate::blocks::written_ids(md);
+    if ids.iter().enumerate().any(|(i, id)| ids[..i].contains(id)) {
+        return false;
+    }
     let bytes = md.as_bytes();
     if bytes
         .iter()
@@ -1015,6 +1020,25 @@ mod tests {
         .map(|t| t.to_string())
         .collect();
         assert!(check_with(&texts, &links) > 0);
+    }
+
+    #[test]
+    fn block_ids_render_and_patch_as_the_whole_note() {
+        let note = "# Home\n\nintro ^p1\n\n- a\n- b ^li\n  - child\n\n> quote\n^q\n\n\
+| a | b |\n|---|---|\n| 1 | 2 ^t\n\nend [[#^li]]\n";
+        let texts: Vec<String> = [
+            note,
+            &note.replace("intro", "intro more"),
+            &note.replace("end", "end\n\nnew ^n1"),
+            &note.replace("^li", "^p1"),
+            &note.replace(" ^p1", ""),
+        ]
+        .iter()
+        .map(|t| t.to_string())
+        .collect();
+        assert!(check(&texts) > 0);
+        assert!(!cuttable("a ^x\n\nb ^x\n"));
+        assert!(cuttable("a ^x\n\nb ^y\n"));
     }
 
     #[test]

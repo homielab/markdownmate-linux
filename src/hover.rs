@@ -30,8 +30,23 @@ const MAX_PARAGRAPH: usize = 20;
 /// The first lines of a note shown on hover: front matter skipped, empty lines left out, at
 /// most `MAX_LINES` lines and `MAX_CHARS` characters. With `heading` (a `[[Note#Heading]]`
 /// fragment, matched as `render::heading_at` does) it starts at that heading's line; a
-/// heading the note lacks gives its top. Takes from `lines` only what it needs.
+/// heading the note lacks gives its top. A block (`^id`, `blocks`) starts at its first line;
+/// the whole note is read to find it. Takes from `lines` only what it needs.
 pub fn excerpt(lines: impl Iterator<Item = String>, heading: Option<&str>) -> String {
+    if let Some(id) = heading.and_then(crate::blocks::block_ref) {
+        let lines: Vec<String> = lines.collect();
+        let start = crate::blocks::find(&lines.join("\n"), id).map(|b| *b.lines.start());
+        let Some(start) = start else {
+            return excerpt(lines.into_iter(), None);
+        };
+        let mut from = Collector::default();
+        for line in &lines[start - 1..] {
+            if from.push(line) {
+                break;
+            }
+        }
+        return from.text;
+    }
     let mut lines = skip_front_matter(lines);
     let mut top = Collector::default();
     let Some(want) = heading.map(str::trim).filter(|h| !h.is_empty()) else {
@@ -392,6 +407,15 @@ mod tests {
         assert_eq!(ex("a\n---\nb", None), "a\n---\nb");
         assert_eq!(ex("", None), "");
         assert_eq!(ex("---\nk: v\n---\n", None), "");
+    }
+
+    #[test]
+    fn starts_at_a_block() {
+        let md = "---\nk: v\n---\n\nIntro.\n\n- one\n- two ^b\n  - child\n\nend ^e\n";
+        assert_eq!(ex(md, Some("^b")), "- two ^b\n  - child\nend ^e");
+        assert_eq!(ex(md, Some("^e")), "end ^e");
+        // An unknown block: the note's top.
+        assert_eq!(ex(md, Some("^nope")), ex(md, None));
     }
 
     #[test]

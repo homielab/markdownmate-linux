@@ -28,6 +28,7 @@ fn rtf_with(md: &str, smart: bool) -> String {
     }
     let md = crate::render::strip_comments(md);
     let root = comrak::parse_document(&arena, &md, &options);
+    crate::blocks::strip(root, &md);
     if smart {
         crate::smart::apply(root);
     }
