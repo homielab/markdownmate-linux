@@ -19,7 +19,7 @@ use crate::{
     STATUS_DELAY, TABLE_STYLE, TAG_STYLE, UNTITLED, file_name, state_file,
 };
 use crate::{
-    aliases, backlinks, complete, extract, favorites, find, images, links, lists, mentions,
+    aliases, backlinks, blocks, complete, extract, favorites, find, images, links, lists, mentions,
     multisel, naming, notes, outline, quick, reheading, relink, render, retag, save, sidebar,
     state, stats, tags, templates, timing, title, url,
 };
@@ -590,6 +590,66 @@ impl Editor {
         self.window
             .clipboard()
             .set_text(&format!("[[{name}#{fragment}]]"));
+        self.toast("Link copied");
+    }
+
+    /// The block Copy Link to Block acts on: the one at the cursor (`blocks::block_at`); none in
+    /// Preview, where the cursor is hidden.
+    fn block_at_cursor(&self, text: &str) -> Option<blocks::Spot> {
+        if self.mode.get() == state::Mode::Preview {
+            return None;
+        }
+        let line = self.buffer.iter_at_mark(&self.buffer.get_insert()).line();
+        blocks::block_at(text, line as usize + 1)
+    }
+
+    /// Enables Copy Link to Block (editor right-click and main menu) when the cursor is in a
+    /// block an id can name; checked as a menu opens, not on every cursor move (one parse).
+    pub(crate) fn update_block_link_action(&self) {
+        if let Some(a) = self.window.lookup_action("copy-block-link")
+            && let Ok(a) = a.downcast::<gio::SimpleAction>()
+        {
+            a.set_enabled(self.block_at_cursor(&self.text()).is_some());
+        }
+    }
+
+    /// Copy Link to Block: copies `[[Note#^id]]` for the block at the cursor, first ending it
+    /// with a new ` ^id` (one undo step) when it has none. `[[#^id]]` without a folder or for an
+    /// unsaved note. Saved as any edit is.
+    pub(crate) fn copy_block_link(&self) {
+        let text = self.text();
+        let Some(spot) = self.block_at_cursor(&text) else {
+            self.view.error_bell();
+            return;
+        };
+        let id = match spot {
+            blocks::Spot::Named(id) => id,
+            blocks::Spot::Unnamed(place) => {
+                let id = blocks::new_id(&text, || {
+                    std::hash::BuildHasher::hash_one(&std::hash::RandomState::new(), Instant::now())
+                });
+                // The cursor stays where it was, not after the inserted id.
+                let cursor = self.buffer.iter_at_mark(&self.buffer.get_insert()).offset();
+                let at = text[..place.range.start].chars().count() as i32;
+                self.edit_buffer(
+                    &text,
+                    &[relink::Edit {
+                        range: place.range.clone(),
+                        text: place.text(&id),
+                    }],
+                );
+                self.buffer
+                    .place_cursor(&self.buffer.iter_at_offset(cursor.min(at)));
+                id
+            }
+        };
+        let name = match (self.path.borrow().as_ref(), self.root.borrow().as_ref()) {
+            (Some(path), Some(root)) => complete::link_name(path, &self.note_list.borrow(), root),
+            _ => String::new(),
+        };
+        self.window
+            .clipboard()
+            .set_text(&format!("[[{name}#^{id}]]"));
         self.toast("Link copied");
     }
 

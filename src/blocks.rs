@@ -342,6 +342,148 @@ fn cut_text(text: &AstNode) {
     }
 }
 
+/// What Copy Link to Block finds at a line: the block's id, or where a new one goes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Spot {
+    /// The block already has this id (at its end, under it or after one blank line).
+    Named(String),
+    /// No id yet: `Place::text` replaces this byte range of the note.
+    Unnamed(Place),
+}
+
+/// Where a new id is written: over `range` (trailing spaces of the block's last line, or
+/// nothing), between `before` and `after`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Place {
+    pub range: Range<usize>,
+    before: String,
+    after: String,
+}
+
+impl Place {
+    /// What replaces `range` to name the block `id`.
+    pub fn text(&self, id: &str) -> String {
+        format!("{}^{id}{}", self.before, self.after)
+    }
+}
+
+/// The block on 1-based `line` of `md` that an id can name, as `scan` reads ids: a paragraph,
+/// a list item (from its first paragraph), a quote (when it ends with a paragraph; else the
+/// paragraph) or a table. None on a heading, in code, front matter, a footnote, HTML or on a
+/// blank line. A new id ends the block's last line after a space; a top-level table's goes
+/// alone on the line after it, after one blank line (as Obsidian writes it), a nested table's
+/// at the end of its last row.
+pub fn block_at(md: &str, line: usize) -> Option<Spot> {
+    let arena = comrak::Arena::new();
+    let root = comrak::parse_document(&arena, md, &crate::render::options());
+    let lines: Vec<&str> = md.split('\n').collect();
+    // The last line of a paragraph or table (a table's by its last row, as `in_table`).
+    let end = |node: &AstNode| match node.data().value {
+        NodeValue::Table(_) => node
+            .last_child()
+            .map_or(node.data().sourcepos.end.line, |row| {
+                row.data().sourcepos.start.line
+            }),
+        _ => node.data().sourcepos.end.line,
+    };
+    // The deepest paragraph or table spanning the line.
+    let at = root
+        .descendants()
+        .filter(|n| {
+            matches!(n.data().value, NodeValue::Paragraph | NodeValue::Table(_))
+                && (n.data().sourcepos.start.line..=end(n)).contains(&line)
+        })
+        .last()?;
+    if at
+        .ancestors()
+        .any(|a| matches!(a.data().value, NodeValue::FootnoteDefinition(_)))
+    {
+        return None;
+    }
+    let found = detect(root, md);
+    // On a `^id` line of its own that names the block above.
+    if let Some(f) = found
+        .iter()
+        .find(|f| matches!(f.cut, Cut::Node(n) if std::ptr::eq(n, at)))
+    {
+        return Some(Spot::Named(f.id.clone()));
+    }
+    // The block an id ending `last` names (`in_paragraph`), and that paragraph.
+    let (block, last) = match at.parent() {
+        Some(item)
+            if matches!(
+                item.data().value,
+                NodeValue::Item(_) | NodeValue::TaskItem(_)
+            ) && is(item.first_child(), at) =>
+        {
+            (item, at)
+        }
+        Some(quote) if matches!(quote.data().value, NodeValue::BlockQuote) => {
+            match quote.last_child() {
+                Some(p) if matches!(p.data().value, NodeValue::Paragraph) => (quote, p),
+                _ => (at, at),
+            }
+        }
+        _ => (at, at),
+    };
+    if let Some(f) = found.iter().find(|f| std::ptr::eq(f.block, block)) {
+        return Some(Spot::Named(f.id.clone()));
+    }
+    let n = end(last);
+    let text = line_at(&lines, n);
+    let start: usize = lines[..n - 1].iter().map(|l| l.len() + 1).sum();
+    let content = text.strip_suffix('\r').unwrap_or(text);
+    let kept = content.trim_end().len();
+    let alone = matches!(last.data().value, NodeValue::Table(_))
+        && last
+            .parent()
+            .is_some_and(|p| matches!(p.data().value, NodeValue::Document));
+    let place = if alone {
+        let eol = if text.ends_with('\r') { "\r\n" } else { "\n" };
+        let next = lines.get(n).map(|l| l.trim().is_empty());
+        Place {
+            range: start + kept..start + content.len(),
+            before: format!("{eol}{eol}"),
+            // A block right under the table stays apart from the id.
+            after: if next == Some(false) {
+                eol.to_string()
+            } else {
+                String::new()
+            },
+        }
+    } else {
+        Place {
+            range: start + kept..start + content.len(),
+            before: " ".into(),
+            after: String::new(),
+        }
+    };
+    Some(Spot::Unnamed(place))
+}
+
+/// A new block id for `md`: 6 characters a–z, 0–9 from `random`, none of the note's ids
+/// (any case).
+pub fn new_id(md: &str, mut random: impl FnMut() -> u64) -> String {
+    const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let taken: Vec<String> = written_ids(md)
+        .into_iter()
+        .map(str::to_ascii_lowercase)
+        .collect();
+    loop {
+        let mut n = random();
+        let id: String = (0..6)
+            .map(|_| {
+                let c = CHARS[(n % 36) as usize] as char;
+                n /= 36;
+                c
+            })
+            .collect();
+        if !taken.contains(&id) {
+            return id;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,6 +660,124 @@ mod tests {
         assert_eq!(source(md, &block), "- b ^li\n  - child\n\n    more\n");
         let md = "> one\n> two ^q\n";
         assert_eq!(source(md, &find(md, "q").unwrap()), "> one\n> two ^q\n");
+    }
+
+    /// The id `block_at` finds at `line`, if the block has one.
+    fn named(md: &str, line: usize) -> Option<String> {
+        match block_at(md, line)? {
+            Spot::Named(id) => Some(id),
+            Spot::Unnamed(_) => None,
+        }
+    }
+
+    /// `md` after naming the block at `line` `new`; the id then names that block.
+    fn add(md: &str, line: usize) -> String {
+        let Some(Spot::Unnamed(place)) = block_at(md, line) else {
+            panic!("no block without an id on line {line} of {md:?}");
+        };
+        let mut out = md.to_string();
+        out.replace_range(place.range.clone(), &place.text("new"));
+        assert_eq!(named(&out, line).as_deref(), Some("new"), "{out:?}");
+        out
+    }
+
+    #[test]
+    fn block_at_a_line() {
+        let md = "---\ntitle: x\n---\n# Title\n\n```\ncode\n```\n\ntext\n\n[^1]: note\n\n<div>\nx\n</div>\n";
+        for line in [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 99] {
+            assert_eq!(block_at(md, line), None, "line {line}");
+        }
+        assert!(matches!(block_at(md, 10), Some(Spot::Unnamed(_))));
+        assert_eq!(block_at("Title\n===\n", 1), None);
+        assert_eq!(block_at("text\n\n    code\n", 3), None);
+        assert_eq!(block_at("- a\n\n- b\n", 2), None);
+        // The deepest block: a nested item, not its parent.
+        assert_eq!(add("- a\n  - child\n", 2), "- a\n  - child ^new\n");
+        assert_eq!(add("- a\n  - child\n", 1), "- a ^new\n  - child\n");
+    }
+
+    #[test]
+    fn existing_ids_are_found() {
+        assert_eq!(named("Some text ^abc\n", 1).as_deref(), Some("abc"));
+        assert_eq!(named("one\ntwo\n^abc\n", 1).as_deref(), Some("abc"));
+        for line in [1, 2, 4] {
+            assert_eq!(named("one\ntwo\n\n^abc\n", line).as_deref(), Some("abc"));
+        }
+        let md = "- a\n- b ^li\n  - child\n";
+        assert_eq!(named(md, 2).as_deref(), Some("li"));
+        assert_eq!(named(md, 1), None);
+        assert_eq!(named(md, 3), None);
+        assert_eq!(named("> one\n>\n> two ^q\n", 1).as_deref(), Some("q"));
+        assert_eq!(named("> one\n> two\n\n^q\n", 1).as_deref(), Some("q"));
+        let table = "| a | b |\n|---|---|\n| 1 | 2 |\n";
+        for md in [
+            format!("{table}| 3 | 4 | ^t\n"),
+            format!("{table}^t\n"),
+            format!("{table}\n^t\n"),
+        ] {
+            for line in [1, 3] {
+                assert_eq!(named(&md, line).as_deref(), Some("t"), "{md}");
+            }
+        }
+        assert_eq!(named(&format!("{table}\n^t\n"), 5).as_deref(), Some("t"));
+    }
+
+    #[test]
+    fn new_id_placement() {
+        assert_eq!(add("Some text\n", 1), "Some text ^new\n");
+        assert_eq!(
+            add("one  \ntwo \t\n\nafter\n", 1),
+            "one  \ntwo ^new\n\nafter\n"
+        );
+        assert_eq!(add("text\r\n", 1), "text ^new\r\n");
+        assert_eq!(add("no newline", 1), "no newline ^new");
+        // A list item: its first paragraph's last line, children untouched.
+        assert_eq!(
+            add("- a\n  more\n  - child\n", 1),
+            "- a\n  more ^new\n  - child\n"
+        );
+        assert_eq!(add("1. [ ] task\n", 1), "1. [ ] task ^new\n");
+        // A quote (a callout too): the whole quote, on its last line.
+        assert_eq!(
+            add("> one\n>\n> two\n\nafter\n", 1),
+            "> one\n>\n> two ^new\n\nafter\n"
+        );
+        assert_eq!(add("> [!note]\n> body\n", 1), "> [!note]\n> body ^new\n");
+        // A table: alone after one blank line; nested, at the end of its last row.
+        let table = "| a | b |\n|---|---|\n| 1 | 2 |";
+        assert_eq!(add(&format!("{table}\n"), 2), format!("{table}\n\n^new\n"));
+        assert_eq!(add(table, 1), format!("{table}\n\n^new"));
+        assert_eq!(
+            add(&format!("{table}\n\nafter\n"), 3),
+            format!("{table}\n\n^new\n\nafter\n")
+        );
+        assert_eq!(
+            add(&format!("{table}\n# Next\n"), 3),
+            format!("{table}\n\n^new\n\n# Next\n")
+        );
+        assert_eq!(
+            add("> | a |\n> |---|\n> | 1 |\n", 1),
+            "> | a |\n> |---|\n> | 1 | ^new\n"
+        );
+    }
+
+    #[test]
+    fn new_ids_are_unique() {
+        let md = "a ^aaaaaa\n\n```\nb ^BAAAAA\n```\n";
+        let mut n = 0;
+        let next = || {
+            n += 1;
+            n - 1
+        };
+        assert_eq!(new_id(md, next), "caaaaa");
+        assert_eq!(new_id("", || 36u64.pow(6) - 1), "999999");
+        let id = new_id("", || 1_234_567_890);
+        assert!(
+            id.len() == 6
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        );
     }
 
     #[test]

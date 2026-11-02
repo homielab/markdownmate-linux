@@ -119,6 +119,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
                         ("Move Line Up", "win.move-line-up", "<Control><Alt>Up"),
                         ("Move Line Down", "win.move-line-down", "<Control><Alt>Down"),
                         ("Duplicate Line", "win.duplicate-line", "<Shift><Control>d"),
+                        ("Copy Link to Block", "win.copy-block-link", ""),
                     ][..],
                 ),
                 (
@@ -663,9 +664,50 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         popover.connect_show(clone!(
             #[weak]
             editor,
-            move |_| editor.fill_templates_menu()
+            move |_| {
+                editor.fill_templates_menu();
+                editor.update_block_link_action();
+            }
         ));
     }
+
+    // Copy Link to Block (`Editor::copy_block_link`): in the main menu's Edit and the editor's
+    // right-click menu, enabled as either opens when the cursor is in a block an id can name.
+    let block_link = gio::SimpleAction::new("copy-block-link", None);
+    block_link.set_enabled(false);
+    block_link.connect_activate(clone!(
+        #[strong]
+        editor,
+        move |_, _| editor.copy_block_link()
+    ));
+    window.add_action(&block_link);
+    if let Ok(menu) = editor.view.extra_menu().downcast::<gio::Menu>() {
+        let section = gio::Menu::new();
+        section.append(Some("Copy Link to Block"), Some("win.copy-block-link"));
+        menu.append_section(None, &section);
+    }
+    // Before the view opens its menu (never claims the click): the cursor goes to the clicked
+    // place, so the menu is about that block.
+    let block_click = gtk::GestureClick::builder()
+        .button(gtk::gdk::BUTTON_SECONDARY)
+        .propagation_phase(gtk::PropagationPhase::Capture)
+        .build();
+    block_click.connect_pressed(clone!(
+        #[weak]
+        editor,
+        move |_, _, x, y| {
+            let (bx, by) = editor.view.window_to_buffer_coords(
+                gtk::TextWindowType::Widget,
+                x as i32,
+                y as i32,
+            );
+            if let Some(at) = editor.view.iter_at_location(bx, by) {
+                crate::spell::cursor_to(&editor.view.buffer(), &at);
+            }
+            editor.update_block_link_action();
+        }
+    ));
+    editor.view.add_controller(block_click);
 
     // New Note from Selection: enabled with text selected in the editor
     // (`Editor::update_selection_actions`). GTK and GtkSourceView don't bind Shift+Ctrl+Alt+N.

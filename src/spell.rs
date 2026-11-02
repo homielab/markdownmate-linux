@@ -160,7 +160,7 @@ fn misspelled_word(adapter: &libspelling::TextBufferAdapter, at: &gtk::TextIter)
 
 /// Places the cursor at `at` unless it is inside the selection (the menu then acts on the
 /// selection, as before).
-fn cursor_to(buffer: &gtk::TextBuffer, at: &gtk::TextIter) {
+pub(crate) fn cursor_to(buffer: &gtk::TextBuffer, at: &gtk::TextIter) {
     if let Some((start, end)) = buffer.selection_bounds()
         && at.in_range(&start, &end)
     {
