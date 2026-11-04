@@ -26,7 +26,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 - Hover a link in the preview to peek at the note it points to.
 - Ctrl+click a tag to jump to it in the sidebar.
 - Pasted images can be saved as PNG or JPEG and shrunk, and you choose the Attachments Folder.
-- Large folders open faster.
+- Large folders open faster, so no more staring at the sidebar.
 - Preview polish: folded callouts stay as you left them, and tags are clickable only when a folder is open.
 
 ## 0.9.0
@@ -41,7 +41,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 - Drag a note from the sidebar into the editor to insert a link to it.
 - Dates and times in templates can use your own format, and templates can place the cursor.
 - Create Starter Templates adds four ready-made templates when you have none.
-- Brackets, backticks and quotes close themselves as you type; turn it off in Preferences if you prefer.
+- Brackets, backticks and quotes close themselves as you type; turn it off in Preferences if you prefer. No more lonely brackets.
 - Smart punctuation (off by default) shows curly quotes and proper dashes in the preview and exports.
 - Find in Folder can search just one folder from its right-click menu.
 - New Note and Today's Note in the dock icon menu, and from the terminal.
@@ -53,7 +53,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 - Find in Folder can replace text, with options for Match Case, Whole Word and Regex.
 - Favorites pin notes and folders at the top of the sidebar.
 - Back and Forward return you to the note you came from, like a browser.
-- Highlight text with ==text==.
+- Highlight text with ==text==, for the lines you will want again.
 - GitHub-style alerts show as coloured callouts in the preview and exports.
 - New from Template creates a note from your templates, and Today's Note can start from a template.
 - Table of contents: put [TOC] on its own line to list the note's headings.
