@@ -1,10 +1,11 @@
 # Changelog
 
 Release notes for MarkdownMate on Ubuntu. The Debian package installs this file as
-the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
-(`<release>` entries, read by App Center) in step with it.
+the upstream changelog. At release, `scripts/release-notes.py <version>` copies a version's
+lines into the App Center notes (`packaging/com.homielab.MarkdownMate.metainfo.xml`), What's New
+(`resources/whats-new.toml`) and `debian/changelog`.
 
-## Unreleased
+## [Unreleased]
 
 - Better screen reader and keyboard access: every button and list row tells Orca what it is, and Ctrl+Tab jumps from the editor to the preview.
 - New: first time here? Create Notes Folder… in the empty window (or main menu ▸ New Notes Folder…) sets up a folder with a welcome note, a short tour and four templates.
@@ -14,7 +15,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 - Copy Link to Block in the editor's right-click menu and main menu ▸ Edit: copies `[[Note#^id]]` for the paragraph, list item, quote or table at the cursor, first adding a `^id` to it if it has none, so linking to a block no longer means inventing an id and typing it twice. Same as the macOS app.
 - Hovering a footnote reference in the preview shows the footnote's text in a small box next to it, so reading a footnote no longer means jumping to the end of the note and back. A click still jumps to it. Same as the macOS app.
 
-## 0.10.0
+## [0.10.0] - 2026-11-02
 
 - Open Quickly (Ctrl+P) now finds headings in every note and notes by their aliases, so you can jump straight to a section.
 - Select several notes and folders in the sidebar, then move, trash, favorite or duplicate them all at once.
@@ -32,7 +33,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 - Large folders open faster, so no more staring at the sidebar.
 - Preview polish: folded callouts stay as you left them, and tags are clickable only when a folder is open.
 
-## 0.9.0
+## [0.9.0] - 2026-11-01
 
 - Find Open Tasks, Find Broken Links and Find Unused Attachments help you tidy up your folder.
 - Export Folder as HTML turns all your notes into web pages with an index.
@@ -50,7 +51,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 - New Note and Today's Note in the dock icon menu, and from the terminal.
 - MarkdownMate is now available for Ubuntu 26.04 LTS and 26.10 too.
 
-## 0.8.0
+## [0.8.0] - 2026-11-01
 
 - Spell check in the editor, with corrections, Add to Dictionary and Ignore in the right-click menu.
 - Find in Folder can replace text, with options for Match Case, Whole Word and Regex.
@@ -67,12 +68,12 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 - Preferences has an About section with What's New, Send Feedback and more.
 - Alerts keep their colours when copied or exported, and Focus Mode keeps text colours.
 
-## 0.7.0
+## [0.7.0] - 2026-10-31
 
 - A new app icon, the same as on the Mac.
 - Choose how line breaks show in the preview and exports.
 
-## 0.6.0
+## [0.6.0] - 2026-10-26
 
 - Focus Mode dims everything except the paragraph you are writing.
 - Sort the sidebar by Name, Date Modified or Date Created.
@@ -81,3 +82,58 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 - Backlinks and the sidebar appear faster in large folders.
 - The app uses less memory.
 - Fixed a crash on Intel graphics on Ubuntu 24.04 with Wayland.
+
+## [0.5.0] - 2026-10-25
+
+- Today's Note (Ctrl+D) opens or creates today's daily note.
+- Math formulas show in the preview, print and exports, like on the Mac.
+- Copy as Rich Text, Export as Plain Text and Export as RTF.
+- Paste spreadsheet cells as a table.
+- Click a link to a note that doesn't exist yet to create it.
+- Preferences ▸ Default App makes MarkdownMate your Markdown app.
+- Suggestions for code block languages and headings in links, and TypeScript code is coloured.
+- Backlinks and the preview are much faster in large folders and notes.
+
+## [0.4.0] - 2026-10-24
+
+- Mermaid diagrams show in the preview, print and exports.
+- Find in Preview with Ctrl+F.
+- A format bar with buttons for headings, bold, links, lists, tables and more.
+- Table commands: add or delete rows and columns, and align columns.
+- Renaming or moving a note or folder offers to update your links.
+- Unlinked Mentions under Backlinks lists notes that name this note without linking to it.
+- Toggle Task, Footnote, Move Line and Duplicate Line commands.
+- Drop files or folders into a note to insert links to them.
+- The preview of large notes with code is much faster.
+
+## [0.3.0] - 2026-10-22
+
+- Backlinks to the current note.
+- Recent notes in Open Quickly.
+- Links that jump to a heading in the preview.
+- Insert a table with Shift+Ctrl+T.
+- Table editing inside quotes and lists, and monospace table rows.
+- Show in Files and Copy Path in the sidebar.
+- Cleaner pasted web text.
+- A smoother preview with large notes.
+
+## [0.2.0] - 2026-10-22
+
+- Math formulas in the preview.
+- Pasting rich text as Markdown.
+- Table editing with Tab and Enter.
+- Find and replace.
+- Typewriter scrolling.
+- Image previews on hover.
+- Drag and drop in the sidebar.
+- A Light/Dark style setting.
+- A faster Side by side view.
+- Many fixes.
+
+## [0.1.1] - 2026-10-21
+
+- First release in the PPA, with app store metadata and screenshots.
+
+## [0.1.0] - 2026-10-21
+
+- First release, available from a PPA with updates through Software Updater.
