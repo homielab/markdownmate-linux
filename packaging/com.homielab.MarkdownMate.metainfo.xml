@@ -108,57 +108,57 @@
   <releases>
     <release version="0.10.0" date="2026-11-02">
       <description>
-        <p>Obsidian-style embeds, callouts that fold, block references and image sizes, front matter as a properties table, an attachments folder setting, Rename Heading in the Outline, wiki link hover previews in the preview, daily note names and Daily Note for Date, heading search and aliases in Open Quickly, tag: and path: operators in Find in Folder, selecting several sidebar items, Export as Word, scaled-down pasted images, and faster large folders.</p>
+        <p>Obsidian vaults feel at home: embeds, foldable callouts, block references and a properties table. Open Quickly finds headings and aliases, Rename Heading updates every link, and large folders open faster.</p>
       </description>
     </release>
     <release version="0.9.0" date="2026-11-01">
       <description>
-        <p>Find Broken Links, Find Open Tasks and Find Unused Attachments, Find in Folder from the sidebar, Export Folder as HTML, wiki link hover previews, front-matter tags and aliases, New Note from Selection, Previous and Next Daily Note, template improvements, auto-pairing of brackets and quotes, smart punctuation, and builds for Ubuntu 26.04 LTS and 26.10.</p>
+        <p>Find Broken Links, Open Tasks and Unused Attachments to tidy your folder, Export Folder as HTML, link hover previews, New Note from Selection, starter templates, and brackets that close themselves.</p>
       </description>
     </release>
     <release version="0.8.0" date="2026-11-01">
       <description>
-        <p>An About page in Preferences with What's New, regex, Match Case and Whole Word in Find in Folder, Replace in Folder, spell check, favorites, Duplicate and Move to Folder in the sidebar, Back and Forward between notes, templates, ==highlights==, GitHub-style alerts, a table of contents and Rename Tag.</p>
+        <p>Favorites, Back and Forward between notes, Replace in Find in Folder, ==highlights==, GitHub-style alerts, [TOC], templates, Rename Tag and spell check.</p>
       </description>
     </release>
     <release version="0.7.0" date="2026-10-31">
       <description>
-        <p>A new app icon with a bolder, solid M↓ mark, and a Line Breaks preference to show every newline in a paragraph as a line break in the preview, print and exports.</p>
+        <p>A new app icon with a bolder M↓ mark, and a Line Breaks setting to show every line you write on its own line.</p>
       </description>
     </release>
     <release version="0.6.0" date="2026-10-26">
       <description>
-        <p>Focus Mode (Shift+Ctrl+J), sorting the sidebar by name, date modified or date created, Line Spacing and Text Width preferences, an option to load images from the web in the preview, instant Backlinks and a faster sidebar in large folders, less memory, and a fix for a crash on Intel graphics.</p>
+        <p>Focus Mode dims everything but the paragraph you are writing. Sort the sidebar, set Line Spacing and Text Width, and enjoy faster Backlinks and less memory.</p>
       </description>
     </release>
     <release version="0.5.0" date="2026-10-25">
       <description>
-        <p>KaTeX math in the preview, Today's Note (Ctrl+D), Copy as Rich Text, Export as Plain Text and as RTF, pasting spreadsheet cells as a table, completion of code block languages and wiki link headings, TypeScript highlighting, creating a note by clicking a missing wiki link, a Default App setting, much faster Backlinks in large folders and a faster preview while typing in large notes.</p>
+        <p>Math formulas, Today's Note, Copy as Rich Text, Export as Plain Text and RTF, pasting spreadsheet cells as a table, and much faster Backlinks in large folders.</p>
       </description>
     </release>
     <release version="0.4.0" date="2026-10-24">
       <description>
-        <p>Mermaid diagrams in the preview, Find in Preview (Ctrl+F), a Markdown format bar (Shift+Ctrl+M), table commands with a table bar, Toggle Task, Footnote, Move and Duplicate Line commands, Unlinked Mentions under Backlinks, updating links after a note or folder is renamed or moved, links to files and folders dropped into a note, and a much faster preview of large notes with code.</p>
+        <p>Mermaid diagrams, Find in Preview, a format bar, table commands, Unlinked Mentions, links updated when you rename or move notes, and a much faster preview of large notes.</p>
       </description>
     </release>
     <release version="0.3.0" date="2026-10-22">
       <description>
-        <p>Backlinks to the current note, recent notes in Open Quickly, links that jump to a heading in the preview, inserting a table with Shift+Ctrl+T, table editing inside quotes and lists, monospace table rows, Show in Files and Copy Path in the sidebar, cleaner pasted web text, and a smoother preview with large notes.</p>
+        <p>Backlinks, recent notes in Open Quickly, links to headings, easier table editing, Show in Files and Copy Path, and a smoother preview of large notes.</p>
       </description>
     </release>
     <release version="0.2.0" date="2026-10-22">
       <description>
-        <p>Math formulas in the preview, pasting rich text as Markdown, table editing with Tab and Enter, find and replace, typewriter scrolling, image previews on hover, drag and drop in the sidebar, a Light/Dark style setting, a faster Side by side view, and many fixes.</p>
+        <p>Math formulas, pasting rich text as Markdown, table editing with Tab and Enter, find and replace, typewriter scrolling, hover image previews and a Light/Dark setting.</p>
       </description>
     </release>
     <release version="0.1.1" date="2026-10-21">
       <description>
-        <p>First release in the PPA, with app store metadata and screenshots.</p>
+        <p>First release in the PPA, with screenshots for software stores.</p>
       </description>
     </release>
     <release version="0.1.0" date="2026-10-21">
       <description>
-        <p>First release, available from a PPA with updates through Software Updater.</p>
+        <p>First release: install from the PPA and get updates through Software Updater.</p>
       </description>
     </release>
   </releases>
