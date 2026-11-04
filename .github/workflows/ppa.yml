@@ -3,7 +3,7 @@ name: PPA
 # Uploads a release to the Launchpad PPA (ppa:homielab/markdownmate).
 # Runs on every v* tag, or by hand for an existing tag:
 #   gh workflow run ppa.yml -f tag=v1.0.1
-# Skipped until the PPA_GPG_PRIVATE_KEY secret is set; see README "Release".
+# Skipped until the PPA_GPG_PRIVATE_KEY secret is set; see docs/RELEASING.md.
 on:
   push:
     tags: ["v*"]

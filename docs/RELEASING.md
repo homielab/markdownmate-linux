@@ -1,0 +1,20 @@
+# Releasing
+
+Releases go to the PPA `ppa:homielab/markdownmate`. A PPA only takes a source package; Launchpad builds it itself, offline: on noble with Ubuntu's `rustc-1.91`/`cargo-1.91`, on later series with their default `rustc`/`cargo` (1.91 or newer). The packaging is in `debian/` (licence: all rights reserved, see `debian/copyright`).
+
+Each release is uploaded once per Ubuntu series in the `SERIES` list at the top of `.github/workflows/ppa.yml` (currently `noble resolute stonking`), as version `<version>-0ppa1~<series>1`, so a newer series always has the higher version. Keep the list to the series Launchpad supports ([launchpad.net/ubuntu/+series](https://launchpad.net/ubuntu/+series)): drop one at its end of life (Launchpad rejects uploads to it), add a new release once Launchpad opens it, and update "Install from the PPA" in the [README](../README.md#install-from-the-ppa).
+
+```bash
+./dev.sh packaging/build-source.sh -us -uc   # unsigned → dist/ppa/markdownmate_<version>.orig.tar.xz, .dsc, _source.changes
+scripts/check-source.sh                      # on the host: build it like Launchpad (ubuntu:24.04) and start the app
+
+# one series, as the workflow does it (the .orig.tar.xz is shared and must come out identical)
+./dev.sh env SERIES=resolute packaging/build-source.sh -us -uc   # → dist/ppa/markdownmate_<version>-0ppa1~resolute1…
+SERIES=resolute scripts/check-source.sh                         # in a clean ubuntu:resolute
+```
+
+To release: bump `version` in `Cargo.toml`, move the `## Unreleased` notes in `CHANGELOG.md` under `## <version>`, write the version's 3–5 highlights in `resources/whats-new.toml` (`show = true` for an X.Y.0 release; a unit test fails without one), add the version to `debian/changelog` (`dch -v <version>-0ppa1 -D noble "New upstream release."`), commit, then push a tag `v<version>`. `.github/workflows/ppa.yml` builds one source package per series, signs it with the `PPA_GPG_PRIVATE_KEY`/`PPA_GPG_PASSPHRASE` repo secrets, checks the signature against keyserver.ubuntu.com and uploads each series with `packaging/upload-ppa.sh` (`dput`; a failed upload, such as Launchpad's occasional FTP `550 internal server error`, is tried again after 2, 5 and 10 minutes, and the run fails, naming the series, only if the last try fails too); Launchpad emails contact@homielab.com on accept/reject, then builds. A series whose version is already in the PPA is skipped, so a re-run after adding a series uploads only that one (for a packaging-only fix bump `-0ppa2`). Re-run for an existing tag: `gh workflow run ppa.yml -f tag=v<version>`.
+
+- `packaging/build-source.sh` puts every file git knows about (except `debian/`, so `CHANGELOG.md` included) into the `.orig.tar.xz`, plus `vendor/`: all crates from `Cargo.lock`, fetched by `cargo vendor` (needs network) — about 8 MB compressed. `vendor/` is never committed to git. The version in `Cargo.toml` must match `debian/changelog` (`dch -v <version>-0ppa1 -D noble "New upstream release."`). To upload by hand (the container has no GPG key): `debsign -k <key> dist/ppa/markdownmate_<version>-0ppa1_source.changes` on a machine with the key registered on Launchpad, then `dput ppa:homielab/markdownmate` with the same file.
+- `debian/rules` builds with `cargo --offline --locked` against `vendor/` (via `--config` flags, so `./dev.sh cargo …` is unaffected), runs the unit tests, and installs the files with `scripts/package-deb.sh --stage` (the same layout as the manual `.deb`).
+- `scripts/check-source.sh` (needs Docker) installs the build-deps in a clean `ubuntu:24.04` container (`SERIES=<codename>`: that series' package in `ubuntu:<codename>`; `SRC_DIR` / `DEB_OUT` change the input and output folders), then with the network off runs lintian (fails on `E:`) and `dpkg-source -x` + `dpkg-buildpackage -b` as a user without a writable HOME, and finally runs `scripts/check-deb.sh` on the resulting `.deb` (in `dist/ppa-deb/`). `ARCH=amd64` for the emulated amd64 build.

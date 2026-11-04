@@ -229,7 +229,7 @@ mod tests {
             return;
         }
         // GtkSourceView's Markdown language marks ``` fences and code spans, not `~~~` fences
-        // or 4-space indented blocks (README).
+        // or 4-space indented blocks (docs/FEATURES.md).
         let text = "A wrod here.\n\n`inlne` code, [a lnk](https://exmple.com/pth)\n\n```rust\nfencd blck\n```\n\nLast lnie.\n";
         let buffer = sourceview5::Buffer::new(None);
         buffer.set_language(
