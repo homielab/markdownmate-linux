@@ -106,6 +106,18 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.11.0" date="2026-11-05">
+      <description>
+        <ul>
+          <li>New to MarkdownMate? Create Notes Folder… sets up a folder with a welcome note, a short tour and four templates.</li>
+          <li>Format ▸ Callout inserts a callout of any kind, with no syntax to remember.</li>
+          <li>Copy Link to Block copies a link to the paragraph, list item or table at the cursor.</li>
+          <li>Hover a footnote in the preview to read it without jumping to the end of the note.</li>
+          <li>Screen readers name every button and list row, and Ctrl+Tab moves from the editor to the preview.</li>
+          <li>MarkdownMate opens faster, even in a folder with thousands of notes.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.10.0" date="2026-11-02">
       <description>
         <p>Obsidian vaults feel at home: embeds, foldable callouts, block references and a properties table. Open Quickly finds headings and aliases, Rename Heading updates every link, and large folders open faster.</p>

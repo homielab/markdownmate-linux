@@ -5,6 +5,17 @@
 # ignored, so the next release's entry can be written ahead.
 
 [[release]]
+version = "0.11.0"
+show = true
+notes = [
+    "New to MarkdownMate? Create Notes Folder… sets up a folder with a welcome note, a short tour and four templates.",
+    "Format ▸ Callout inserts a callout of any kind, with no syntax to remember.",
+    "Copy Link to Block copies a link to the paragraph, list item or table at the cursor.",
+    "Hover a footnote in the preview to read it without jumping to the end of the note.",
+    "Screen readers name every button and list row, and Ctrl+Tab moves from the editor to the preview.",
+]
+
+[[release]]
 version = "0.10.0"
 show = true
 notes = [
