@@ -7,6 +7,7 @@ use adw::prelude::*;
 use gtk::gio;
 use gtk::glib::{self, clone};
 
+use crate::a11y::{self, IconItem, Kind};
 use crate::editor::Editor;
 use crate::file_name;
 use crate::{attachments, broken, find, goto, naming, query, quick, render, sidebar, state, tasks};
@@ -32,6 +33,7 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
 
     let font = gtk::FontDialogButton::new(Some(gtk::FontDialog::new()));
     font.set_valign(gtk::Align::Center);
+    a11y::label(&font, "Editor Font");
     font.set_font_desc(&gtk::pango::FontDescription::from_string(
         prefs.font.as_deref().unwrap_or("Monospace 11"),
     ));
@@ -640,6 +642,10 @@ pub(crate) fn bookmarks_dialog(editor: &Rc<Editor>) {
         .sensitive(root.is_some())
         .build();
     let folder_row = |dir: &Path, key: Option<String>| {
+        let label = a11y::located(
+            &a11y::row(&file_name(dir), Kind::Folder, false),
+            &dir.parent().unwrap_or(dir).to_string_lossy(),
+        );
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         row.append(&gtk::Label::new(Some(&file_name(dir))));
         let full = gtk::Label::builder()
@@ -655,10 +661,13 @@ pub(crate) fn bookmarks_dialog(editor: &Rc<Editor>) {
             key.add_css_class("dim-label");
             row.append(&key);
         }
+        let row = gtk::ListBoxRow::builder().child(&row).build();
+        a11y::label(&row, &label);
         row
     };
     let list = gtk::ListBox::new();
     list.add_css_class("navigation-sidebar");
+    a11y::label(&list, "Bookmarks");
     for (i, dir) in editor.bookmarks.borrow().iter().enumerate() {
         list.append(&folder_row(dir, (i < 9).then(|| format!("Alt+{}", i + 1))));
     }
@@ -669,6 +678,7 @@ pub(crate) fn bookmarks_dialog(editor: &Rc<Editor>) {
         .collect();
     let recent_list = gtk::ListBox::new();
     recent_list.add_css_class("navigation-sidebar");
+    a11y::label(&recent_list, "Recent");
     for dir in &recent {
         recent_list.append(&folder_row(dir, None));
     }
@@ -810,6 +820,7 @@ pub(crate) fn go_to_line(editor: &Rc<Editor>) {
         .margin_start(12)
         .margin_end(12)
         .build();
+    a11y::label(&entry, "Go to Line");
     let dialog = adw::Dialog::builder()
         .title("Go to Line")
         .content_width(300)
@@ -863,8 +874,10 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
         // Results update on every key, so Enter never acts on a stale list.
         .search_delay(0)
         .build();
+    a11y::label(&entry, "Open Quickly");
     let list = gtk::ListBox::new();
     list.add_css_class("navigation-sidebar");
+    a11y::label(&list, "Notes");
     let scroll = gtk::ScrolledWindow::builder()
         .child(&list)
         .vexpand(true)
@@ -912,7 +925,8 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
                     .map_or_else(Vec::new, |all| quick::headings(&query, all));
                 for hit in &hits {
                     let rel = hit.path.strip_prefix(&root).unwrap_or(&hit.path);
-                    list.append(&quick_row(&hit.label(), &rel.to_string_lossy(), false));
+                    let name = a11y::row(&hit.label(), Kind::Heading, false);
+                    list.append(&quick_row(&hit.label(), rel, false, &name));
                 }
                 list.select_row(list.row_at_index(0).as_ref());
                 shown.replace(
@@ -943,7 +957,14 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
                     }
                     None => file_name(path),
                 };
-                list.append(&quick_row(&label, &rel.to_string_lossy(), hit.favorite));
+                // Favorites can be folders; any other row is a note.
+                let kind = if hit.favorite && path.is_dir() {
+                    Kind::Folder
+                } else {
+                    Kind::Note
+                };
+                let name = a11y::row(&label, kind, hit.favorite);
+                list.append(&quick_row(&label, rel, hit.favorite, &name));
             }
             list.select_row(list.row_at_index(0).as_ref());
             shown.replace(hits.into_iter().map(|hit| (hit.path, None)).collect());
@@ -1063,8 +1084,12 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
     entry.grab_focus();
 }
 
-/// An Open Quickly row: `label` (after a star for a favourite) over the dimmed relative path.
-fn quick_row(label: &str, rel: &str, favorite: bool) -> gtk::Box {
+/// An Open Quickly row: `label` (after a star for a favourite) over the dimmed relative path
+/// `rel`. Screen readers read `name` (`a11y::row`) and the folder it is in instead.
+fn quick_row(label: &str, rel: &Path, favorite: bool, name: &str) -> gtk::ListBoxRow {
+    let folder = rel.parent().unwrap_or(Path::new("")).to_string_lossy();
+    let accessible = a11y::located(name, &folder);
+    let rel = rel.to_string_lossy();
     let row = gtk::Box::new(gtk::Orientation::Vertical, 2);
     let name = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     if favorite {
@@ -1088,6 +1113,8 @@ fn quick_row(label: &str, rel: &str, favorite: bool) -> gtk::Box {
     dim.add_css_class("dim-label");
     dim.add_css_class("caption");
     row.append(&dim);
+    let row = gtk::ListBoxRow::builder().child(&row).build();
+    a11y::label(&row, &accessible);
     row
 }
 
@@ -1105,6 +1132,18 @@ pub(crate) fn highlight(text: &str, ranges: &[std::ops::Range<usize>]) -> String
     out.push_str(&glib::markup_escape_text(&text[at..]));
     out
 }
+
+/// Find in Folder's ✕ on the scope chip ("In Folder/Sub") and on the scan mode chip.
+const SCOPE_CLEAR: IconItem = IconItem {
+    label: "Search the whole folder",
+    tooltip: "Search the whole folder",
+    icon: "window-close-symbolic",
+};
+const MODE_CLEAR: IconItem = IconItem {
+    label: "Search text again",
+    tooltip: "Search text again",
+    icon: "window-close-symbolic",
+};
 
 /// Shift+Ctrl+F: full-text search over the notes of the open folder (the last scan's list,
 /// read from disk: unsaved edits of the open note are not searched). Runs on a background
@@ -1192,6 +1231,7 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
         .placeholder_text("Text in notes, tag:name path:folder/")
         .search_delay(250)
         .build();
+    a11y::label(&entry, "Find in Folder");
     let match_case = gtk::CheckButton::builder()
         .label("Match Case")
         .active(editor.find_match_case.get())
@@ -1247,6 +1287,7 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
     let list = gtk::ListBox::new();
     list.add_css_class("navigation-sidebar");
     list.add_css_class("find-results");
+    a11y::label(&list, "Results");
     let scroll = gtk::ScrolledWindow::builder()
         .child(&list)
         .vexpand(true)
@@ -1264,6 +1305,7 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
         .placeholder_text("Replace with")
         .hexpand(true)
         .build();
+    a11y::label(&replacement, "Replace with");
     let replace = gtk::Button::builder()
         .label("Replace All")
         .sensitive(false)
@@ -1277,11 +1319,8 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
         .ellipsize(gtk::pango::EllipsizeMode::Middle)
         .build();
     scope_text.add_css_class("caption");
-    let scope_clear = gtk::Button::builder()
-        .icon_name("window-close-symbolic")
-        .tooltip_text("Search the whole folder")
-        .valign(gtk::Align::Center)
-        .build();
+    let scope_clear = SCOPE_CLEAR.button();
+    scope_clear.set_valign(gtk::Align::Center);
     scope_clear.add_css_class("flat");
     scope_clear.add_css_class("circular");
     let scope_chip = gtk::Box::builder()
@@ -1306,11 +1345,8 @@ fn open_find(editor: &Rc<Editor>, scope: Option<PathBuf>, mode: FindMode) {
     // returns to text search.
     let mode_text = gtk::Label::builder().margin_start(10).build();
     mode_text.add_css_class("caption");
-    let mode_clear = gtk::Button::builder()
-        .icon_name("window-close-symbolic")
-        .tooltip_text("Search text again")
-        .valign(gtk::Align::Center)
-        .build();
+    let mode_clear = MODE_CLEAR.button();
+    mode_clear.set_valign(gtk::Align::Center);
     mode_clear.add_css_class("flat");
     mode_clear.add_css_class("circular");
     let mode_chip = gtk::Box::builder()
@@ -2189,6 +2225,7 @@ pub(crate) fn daily_note_for_date(editor: &Rc<Editor>) {
         .collect();
     let has_template = crate::daily::load_template(&folder).is_some();
     let calendar = gtk::Calendar::new();
+    a11y::label(&calendar, "Date");
     let label = gtk::Label::builder()
         .wrap(true)
         .css_classes(["dim-label"])

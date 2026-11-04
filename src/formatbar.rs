@@ -209,3 +209,33 @@ pub(crate) fn bar() -> (gtk::ScrolledWindow, gtk::Box) {
         .build();
     (scroll, table)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_item_has_a_label() {
+        let (mut seen, mut actions) = (
+            std::collections::HashSet::new(),
+            std::collections::HashSet::new(),
+        );
+        for item in ITEMS {
+            assert!(!item.label.trim().is_empty(), "{}", item.action);
+            assert!(seen.insert(item.label), "two buttons named {}", item.label);
+            assert!(
+                actions.insert(item.action),
+                "two buttons for {}",
+                item.action
+            );
+            match item.face {
+                Face::Icon(icon) => assert!(!icon.is_empty(), "{}", item.action),
+                Face::Text(text) => assert!(!text.is_empty(), "{}", item.action),
+            }
+        }
+        // The table section's buttons are named the same way.
+        for e in tablebar::COMMANDS {
+            assert!(!seen.contains(e.label), "{} named twice", e.label);
+        }
+    }
+}

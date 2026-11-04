@@ -1,3 +1,4 @@
+mod a11y;
 mod about;
 mod aliases;
 mod attachments;

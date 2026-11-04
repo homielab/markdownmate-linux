@@ -9,6 +9,7 @@ use gtk::gio;
 use gtk::glib::{self, clone};
 use sourceview5::prelude::*;
 
+use crate::a11y::{self, IconItem};
 use crate::editor::Editor;
 use crate::state;
 
@@ -173,12 +174,32 @@ impl Bar {
     }
 }
 
-fn icon_button(icon: &str, tooltip: &str) -> gtk::Button {
-    gtk::Button::builder()
-        .icon_name(icon)
-        .tooltip_text(tooltip)
-        .css_classes(["flat"])
-        .build()
+/// The find bars' buttons (this one and Find in Preview's, `previewfind.rs`).
+pub(crate) const FIND_BUTTONS: [IconItem; 3] = [
+    IconItem {
+        label: "Previous",
+        tooltip: "Previous (Shift+Enter)",
+        icon: "go-up-symbolic",
+    },
+    IconItem {
+        label: "Next",
+        tooltip: "Next (Enter)",
+        icon: "go-down-symbolic",
+    },
+    IconItem {
+        label: "Close",
+        tooltip: "Close (Esc)",
+        icon: "window-close-symbolic",
+    },
+];
+
+/// The find bar buttons, flat: previous, next, close.
+pub(crate) fn find_buttons() -> [gtk::Button; 3] {
+    FIND_BUTTONS.each_ref().map(|item| {
+        let button = item.button();
+        button.add_css_class("flat");
+        button
+    })
 }
 
 /// Dựng thanh tìm ở đầu `pane` (khung editor) và các action `win.find`, `win.replace`,
@@ -194,13 +215,12 @@ pub(crate) fn find_bar(editor: &Rc<Editor>, pane: &gtk::Box, app: &adw::Applicat
         .primary_icon_name("system-search-symbolic")
         .hexpand(true)
         .build();
+    a11y::label(&find, "Find");
     let label = gtk::Label::builder()
         .width_chars(10)
         .css_classes(["caption", "dim-label"])
         .build();
-    let prev = icon_button("go-up-symbolic", "Previous (Shift+Enter)");
-    let next = icon_button("go-down-symbolic", "Next (Enter)");
-    let close = icon_button("window-close-symbolic", "Close (Esc)");
+    let [prev, next, close] = find_buttons();
     let find_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     for w in [
         find.upcast_ref::<gtk::Widget>(),
@@ -215,6 +235,7 @@ pub(crate) fn find_bar(editor: &Rc<Editor>, pane: &gtk::Box, app: &adw::Applicat
         .placeholder_text("Replace")
         .hexpand(true)
         .build();
+    a11y::label(&replace, "Replace");
     let replace_btn = gtk::Button::with_label("Replace");
     let replace_all_btn = gtk::Button::builder()
         .label("Replace All")
@@ -373,7 +394,15 @@ pub(crate) fn find_bar(editor: &Rc<Editor>, pane: &gtk::Box, app: &adw::Applicat
 
 #[cfg(test)]
 mod tests {
-    use super::match_label;
+    use super::{FIND_BUTTONS, match_label};
+
+    #[test]
+    fn find_buttons_are_named() {
+        for item in &FIND_BUTTONS {
+            assert!(!item.label.is_empty() && !item.icon.is_empty());
+            assert!(item.tooltip.starts_with(item.label), "{}", item.tooltip);
+        }
+    }
 
     #[test]
     fn labels() {

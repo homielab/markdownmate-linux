@@ -34,6 +34,11 @@ impl Editor {
             clickable_tags(view);
         }
         view.set_vexpand(true);
+        // In the Tab order after the editor (Ctrl+Tab leaves the editor, where Tab indents),
+        // read as the note's document by screen readers.
+        view.set_focusable(true);
+        view.set_can_focus(true);
+        crate::a11y::label(view, "Preview");
         view.set_zoom_level(f64::from(self.prefs.borrow().zoom) / 100.0);
         let pane = self
             .panes

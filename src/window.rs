@@ -10,6 +10,7 @@ use gtk::glib::{self, clone};
 use sourceview5::prelude::*;
 use webkit6::prelude::*;
 
+use crate::a11y::{self, IconItem};
 use crate::dialogs::{
     FindMode, bookmarks_dialog, find_in_folder, find_in_mode, go_to_line, open_quickly,
     preferences_dialog, reload_note,
@@ -29,6 +30,54 @@ use crate::{
 };
 use crate::{choose_file, choose_folder, choose_notes_folder, folder_of};
 use crate::{hover, links, render, sidebar, state, title};
+
+const MAIN_MENU: IconItem = IconItem {
+    label: "Main Menu",
+    tooltip: "Main Menu",
+    icon: "open-menu-symbolic",
+};
+const BOOKMARKS: IconItem = IconItem {
+    label: "Bookmarks",
+    tooltip: "Bookmarks (Alt+1…Alt+9 open one)",
+    icon: "user-bookmarks-symbolic",
+};
+const OUTLINE: IconItem = IconItem {
+    label: "Outline",
+    tooltip: "Outline (Alt+Ctrl+O)",
+    icon: "view-list-symbolic",
+};
+const PREFERENCES: IconItem = IconItem {
+    label: "Preferences",
+    tooltip: "Preferences (Ctrl+,)",
+    icon: "preferences-system-symbolic",
+};
+/// The view mode buttons, in Ctrl+1/2/3 order.
+const MODES: [(state::Mode, IconItem); 3] = [
+    (
+        state::Mode::Edit,
+        IconItem {
+            label: "Edit",
+            tooltip: "Edit (Ctrl+1)",
+            icon: "document-edit-symbolic",
+        },
+    ),
+    (
+        state::Mode::Preview,
+        IconItem {
+            label: "Preview",
+            tooltip: "Preview (Ctrl+2)",
+            icon: "view-reveal-symbolic",
+        },
+    ),
+    (
+        state::Mode::Split,
+        IconItem {
+            label: "Side by Side",
+            tooltip: "Side by Side (Ctrl+3)",
+            icon: "view-dual-symbolic",
+        },
+    ),
+];
 
 /// `target`: a folder or note given on the command line; `None` reopens the last session.
 pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
@@ -191,20 +240,16 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     // Smoke tests activate the actions, not this menu (an open GtkPopover logs Gdk-CRITICAL
     // under Xvfb). F10 opens it (`primary`).
     let menu_button = gtk::MenuButton::builder()
-        .tooltip_text("Main Menu")
         .menu_model(&menu)
         .primary(true)
         .build();
+    a11y::name(&menu_button, MAIN_MENU.label, MAIN_MENU.tooltip);
     // Its icon, with a dot while What's New has unseen notes.
     crate::about::badge_menu_button(&menu_button);
     header.pack_start(&menu_button);
-    header.pack_start(
-        &gtk::Button::builder()
-            .icon_name("user-bookmarks-symbolic")
-            .tooltip_text("Bookmarks (Alt+1…Alt+9 open one)")
-            .action_name("win.bookmarks")
-            .build(),
-    );
+    let bookmarks_button = BOOKMARKS.button();
+    bookmarks_button.set_action_name(Some("win.bookmarks"));
+    header.pack_start(&bookmarks_button);
 
     let split = adw::OverlaySplitView::builder()
         .vexpand(true)
@@ -247,6 +292,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     view.set_wrap_mode(gtk::WrapMode::WordChar);
     view.set_monospace(true);
     view.add_css_class("mm-editor");
+    a11y::label(&view, "Editor");
     view.set_left_margin(crate::editor::SIDE_MARGIN);
     view.set_right_margin(crate::editor::SIDE_MARGIN);
     view.set_top_margin(12);
@@ -311,9 +357,11 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     // Xvfb, which fails the smoke test).
     let outline = gtk::ListBox::new();
     outline.add_css_class("navigation-sidebar");
+    a11y::label(&outline, "Outline");
     // Backlinks: notes linking to the open note, listed under the outline.
     let backlinks = gtk::ListBox::new();
     backlinks.add_css_class("navigation-sidebar");
+    a11y::label(&backlinks, "Backlinks");
     let backlinks_title = gtk::Label::builder()
         .label("Backlinks")
         .xalign(0.0)
@@ -329,6 +377,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     // searched only while expanded.
     let mentions = gtk::ListBox::new();
     mentions.add_css_class("navigation-sidebar");
+    a11y::label(&mentions, "Unlinked Mentions");
     let mentions_title = gtk::Label::new(Some("Unlinked Mentions"));
     mentions_title.add_css_class("heading");
     let mentions_expander = gtk::Expander::builder()
@@ -1082,13 +1131,9 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
             }
         }
     ));
-    header.pack_end(
-        &gtk::ToggleButton::builder()
-            .icon_name("view-list-symbolic")
-            .tooltip_text("Outline (Alt+Ctrl+O)")
-            .action_name("win.outline")
-            .build(),
-    );
+    let outline_button = OUTLINE.toggle_button();
+    outline_button.set_action_name(Some("win.outline"));
+    header.pack_end(&outline_button);
 
     // Shift+Ctrl+E is not bound by GTK or GtkSourceView; does nothing without an open note.
     let export_action = gio::SimpleAction::new("export-html", None);
@@ -1258,13 +1303,9 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     ));
     window.add_action(&prefs_action);
     app.set_accels_for_action("win.preferences", &["<Control>comma"]);
-    header.pack_end(
-        &gtk::Button::builder()
-            .icon_name("preferences-system-symbolic")
-            .tooltip_text("Preferences (Ctrl+,)")
-            .action_name("win.preferences")
-            .build(),
-    );
+    let prefs_button = PREFERENCES.button();
+    prefs_button.set_action_name(Some("win.preferences"));
+    header.pack_end(&prefs_button);
 
     // Zoom editor + preview (not sidebar/header): Ctrl+= / Ctrl++ in, Ctrl+- out, Ctrl+0 reset.
     // None of these is bound by GTK, GtkSourceView or the app's other shortcuts.
@@ -1316,20 +1357,10 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     window.add_action(&mode_action);
     let mode_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     mode_buttons.add_css_class("linked");
-    for (n, (mode, icon, label)) in [
-        (state::Mode::Edit, "document-edit-symbolic", "Edit"),
-        (state::Mode::Preview, "view-reveal-symbolic", "Preview"),
-        (state::Mode::Split, "view-dual-symbolic", "Side by Side"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    for (n, (mode, item)) in MODES.iter().enumerate() {
         let detailed = format!("win.mode::{}", mode.name());
         app.set_accels_for_action(&detailed, &[&format!("<Control>{}", n + 1)]);
-        let button = gtk::ToggleButton::builder()
-            .icon_name(icon)
-            .tooltip_text(format!("{label} (Ctrl+{})", n + 1))
-            .build();
+        let button = item.toggle_button();
         button.set_detailed_action_name(&detailed);
         mode_buttons.append(&button);
     }
@@ -1858,6 +1889,7 @@ fn shortcuts_window() -> gtk::ShortcutsWindow {
                         ("<Control>1", "Edit"),
                         ("<Control>2", "Preview"),
                         ("<Control>3", "Side by side"),
+                        ("<Control>Tab", "Leave the editor (to the preview)"),
                         ("<Control>f", "Find in preview (preview focused)"),
                         ("<Alt><Control>o", "Outline"),
                         ("<Shift><Control>j", "Focus mode"),
@@ -1917,4 +1949,28 @@ fn shortcuts_window() -> gtk::ShortcutsWindow {
     gtk::Builder::from_string(&xml)
         .object("w")
         .expect("shortcuts window XML")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every icon-only header bar button: a name for screen readers, a tooltip starting with
+    /// it, an icon; the view mode buttons' shortcuts in Ctrl+1/2/3 order.
+    #[test]
+    fn header_buttons_are_named() {
+        let items = [&MAIN_MENU, &BOOKMARKS, &OUTLINE, &PREFERENCES]
+            .into_iter()
+            .chain(MODES.iter().map(|(_, item)| item));
+        let mut seen = HashSet::new();
+        for item in items {
+            assert!(!item.label.trim().is_empty(), "{}", item.icon);
+            assert!(item.tooltip.starts_with(item.label), "{}", item.tooltip);
+            assert!(!item.icon.is_empty(), "{}", item.label);
+            assert!(seen.insert(item.label), "two buttons named {}", item.label);
+        }
+        for (n, (_, item)) in MODES.iter().enumerate() {
+            assert!(item.tooltip.ends_with(&format!("(Ctrl+{})", n + 1)));
+        }
+    }
 }

@@ -155,14 +155,6 @@ if(t.toLowerCase().includes(q))d.open=true}}return true}})({})",
     )
 }
 
-fn icon_button(icon: &str, tooltip: &str) -> gtk::Button {
-    gtk::Button::builder()
-        .icon_name(icon)
-        .tooltip_text(tooltip)
-        .css_classes(["flat"])
-        .build()
-}
-
 /// Builds the bar at the top of `pane` (the box holding `preview`); hidden until opened.
 pub(crate) fn find_bar(preview: &webkit6::WebView, pane: &gtk::Box) -> Rc<Bar> {
     let entry = gtk::Entry::builder()
@@ -170,13 +162,12 @@ pub(crate) fn find_bar(preview: &webkit6::WebView, pane: &gtk::Box) -> Rc<Bar> {
         .primary_icon_name("system-search-symbolic")
         .hexpand(true)
         .build();
+    crate::a11y::label(&entry, "Find in Preview");
     let label = gtk::Label::builder()
         .width_chars(10)
         .css_classes(["caption", "dim-label"])
         .build();
-    let prev = icon_button("go-up-symbolic", "Previous (Shift+Enter)");
-    let next = icon_button("go-down-symbolic", "Next (Enter)");
-    let close = icon_button("window-close-symbolic", "Close (Esc)");
+    let [prev, next, close] = crate::search::find_buttons();
     let widget = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(6)

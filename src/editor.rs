@@ -490,6 +490,10 @@ impl Editor {
                 label.add_css_class("heading");
             }
             self.outline.append(&label);
+            // The row the list put around it: "Title, heading level N" for screen readers.
+            if let Some(row) = label.parent() {
+                crate::a11y::label(&row, &crate::a11y::heading(&h.title, h.level));
+            }
         }
         self.outline_lines
             .replace(headings.iter().map(|h| h.line).collect());
@@ -2771,6 +2775,7 @@ impl Editor {
             .text(old)
             .activates_default(true)
             .build();
+        crate::a11y::label(&entry, "New Tag Name");
         let dialog = adw::AlertDialog::builder()
             .heading(format!("Rename #{old}"))
             .body(format!(
@@ -2920,6 +2925,7 @@ impl Editor {
             .text(&heading.written)
             .activates_default(true)
             .build();
+        crate::a11y::label(&entry, "New Heading Text");
         let status = gtk::Label::builder()
             .label("Counting links…")
             .xalign(0.0)

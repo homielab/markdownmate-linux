@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- Better screen reader and keyboard access: every button and list row tells Orca what it is, and Ctrl+Tab jumps from the editor to the preview.
 - New: first time here? Create Notes Folder… in the empty window (or main menu ▸ New Notes Folder…) sets up a folder with a welcome note, a short tour and four templates.
 - MarkdownMate opens quicker again: the window and your last note show up sooner, even in a folder with thousands of notes.
 - Packaging: when Launchpad briefly refuses the upload for one Ubuntu version, the release is uploaded again automatically, so a new version reaches every supported Ubuntu release without waiting for a manual retry.

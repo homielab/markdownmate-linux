@@ -121,7 +121,8 @@ pub(crate) fn controls() -> gtk::Box {
 }
 
 /// A flat bar button for `win.<action>`: its name and shortcut in the tooltip, its name for
-/// screen readers. Clicking it leaves the focus in the editor.
+/// screen readers (the menu title; the face may be an icon or a short word such as "Delete").
+/// Clicking it leaves the focus in the editor.
 pub(crate) fn button(action: &str, label: &str, face: &Face, accel: &str) -> gtk::Button {
     let tooltip = match gtk::accelerator_parse(accel) {
         Some((key, mods)) => format!("{label} ({})", gtk::accelerator_get_label(key, mods)),
@@ -129,7 +130,6 @@ pub(crate) fn button(action: &str, label: &str, face: &Face, accel: &str) -> gtk
     };
     let button = gtk::Button::builder()
         .action_name(format!("win.{action}"))
-        .tooltip_text(tooltip)
         .focus_on_click(false)
         .css_classes(["flat"])
         .build();
@@ -137,7 +137,7 @@ pub(crate) fn button(action: &str, label: &str, face: &Face, accel: &str) -> gtk
         Face::Text(text) => button.set_label(text),
         Face::Icon(icon) => button.set_icon_name(icon),
     }
-    button.update_property(&[gtk::accessible::Property::Label(label)]);
+    crate::a11y::name(&button, label, &tooltip);
     button
 }
 
@@ -166,4 +166,23 @@ pub(crate) fn bar() -> gtk::ScrolledWindow {
         .propagate_natural_height(true)
         .visible(false)
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_command_has_a_label() {
+        let mut seen = std::collections::HashSet::new();
+        for e in COMMANDS {
+            assert!(!e.label.trim().is_empty(), "{}", e.action);
+            assert!(e.action.starts_with("table-"), "{}", e.action);
+            assert!(seen.insert(e.label), "two buttons named {}", e.label);
+            match e.face {
+                Face::Icon(icon) => assert!(!icon.is_empty(), "{}", e.action),
+                Face::Text(text) => assert!(!text.is_empty(), "{}", e.action),
+            }
+        }
+    }
 }

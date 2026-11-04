@@ -18,6 +18,7 @@ use std::time::SystemTime;
 use adw::prelude::*;
 use gtk::{gio, glib};
 
+use crate::a11y::{self, Kind};
 use crate::{Editor, UNTITLED, complete, favorites, file_name, multisel, notes};
 
 /// One sidebar entry; `children` (the folder's entries) is None for a note. `date`: the one
@@ -270,7 +271,15 @@ pub fn sidebar(editor: &Rc<Editor>, tree: &[notes::Node], root: &Path) -> gtk::S
         if let (Some(obj), Some(label)) =
             (row.item(), expander.child().and_downcast::<gtk::Label>())
         {
-            label.set_label(&item(&obj).name);
+            let item = item(&obj);
+            label.set_label(&item.name);
+            // Screen readers: "Ideas, note", "Projects, folder" (the expander says open/closed).
+            let kind = if item.children.is_some() {
+                Kind::Folder
+            } else {
+                Kind::Note
+            };
+            li.set_accessible_label(&a11y::row(&item.name, kind, false));
         }
         expander.set_list_row(Some(&row));
     });
@@ -292,6 +301,7 @@ pub fn sidebar(editor: &Rc<Editor>, tree: &[notes::Node], root: &Path) -> gtk::S
         .build();
     view.add_css_class("navigation-sidebar");
     view.add_css_class("sidebar-tree");
+    a11y::label(&view, "Notes");
     editor.sidebar_view.replace(Some(view.clone()));
     drop_target(&view, &weak, root);
     trash_key(&view, &weak);
@@ -705,7 +715,18 @@ fn context_menu(
                     .build(),
             );
             row.append(&check);
-            let button = gtk::Button::builder().child(&row).has_frame(false).build();
+            // Read as a radio menu item, checked for the current order.
+            let button = gtk::Button::builder()
+                .child(&row)
+                .has_frame(false)
+                .accessible_role(gtk::AccessibleRole::MenuItemRadio)
+                .build();
+            a11y::label(&button, order.title());
+            button.update_state(&[gtk::accessible::State::Checked(if order == current {
+                gtk::AccessibleTristate::True
+            } else {
+                gtk::AccessibleTristate::False
+            })]);
             let (popover, window) = (popover.clone(), editor.window.clone());
             button.connect_clicked(move |_| {
                 popover.popdown();
@@ -1041,6 +1062,7 @@ fn move_to_folder(editor: &Rc<Editor>, entries: &[PathBuf]) {
                 .build(),
         );
         let row = gtk::ListBoxRow::builder().child(&row).build();
+        a11y::label(&row, &a11y::row(&file_name(dir), Kind::Folder, false));
         let allowed = multisel::can_move_into(&moving, dir);
         row.set_sensitive(allowed);
         row.set_selectable(allowed);
@@ -1130,6 +1152,7 @@ pub(crate) fn ask_name(
         .text(initial)
         .activates_default(true)
         .build();
+    a11y::label(&entry, "Name");
     let dialog = adw::AlertDialog::builder()
         .heading(heading)
         .extra_child(&entry)
@@ -1195,13 +1218,15 @@ pub fn fill_favorites(list: &gtk::ListBox, panel: &gtk::Box, entries: &[(PathBuf
                 .build(),
         );
         let row = gtk::ListBoxRow::builder().child(&row).build();
+        let kind = if is_dir { Kind::Folder } else { Kind::Note };
+        let label = a11y::row(&name, kind, true);
         let label = if *there {
             row.set_tooltip_text(Some(&path.to_string_lossy()));
-            name
+            label
         } else {
             row.add_css_class("dim-label");
             row.set_tooltip_text(Some("No longer there. Click to remove it from Favorites."));
-            format!("{name}, missing")
+            format!("{label}, missing")
         };
         row.update_property(&[gtk::accessible::Property::Label(&label)]);
         list.append(&row);
@@ -1269,6 +1294,7 @@ pub fn connect_favorites(list: &gtk::ListBox, editor: &Weak<Editor>) {
 pub fn tags_panel() -> (gtk::Box, gtk::ListBox) {
     let list = gtk::ListBox::new();
     list.add_css_class("navigation-sidebar");
+    a11y::label(&list, "Tags");
     let heading = gtk::Label::builder()
         .label("Tags")
         .xalign(0.0)
@@ -1314,6 +1340,9 @@ pub fn fill_tags(list: &gtk::ListBox, panel: &gtk::Box, index: &[(String, Vec<Pa
         count.add_css_class("dim-label");
         count.add_css_class("numeric");
         row.append(&count);
+        let row = gtk::ListBoxRow::builder().child(&row).build();
+        // The whole tag: the indentation that shows its parents is not read.
+        a11y::label(&row, &a11y::tag_row(tag, notes.len()));
         list.append(&row);
     }
     panel.set_visible(!index.is_empty());
@@ -1376,14 +1405,19 @@ pub fn tag_notes(editor: &Rc<Editor>, tag: &str, notes: &[PathBuf]) {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let name = gtk::Label::new(Some(&file_name(path)));
         row.append(&name);
+        let rel_path = path.strip_prefix(&root).unwrap_or(path);
+        let folder = rel_path.parent().unwrap_or(Path::new("")).to_string_lossy();
+        let accessible = a11y::located(&a11y::row(&file_name(path), Kind::Note, false), &folder);
         let rel = gtk::Label::builder()
-            .label(path.strip_prefix(&root).unwrap_or(path).to_string_lossy())
+            .label(rel_path.to_string_lossy())
             .xalign(0.0)
             .ellipsize(gtk::pango::EllipsizeMode::Middle)
             .build();
         rel.add_css_class("dim-label");
         rel.add_css_class("caption");
         row.append(&rel);
+        let row = gtk::ListBoxRow::builder().child(&row).build();
+        a11y::label(&row, &accessible);
         list.append(&row);
     }
     let dialog = adw::Dialog::builder()

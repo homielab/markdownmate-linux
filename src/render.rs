@@ -14,7 +14,7 @@ use crate::{state, tags};
 /// anywhere (git, sync), so the preview is safe by default. `javascript:` links are dropped.
 /// `[[Note]]` / `[[Note|text]]` (not in code) link to `wiki(target)`'s note, or to
 /// `MISSING` + the target when it returns None. Tags (`tags::in_line`, not in code or
-/// links) become `<span class="tag">`. Task checkboxes are wrapped in a
+/// links) become `<span class="tag" aria-label="name, tag">`. Task checkboxes are wrapped in a
 /// `<a class="task" href="mm-task:N">`, N the 1-based source line of the item's `[ ]`.
 /// Code blocks are wrapped in `<div class="code">` with a `<a class="copy" href="mm-copy:N">`
 /// button, N the block's first source line (see `code_block_at`). A `[TOC]` paragraph
@@ -365,9 +365,7 @@ pub(crate) fn render_body(md: &str, wiki: &dyn Links, body: &Body) -> Option<Ren
     // comrak's alert tags → ours (`alert_tags`).
     let html = if alerts { alert_tags(&out) } else { out };
     let html = if sized { image_sizes(&html) } else { html };
-    let html = html
-        .replace(TAG_OPEN, "<span class=\"tag\">")
-        .replace(TAG_CLOSE, "</span>");
+    let html = tag_chips(html);
     // Each pass below copies the HTML once (no per-item replace/insert: a large note has
     // thousands of formulas, tasks and code blocks). The note's own copies of the marker
     // chars were dropped, so each `MATH` starts a formula's marker and `MATH_END` ends it.
@@ -2064,6 +2062,33 @@ fn mark_tags(text: &str) -> Option<String> {
         marked.insert(r.start, TAG_OPEN);
     }
     (!spans.is_empty()).then_some(marked)
+}
+
+/// The tag markers as chips, `<span class="tag" aria-label="work, tag">#work</span>`: screen
+/// readers say what the chip is (`a11y::row`). The text between the markers is comrak's
+/// escaped text, so it is a valid attribute value as it is.
+fn tag_chips(html: String) -> String {
+    if !html.contains(TAG_OPEN) {
+        return html;
+    }
+    let mut out = String::with_capacity(html.len() + html.len() / 8);
+    let mut rest = html.as_str();
+    while let Some(start) = rest.find(TAG_OPEN) {
+        out.push_str(&rest[..start]);
+        rest = &rest[start + TAG_OPEN.len_utf8()..];
+        let Some(end) = rest.find(TAG_CLOSE) else {
+            out.push_str("<span class=\"tag\">");
+            continue;
+        };
+        let text = &rest[..end];
+        let label = crate::a11y::row(text.trim_start_matches('#'), crate::a11y::Kind::Tag, false);
+        out.push_str(&format!(
+            "<span class=\"tag\" aria-label=\"{label}\">{text}</span>"
+        ));
+        rest = &rest[end + TAG_CLOSE.len_utf8()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 const TAG_OPEN: char = '\u{E000}';
@@ -4113,7 +4138,9 @@ mod tests {
         assert!(!html("$a--b$ and $$x...y$$").contains('–'));
         assert!(!html("$a--b$ and $$x...y$$").contains('…'));
         // A tag is a name, not prose.
-        assert!(html("#a--b").contains("<span class=\"tag\">#a--b</span>"));
+        assert!(
+            html("#a--b").contains("<span class=\"tag\" aria-label=\"a--b, tag\">#a--b</span>")
+        );
     }
 
     #[test]
@@ -4216,7 +4243,10 @@ mod tests {
         assert!(p.contains("<img src=\"assets/p.png\""));
         assert!(p.contains("<a href=\"b.md\">b</a>"));
         assert!(p.contains("<a href=\"../Sub/A.md\" data-wikilink=\"true\">a</a>"));
-        assert!(p.contains("</a> g <span class=\"tag\">#work</span>"), "{p}");
+        assert!(
+            p.contains("</a> g <span class=\"tag\" aria-label=\"work, tag\">#work</span>"),
+            "{p}"
+        );
         assert!(!p.contains("href=\"mm-missing") && !p.contains("/r/"));
         assert!(p.contains("<span class=\"hl-"));
         let p = export_page("- [x] a\n- [ ] b\n", "t", Path::new("/r"), &found);
@@ -4519,7 +4549,9 @@ mod tests {
             "Hi #work/x and `#code` [#l](u) #1\n\n```\n#block\n```\n\n\u{E001}",
             &|_: &str| None,
         );
-        assert!(html.contains("Hi <span class=\"tag\">#work/x</span> and <code>#code</code>"));
+        assert!(html.contains(
+            "Hi <span class=\"tag\" aria-label=\"work/x, tag\">#work/x</span> and <code>#code</code>"
+        ));
         assert!(html.contains("<a href=\"u\">#l</a> #1"));
         assert!(html.contains("#block\n</code>"));
         assert_eq!(html.matches("<span").count(), 1);
