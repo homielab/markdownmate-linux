@@ -444,7 +444,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         templates_menu,
         font_css: gtk::CssProvider::new(),
         focus: crate::focus::Focus::attach(&focus_view),
-        spelling: crate::spell::attach(&view),
+        spelling: std::cell::OnceCell::new(),
         spell_held: Cell::new(false),
     });
     // Window-wide so the rule (class `mm-editor`) beats the theme's `.monospace` font.
@@ -473,24 +473,6 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     ));
 
     image_input(&view, &editor);
-    // The right-click menu's own Check Spelling item: remembered like the Preferences switch.
-    // On a held large note it turns spell check on for that note; holding it off is not saved.
-    editor.spelling.connect_enabled_notify(clone!(
-        #[weak]
-        editor,
-        move |a| {
-            let on = a.is_enabled();
-            if on && editor.spell_held.replace(false) {
-                editor.show_status();
-            } else if !on && editor.spell_held.get() {
-                return;
-            }
-            if editor.prefs.borrow().spell_check != on {
-                editor.prefs.borrow_mut().spell_check = on;
-                editor.remember();
-            }
-        }
-    ));
     crate::search::find_bar(&editor, &editor_pane, app);
     crate::editor::typewriter_scrolling(&editor, &scroll);
     crate::editor::text_width_resizing(&editor, &scroll);
@@ -681,11 +663,13 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         move |_, _| editor.copy_block_link()
     ));
     window.add_action(&block_link);
-    if let Ok(menu) = editor.view.extra_menu().downcast::<gio::Menu>() {
-        let section = gio::Menu::new();
-        section.append(Some("Copy Link to Block"), Some("win.copy-block-link"));
-        menu.append_section(None, &section);
-    }
+    // The right-click menu's own items; the spell checker puts its items above them
+    // (`spell::attach`).
+    let extra_menu = gio::Menu::new();
+    let section = gio::Menu::new();
+    section.append(Some("Copy Link to Block"), Some("win.copy-block-link"));
+    extra_menu.append_section(None, &section);
+    editor.view.set_extra_menu(Some(&extra_menu));
     // Before the view opens its menu (never claims the click): the cursor goes to the clicked
     // place, so the menu is about that block.
     let block_click = gtk::GestureClick::builder()
@@ -1166,8 +1150,26 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         }
     ));
     window.add_action(&open_recent);
-    // Adds win.show-help-overlay; Ctrl+? is the GNOME convention.
-    window.set_help_overlay(Some(&shortcuts_window()));
+    // Keyboard Shortcuts, built on first use (like `set_help_overlay`'s window, which would be
+    // built at launch); Ctrl+? is the GNOME convention.
+    let shortcuts = std::cell::OnceCell::new();
+    let help_action = gio::SimpleAction::new("show-help-overlay", None);
+    help_action.connect_activate(clone!(
+        #[weak]
+        window,
+        move |_, _| {
+            shortcuts
+                .get_or_init(|| {
+                    let shortcuts = shortcuts_window();
+                    shortcuts.set_transient_for(Some(&window));
+                    shortcuts.set_destroy_with_parent(true);
+                    shortcuts.set_hide_on_close(true);
+                    shortcuts
+                })
+                .present();
+        }
+    ));
+    window.add_action(&help_action);
     app.set_accels_for_action("win.show-help-overlay", &["<Control>question"]);
 
     // Alt+Shift+Ctrl+C is not bound by GTK or GtkSourceView; does nothing without an open note.
@@ -1527,12 +1529,32 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     focus_action.change_state(&focus_mode.to_variant());
     let sort = editor.prefs.borrow().sidebar_sort;
     sort_action.change_state(&sort.name().to_variant());
-    if crate::timing::enabled() {
-        window.add_tick_callback(|_, _| {
-            crate::timing::mark(|| "window shown".into());
+    // The spell checker right after the first frame (it is painted in the same dispatch as
+    // this tick; a default-priority idle runs next, before the next frame), or right away when
+    // a key reaches the editor before that.
+    let weak = Rc::downgrade(&editor);
+    window.add_tick_callback(move |_, _| {
+        crate::timing::mark(|| "window shown".into());
+        let weak = weak.clone();
+        glib::idle_add_local_full(glib::Priority::DEFAULT, move || {
+            if let Some(editor) = weak.upgrade() {
+                editor.attach_spelling();
+                crate::timing::mark(|| "spell checker attached".into());
+            }
             glib::ControlFlow::Break
         });
-    }
+        glib::ControlFlow::Break
+    });
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let weak = Rc::downgrade(&editor);
+    keys.connect_key_pressed(move |_, _, _, _| {
+        if let Some(editor) = weak.upgrade() {
+            editor.attach_spelling();
+        }
+        glib::Propagation::Proceed
+    });
+    editor.view.add_controller(keys);
     // The note, then the folder: a scan that is already done fills the sidebar right here, so
     // it is in the window's first frame; a slower one fills it when it ends.
     if let Some(target) = &target {

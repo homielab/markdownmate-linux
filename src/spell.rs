@@ -31,8 +31,13 @@ pub(crate) fn too_large(bytes: usize) -> bool {
 }
 
 /// Attaches the checker to `view`'s buffer, off until `set_enabled`: the underline tag, the
-/// suggestions, Add to Dictionary, Ignore, Check Spelling and Languages in the right-click
-/// menu, and a right-click that moves the cursor to the clicked word so the menu is about it.
+/// suggestions, Add to Dictionary, Ignore, Check Spelling and Languages at the top of the
+/// right-click menu (the view's extra menu, made if it has none), and a right-click that moves
+/// the cursor to the clicked word so the menu is about it.
+///
+/// Making the checker loads the dictionary (about 16 ms), so the app attaches it after the
+/// window's first frame (`Editor::attach_spelling`); enabling it then checks the text already
+/// in the buffer.
 pub(crate) fn attach(view: &sourceview5::View) -> libspelling::TextBufferAdapter {
     let buffer = view
         .buffer()
@@ -41,8 +46,15 @@ pub(crate) fn attach(view: &sourceview5::View) -> libspelling::TextBufferAdapter
     let checker = libspelling::Checker::default();
     let adapter = libspelling::TextBufferAdapter::new(&buffer, &checker);
     adapter.set_enabled(false);
-    let menu = Menu::new(&adapter.menu_model());
-    view.set_extra_menu(Some(&menu.menu));
+    let extra = view
+        .property::<Option<gio::MenuModel>>("extra-menu")
+        .and_then(|m| m.downcast::<gio::Menu>().ok())
+        .unwrap_or_else(|| {
+            let menu = gio::Menu::new();
+            view.set_extra_menu(Some(&menu));
+            menu
+        });
+    let menu = Menu::new(&adapter.menu_model(), extra);
     view.insert_action_group("spelling", Some(&adapter));
     // Runs before the view's own click handler, which opens the menu; never claims the click.
     let click = gtk::GestureClick::builder()
@@ -77,6 +89,7 @@ pub(crate) fn attach(view: &sourceview5::View) -> libspelling::TextBufferAdapter
 /// are replaced by items carrying the right-clicked word, shown only on an underlined word.
 /// With a libspelling whose items carry a target, its menu is used as is.
 struct Menu {
+    /// The menu the items are copied to the top of (the view's extra menu).
     menu: gio::Menu,
     /// Where the word items go, and their (label, action).
     at: i32,
@@ -85,9 +98,8 @@ struct Menu {
 }
 
 impl Menu {
-    fn new(model: &gio::MenuModel) -> Rc<Menu> {
-        let menu = gio::Menu::new();
-        let (mut at, mut items) = (None, Vec::new());
+    fn new(model: &gio::MenuModel, menu: gio::Menu) -> Rc<Menu> {
+        let (mut at, mut items, mut next) = (None, Vec::new(), 0);
         for i in 0..model.n_items() {
             let text = |name: &str| {
                 model
@@ -99,11 +111,12 @@ impl Menu {
             if let Some(action @ ("spelling.add" | "spelling.ignore")) = action.as_deref()
                 && untargeted
             {
-                at.get_or_insert(menu.n_items());
+                at.get_or_insert(next);
                 items.push((text("label").unwrap_or_default(), action.to_string()));
                 continue;
             }
-            menu.append_item(&gio::MenuItem::from_model(model, i));
+            menu.insert_item(next, &gio::MenuItem::from_model(model, i));
+            next += 1;
         }
         Rc::new(Menu {
             menu,

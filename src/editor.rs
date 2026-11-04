@@ -183,8 +183,8 @@ pub(crate) struct Editor {
     /// Focus Mode (Shift+Ctrl+J): the editor dims all but the cursor's paragraph.
     pub(crate) focus: Rc<crate::focus::Focus>,
     /// Spell check (Preferences ▸ Editor ▸ Check Spelling), on while `prefs.spell_check` and
-    /// not `spell_held`.
-    pub(crate) spelling: libspelling::TextBufferAdapter,
+    /// not `spell_held`. Attached after the window's first frame (`attach_spelling`).
+    pub(crate) spelling: std::cell::OnceCell<libspelling::TextBufferAdapter>,
     /// The open note is over `spell::LARGE_NOTE`: spell check stays off for it until the
     /// right-click menu's Check Spelling turns it on (which clears this).
     pub(crate) spell_held: Cell<bool>,
@@ -886,10 +886,44 @@ impl Editor {
     /// held (`spell_held`), and refreshes the status bar's hint.
     pub(crate) fn apply_spelling(&self) {
         let on = self.prefs.borrow().spell_check && !self.spell_held.get();
-        if self.spelling.is_enabled() != on {
-            self.spelling.set_enabled(on);
+        if let Some(spelling) = self.spelling.get()
+            && spelling.is_enabled() != on
+        {
+            spelling.set_enabled(on);
         }
         self.show_status();
+    }
+
+    /// Makes the spell checker (`spell::attach`, ~16 ms: it loads the dictionary) unless it is
+    /// there, and turns it on to match the preference. `build_window` calls it once the first
+    /// frame is drawn, or on a key press in the editor before that; turned on, it checks the
+    /// note already in the buffer.
+    pub(crate) fn attach_spelling(self: &Rc<Self>) {
+        if self.spelling.get().is_some() {
+            return;
+        }
+        let spelling = crate::spell::attach(&self.view);
+        // The right-click menu's own Check Spelling item: remembered like the Preferences
+        // switch. On a held large note it turns spell check on for that note; holding it off
+        // is not saved.
+        let weak = Rc::downgrade(self);
+        spelling.connect_enabled_notify(move |a| {
+            let Some(editor) = weak.upgrade() else {
+                return;
+            };
+            let on = a.is_enabled();
+            if on && editor.spell_held.replace(false) {
+                editor.show_status();
+            } else if !on && editor.spell_held.get() {
+                return;
+            }
+            if editor.prefs.borrow().spell_check != on {
+                editor.prefs.borrow_mut().spell_check = on;
+                editor.remember();
+            }
+        });
+        let _ = self.spelling.set(spelling);
+        self.apply_spelling();
     }
 
     /// Holds spell check off for a note of `bytes` over `spell::LARGE_NOTE`, or releases it.

@@ -7,17 +7,18 @@
 # ms after main started), its memory after it settles, after the Outline/Backlinks panel is
 # shown and after a switch to another note, and the tag re-index and Backlinks after a note
 # changes on disk. SORT=modified (or created) sorts the sidebar by that date instead of by
-# name, and also times moving the changed note to the top.
+# name, and also times moving the changed note to the top. MM_BIN=<path> launches that build
+# instead of building this checkout (an A/B against another version; see docs/PERFORMANCE.md).
 # Everything it starts and writes is removed on exit. See docs/PERFORMANCE.md.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 COUNT=${1:-10000}
 RUNS=${2:-3}
-cargo build -q --release
+[ -n "${MM_BIN:-}" ] || cargo build -q --release
 cargo build -q --release --example generate_notes
 TARGET="${CARGO_TARGET_DIR:-target}/release"
-BIN="$TARGET/markdownmate"
+BIN="${MM_BIN:-$TARGET/markdownmate}"
 TMP=$(mktemp -d)
 trap 'pkill -f -- "$BIN" 2>/dev/null || true; kill $(jobs -p) 2>/dev/null || true;
       [ -n "${DBUS_PID:-}" ] && kill "$DBUS_PID" 2>/dev/null; rm -rf "$TMP"' EXIT
