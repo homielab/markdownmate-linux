@@ -167,7 +167,13 @@ three, a relative link to a note of its folder.
 ./dev.sh scripts/measure-folder.sh          # 10,000 notes, 3 launches; or: <notes> <launches>
 ./dev.sh env SORT=modified scripts/measure-folder.sh   # sidebar by Date Modified (or created)
 ./dev.sh sh -c 'cargo run -q --release --example generate_notes -- /tmp/notes 10000 && MM_LINK_NOTES=/tmp/notes cargo test --release backlinks::tests::time_indexes -- --ignored --nocapture'   # the folder-open indexes alone
+./dev.sh env MM_BIN=/target/v0.6.0/release/markdownmate scripts/measure-folder.sh 10000 1   # launch another build
 ```
+
+For an A/B against a release, build its tag into its own target folder inside the container
+(e.g. `git archive v0.6.0` unpacked in a temporary folder, then
+`CARGO_TARGET_DIR=/target/v0.6.0 cargo build --release` there), then run one launch per build in
+turn, rotating the order each round, so every build sees the same machine.
 
 Each launch reopens the folder with every subfolder expanded and `Area 0/Topic 0/Note 0.md` in
 the editor, then shows the Outline (Backlinks under it, Alt+Ctrl+O), switches to another note
@@ -177,7 +183,8 @@ prints `markdownmate-timing: <ms since main started> <what>` lines to stderr (`s
 *window shown* (first frame), *note opened*, *folder scanned* (the background folder walk; its
 duration runs from the start of the scan until the app takes the result), *sidebar filled*
 (the sidebar's list is built), *sidebar drawn* (first frame showing it), *tags indexed*, *links
-indexed* and *backlinks listed* (background jobs, with their own duration). Memory is the resident size (`VmRSS`) of the app and of its WebKit processes. The
+indexed* and *backlinks listed* (background jobs, with their own duration), *spell checker
+attached* (made right after the first frame). Memory is the resident size (`VmRSS`) of the app and of its WebKit processes. The
 script runs on Xvfb inside the container and removes the folder, the session and every process
 it started when it ends, also on failure. It takes about a minute.
 
@@ -334,6 +341,79 @@ scanned" counts until the main thread takes the result, so it grows with that; t
 did not change. Backlinks stay at a few ms (single runs up to 78 ms in every version: the
 background job waits for a free thread and the main loop).
 
+#### Launch: the spell checker after the first frame
+
+Two things no longer happen before the window's first frame:
+
+- The spell checker (libspelling's checker, which loads the dictionary, and its buffer adapter;
+  16 ms) is made right after the first frame is painted (`Editor::attach_spelling`, from an idle
+  the first frame's tick queues), or at once if a key reaches the editor before that. Turned on
+  then, it checks the open note as before, and its items join the editor's right-click menu.
+- The Keyboard Shortcuts window (Ctrl+?) is built the first time it opens.
+
+Where the main thread's launch time goes, from timing marks added for one round (median of 3,
+ms after `main` started, the same marks in a 0.6.0 build):
+
+| Until | 0.6.0 | after |
+|-------|------:|------:|
+| the window starts being built (GTK, libadwaita, D-Bus) | 83 | 65 |
+| header bar and main menu | 91 | 84 |
+| editor buffer and view (GtkSourceView loads its languages and style schemes) | 141 | 125 |
+| the rest of the window, its actions, the session | 151 | 129 |
+| note opened | 168 | 137 |
+| folder taken, sidebar filled | 188 | 156 |
+| `present()` returns; the first frame follows | 535 | 478 |
+
+The widgets the first frame does not show (format bar, table bar, Find bar, Outline and
+Backlinks panel, Tags and Favorites panels) and all the window's actions take under 2 ms
+together, so they are still built with the window. `present()` is mostly GTK starting its GL
+renderer, which under Xvfb is Mesa's software rasterizer: 320–480 ms, against about 30 ms with
+`GSK_RENDERER=cairo`. That is the same in every version, but it makes *window shown* under Xvfb
+depend on how busy the machine's CPUs are, so the A/B below also runs with the cairo renderer.
+
+A/B in one container, `MM_BIN=<binary> scripts/measure-folder.sh` once per build (10,000 notes,
+ms after launch, median of 5 with [min-max]; 0.6.0, 0.10.0 and this change):
+
+GL renderer (the default):
+
+| Step | 0.6.0 | 0.10.0 | now |
+|------|------:|-------:|----:|
+| window shown | 452 [417-1115] | 490 [447-671] | 455 [412-2458] |
+| note opened | 129 [125-290] | 160 [145-316] | 138 [122-545] |
+| folder scanned | 67 [58-151] | 86 [74-161] | 60 [54-378] |
+| sidebar filled | 144 [140-308] | 177 [162-334] | 154 [137-707] |
+| tags indexed | 552 [511-1424] | 562 [495-676] | 526 [493-2767] |
+| links indexed | 577 [522-1436] | 573 [505-695] | 536 [502-2794] |
+| aliases indexed | - | 577 [510-697] | 540 [507-2807] |
+| spell attached | - | - | 708 [656-3533] |
+| RSS (app) | 350 MB | 375 MB | 373 MB |
+
+`GSK_RENDERER=cairo`:
+
+| Step | 0.6.0 | 0.10.0 | now |
+|------|------:|-------:|----:|
+| window shown | 199 [181-422] | 347 [237-938] | 259 [186-387] |
+| note opened | 157 [144-315] | 301 [195-849] | 198 [144-304] |
+| folder scanned | 78 [70-140] | 168 [93-231] | 99 [63-128] |
+| sidebar filled | 176 [161-349] | 320 [213-888] | 223 [164-336] |
+| tags indexed | 164 [130-346] | 176 [171-479] | 178 [139-390] |
+| links indexed | 304 [252-802] | 217 [171-575] | 213 [144-398] |
+| aliases indexed | - | 131 [98-252] | 142 [91-263] |
+| spell attached | - | - | 361 [236-525] |
+| RSS (app) | 208 MB | 232 MB | 229 MB |
+
+With the default GL renderer the window is shown, the note opened and the sidebar filled within
+10 % of 0.6.0 (455 against 452 ms, 138 against 129, 154 against 144), and 0.10.0 was 8-24 %
+slower. With cairo, the renderer that shows the app's own work without Mesa's start-up, we are
+still 26-30 % behind 0.6.0 (window 259 against 199 ms, sidebar 223 against 176) but well ahead
+of 0.10.0 (347 and 320). The spell checker is attached after all of these, so it no longer
+delays them. Memory is back to 0.6.0 plus 23 MB.
+
+Read the maxima with care: the host's load average rose to about 13 during the run (2 at the
+start), so single launches reach 2-3 s and the medians of five carry some noise of a few
+percent either way. The medians of the later steps (tags, links, aliases) moved only with that
+noise.
+
 ### Find in Folder with Regex
 
 Searching the whole folder for a query that matches nothing (every note read and searched to the
@@ -423,7 +503,6 @@ and `diagrams drawn`, to time the first preview of a note.
 
 ## Further ideas
 
-- Create the spell checker after the window's first frame: 16 ms less before it is shown.
 - Debounce preview refreshes by note size, so typing in a 5 MB note renders less often.
 - Highlight code blocks lazily in the page (plain code first, highlighted as it scrolls into
   view).

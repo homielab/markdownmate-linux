@@ -6,6 +6,7 @@ the upstream changelog; keep `packaging/com.homielab.MarkdownMate.metainfo.xml`
 
 ## Unreleased
 
+- MarkdownMate opens quicker again: the window and your last note show up sooner, even in a folder with thousands of notes.
 - Packaging: when Launchpad briefly refuses the upload for one Ubuntu version, the release is uploaded again automatically, so a new version reaches every supported Ubuntu release without waiting for a manual retry.
 - Format ▸ Callout in the main menu inserts a callout of any kind — Note, Tip, Important, Warning, Caution and the Obsidian kinds — so you no longer need to remember the `> [!kind]` syntax. With lines selected, they become the callout's body. Same as the macOS app.
 - Copy Link to Block in the editor's right-click menu and main menu ▸ Edit: copies `[[Note#^id]]` for the paragraph, list item, quote or table at the cursor, first adding a `^id` to it if it has none, so linking to a block no longer means inventing an id and typing it twice. Same as the macOS app.
