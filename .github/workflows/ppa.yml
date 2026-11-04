@@ -126,7 +126,34 @@ jobs:
         if: steps.new.outputs.yes == 'true'
         run: |
           read -r -a todo <<< "$TODO"
-          packaging/upload-ppa.sh "${todo[@]}"
+          if [ -f packaging/upload-ppa.sh ]; then
+            packaging/upload-ppa.sh "${todo[@]}"
+          else
+            read -r -a waits <<< "${PPA_RETRY_WAITS:-120 300 600}"
+            failed=()
+            for s in "${todo[@]}"; do
+              changes="dist/ppa/markdownmate_$DEB_VERSION~${s}1_source.changes"
+              tries=$((${#waits[@]} + 1))
+              for ((try = 1; try <= tries; try++)); do
+                if ((try > 1)); then
+                  wait=${waits[try - 2]}
+                  echo "::warning::Upload for $s failed (try $((try - 1)) of $tries); retrying in ${wait}s."
+                  sleep "$wait"
+                  rm -f "${changes%.changes}".*.upload
+                fi
+                if dput "$PPA" "$changes"; then
+                  echo "::notice::Uploaded $DEB_VERSION~${s}1 for $s. Launchpad emails contact@homielab.com when it's accepted (minutes, or hours when busy), then builds it."
+                  continue 2
+                fi
+              done
+              echo "::error::Upload for $s failed $tries times; re-run later: gh workflow run ppa.yml -f tag=${TAG:-<tag>} (series already in the PPA are skipped)."
+              failed+=("$s")
+            done
+            if ((${#failed[@]})); then
+              echo "Not uploaded: ${failed[*]}" >&2
+              exit 1
+            fi
+          fi
 
       - name: Remove the key material
         if: always()
