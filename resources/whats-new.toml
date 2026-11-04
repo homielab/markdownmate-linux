@@ -1,40 +1,35 @@
 # What's New in MarkdownMate (Main menu ▸ What's New, Preferences ▸ About, About dialog).
-# One [[release]] per version, newest first: 3–5 short notes, plain text, the same as that
-# version's CHANGELOG.md section and metainfo <release>. show = true only for X.Y.0 feature
-# releases: those badge the menu once after an update. Versions newer than Cargo.toml's are
-# ignored, so the next release's entry can be written ahead.
-
-[[release]]
+# One [[release]]
 version = "0.10.0"
 show = true
 notes = [
-    "Obsidian vaults render as they do there: ![[embeds]], foldable callouts of every kind, block references, image sizes and front matter as a properties table.",
-    "Open Quickly finds aliases and, with #, headings; Find in Folder narrows with tag: and path:; Rename Heading in the Outline updates every link.",
-    "Daily Note for Date, your own daily note name format, Open Today's Note at Launch, and an Attachments Folder setting.",
-    "Select several sidebar items and act on all of them; Export as Word; pasted images saved as PNG or JPEG and scaled down.",
-    "Hover a wiki link in the preview to see the note; large folders open faster.",
+    "Obsidian vaults feel at home: embeds, foldable callouts, block references and a properties table for front matter.",
+    "Open Quickly finds headings and aliases, and Find in Folder narrows down with tag: and path:.",
+    "Rename a heading in the Outline and every link to it follows.",
+    "Select several notes in the sidebar and move, trash or favorite them all at once. Export as Word too.",
+    "Daily Note for Date, your own daily note name, and large folders open faster, so no more waiting for your notes.",
 ]
 
 [[release]]
 version = "0.9.0"
 show = true
 notes = [
-    "Find Broken Links, Find Open Tasks and Find Unused Attachments in the main menu; Find in Folder from a folder's right-click menu.",
-    "Export Folder as HTML, and a preview of the linked note when you hover a [[wiki link]].",
-    "Tags and aliases in YAML front matter; New Note from Selection; Previous and Next Daily Note.",
-    "Templates: starter templates, {{time}}, {{cursor}} and formatted dates; auto-pairing of brackets and quotes; smart punctuation.",
-    "New Note and Today's Note in the dock icon's menu; drag a note into the editor to link it.",
+    "Find Broken Links, Find Open Tasks and Find Unused Attachments help you tidy your folder.",
+    "Export Folder as HTML, and hover a link to peek at the note it points to.",
+    "Tags and aliases in front matter, New Note from Selection, and Previous and Next Daily Note.",
+    "Starter templates, your own date formats, and brackets and quotes that close themselves.",
+    "New Note and Today's Note in the dock icon's menu.",
 ]
 
 [[release]]
 version = "0.8.0"
 show = true
 notes = [
-    "Favorites: pin notes and folders at the top of the sidebar; Duplicate and Move to Folder… in the sidebar's right-click menu.",
-    "Find in Folder: Match Case, Whole Word and Regex toggles, and Replace All across the folder.",
+    "Favorites pin notes and folders at the top of the sidebar; Duplicate and Move to Folder in its right-click menu.",
+    "Find in Folder can replace text, with Match Case, Whole Word and Regex.",
     "Back and Forward (Alt+Left / Alt+Right) between the notes you opened, like a browser.",
-    "Highlights with ==text==, New from Template, Rename Tag, a [TOC] table of contents and GitHub-style alerts.",
-    "Preferences ▸ About: What's New, Send Feedback, Share MarkdownMate and more.",
+    "Highlight text with ==text==, create notes from templates, Rename Tag, [TOC] and GitHub-style alerts.",
+    "Preferences ▸ About has What's New, Send Feedback and more.",
 ]
 
 [[release]]
@@ -42,5 +37,5 @@ version = "0.7.0"
 show = true
 notes = [
     "A new app icon with a bolder, solid M↓ mark, the same as on the Mac.",
-    "Preferences ▸ Appearance ▸ Line Breaks: Every New Line shows each newline in a paragraph as a line break in the preview, print and exports.",
+    "Preferences ▸ Appearance ▸ Line Breaks: show every line you write on its own line in the preview, print and exports.",
 ]
