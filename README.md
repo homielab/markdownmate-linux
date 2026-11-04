@@ -150,6 +150,10 @@ ARCH=amd64 scripts/check-deb.sh
 
 `scripts/check-deb.sh` (run on the host) installs the package for its container's architecture (`ARCH`, default the host's) in a clean `ubuntu:24.04` container, runs `desktop-file-validate`, parses the AppArmor profile, and starts the installed app on Xvfb with a note given on the command line, then once more without the sandbox override (it must stay up with the preview off).
 
+### Your first notes
+
+With no folder open, click **Create Notes Folder…** in the window (or choose main menu ▸ New Notes Folder… at any time). Pick a name and a place — a new folder, or an empty one; “Notes” in Documents is suggested — and MarkdownMate makes it with two short notes, *Welcome to MarkdownMate* and *Getting Around*, that walk you through links, backlinks, tags, callouts, Today's Note and the main keys, plus the four starter templates in `Templates/`. The folder opens like one chosen with Open Folder…, showing the welcome note. Delete the notes once you know your way around.
+
 ### Troubleshooting: "Preview unavailable: the system blocks WebKit's sandbox"
 
 The preview runs in WebKit's sandbox (bubblewrap), which needs unprivileged user namespaces. Ubuntu 23.10+ only allows them for programs with an AppArmor profile that grants `userns`, so the package installs `/etc/apparmor.d/markdownmate` (for `/usr/bin/markdownmate`) and loads it on install. If the preview still says it is unavailable:

@@ -27,7 +27,7 @@ use crate::{
     APP_ID, MARK_MARKER_STYLE, MARK_STYLE, MATH_STYLE, SCRIPT_WORLD, SYNC_DELAY, TABLE_STYLE,
     TAG_STYLE, UNTITLED, state_file,
 };
-use crate::{choose_file, choose_folder, folder_of};
+use crate::{choose_file, choose_folder, choose_notes_folder, folder_of};
 use crate::{hover, links, render, sidebar, state, title};
 
 /// `target`: a folder or note given on the command line; `None` reopens the last session.
@@ -63,6 +63,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         &[
             ("Open File…", "win.open-file"),
             ("Open Folder…", "win.open-folder"),
+            ("New Notes Folder…", "win.new-notes-folder"),
         ],
         &[
             ("Find in Folder…", "win.find-in-folder"),
@@ -208,13 +209,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     let split = adw::OverlaySplitView::builder()
         .vexpand(true)
         .show_sidebar(false)
-        .content(
-            &adw::StatusPage::builder()
-                .icon_name("folder-open-symbolic")
-                .title("No folder open")
-                .description("Open a folder of Markdown notes to get started.")
-                .build(),
-        )
+        .content(&no_folder_page())
         .build();
     let toasts = adw::ToastOverlay::new();
     toasts.set_child(Some(&split));
@@ -1118,6 +1113,8 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     };
     simple("open-folder", choose_folder);
     app.set_accels_for_action("win.open-folder", &["<Control>o"]);
+    // Always enabled, also with a folder open.
+    simple("new-notes-folder", choose_notes_folder);
     simple("open-file", choose_file);
     // Does nothing without an open note.
     simple("export-pdf", export_pdf);
@@ -1688,6 +1685,38 @@ pub(crate) fn wire_preview(editor: &Rc<Editor>, preview: &webkit6::WebView) {
         decision.ignore();
         true
     });
+}
+
+/// The window's content until a folder opens: Open Folder… and Create Notes Folder…, which
+/// run the main menu's actions.
+fn no_folder_page() -> adw::StatusPage {
+    let buttons = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(12)
+        .halign(gtk::Align::Center)
+        .build();
+    for (label, action, suggested) in [
+        ("Open Folder…", "win.open-folder", true),
+        ("Create Notes Folder…", "win.new-notes-folder", false),
+    ] {
+        let button = gtk::Button::builder()
+            .label(label)
+            .action_name(action)
+            .css_classes(["pill"])
+            .build();
+        if suggested {
+            button.add_css_class("suggested-action");
+        }
+        buttons.append(&button);
+    }
+    adw::StatusPage::builder()
+        .icon_name("folder-open-symbolic")
+        .title("No Folder Open")
+        .description(
+            "Open a folder of Markdown notes, or create one with a few notes to get started.",
+        )
+        .child(&buttons)
+        .build()
 }
 
 fn about_dialog(editor: &Rc<Editor>) {

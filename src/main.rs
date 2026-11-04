@@ -66,6 +66,7 @@ mod templates;
 mod timing;
 mod title;
 mod url;
+mod welcome;
 mod window;
 
 use std::path::{Path, PathBuf};
@@ -364,6 +365,46 @@ fn choose_folder(editor: &Rc<Editor>) {
             };
             // Remembered once the scan has shown it.
             editor.load_folder(&dir);
+        },
+    );
+}
+
+/// Create Notes Folder… / New Notes Folder…: asks where to make the folder ("Notes" in
+/// Documents), then `Editor::create_notes_folder`.
+fn choose_notes_folder(editor: &Rc<Editor>) {
+    let documents = glib::user_special_dir(glib::UserDirectory::Documents)
+        .filter(|d| d.is_dir())
+        .unwrap_or_else(glib::home_dir);
+    ask_notes_folder(editor, &documents, welcome::SUGGESTED_NAME);
+}
+
+/// The save dialog of `choose_notes_folder`, in `folder` with `name` filled in. A path that is
+/// a file or a folder with something in it is refused with a toast, and the dialog opens again
+/// where it was.
+fn ask_notes_folder(editor: &Rc<Editor>, folder: &Path, name: &str) {
+    let dialog = gtk::FileDialog::builder()
+        .title("Create Notes Folder")
+        .accept_label("Create")
+        .initial_folder(&gio::File::for_path(folder))
+        .initial_name(name)
+        .modal(true)
+        .build();
+    let editor = Rc::clone(editor);
+    dialog.save(
+        Some(&editor.window.clone()),
+        gio::Cancellable::NONE,
+        move |result| {
+            // Err = the user cancelled; no path = a non-local location.
+            let Some(dir) = result.ok().and_then(|f| f.path()) else {
+                return;
+            };
+            if welcome::can_create(&dir) {
+                return editor.create_notes_folder(&dir);
+            }
+            editor.toast("Choose a new or empty folder");
+            let parent = dir.parent().unwrap_or(&dir);
+            let name = dir.file_name().map(|n| n.to_string_lossy().into_owned());
+            ask_notes_folder(&editor, parent, name.as_deref().unwrap_or_default());
         },
     );
 }

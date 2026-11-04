@@ -1858,6 +1858,10 @@ impl Editor {
         settings.set_gtk_enable_animations(animate);
         self.dir_monitors.replace(watch_dirs(self, folders));
         timing::mark(|| format!("sidebar filled ({} notes)", self.note_list.borrow().len()));
+        // Replaces the window's "No Folder Open" page while no note is shown.
+        if changed && self.note_box.parent().is_none() {
+            self.split.set_content(Some(&no_note_page()));
+        }
         if changed {
             state::push_recent(&mut self.recent.borrow_mut(), dir);
             self.remember();
@@ -2165,6 +2169,27 @@ impl Editor {
         self.toast(&format!("4 templates added to {name}"));
         self.schedule_rescan();
         self.fill_templates_menu();
+    }
+
+    /// Create Notes Folder… once a new or empty `dir` is chosen: writes the welcome notes and
+    /// the starter templates (`welcome::create`), opens `dir` like Open Folder… and shows the
+    /// welcome note with the cursor at its end.
+    pub(crate) fn create_notes_folder(self: &Rc<Self>, dir: &Path) {
+        let setting = self.prefs.borrow().templates_folder.clone();
+        let welcome = match crate::welcome::create(dir, &setting) {
+            Ok(path) => path,
+            Err(e) => {
+                self.toast(&format!("Cannot create the notes folder: {e}"));
+                return;
+            }
+        };
+        self.load_folder(dir);
+        self.open(&welcome);
+        if self.path.borrow().as_deref() == Some(welcome.as_path()) {
+            self.buffer.place_cursor(&self.buffer.end_iter());
+            self.view
+                .scroll_to_mark(&self.buffer.get_insert(), 0.0, true, 0.0, 0.3);
+        }
     }
 
     /// Folder for New Note from Selection: New Note's (`current_dir`), or without an open
@@ -3096,12 +3121,7 @@ impl Editor {
         self.buffer.end_irreversible_action();
         self.cancel_timer();
         self.window.set_title(Some(&title::window_title(None)));
-        self.split.set_content(Some(
-            &adw::StatusPage::builder()
-                .icon_name("text-x-generic-symbolic")
-                .title("No note open")
-                .build(),
-        ));
+        self.split.set_content(Some(&no_note_page()));
         self.remember();
     }
 
@@ -3284,6 +3304,14 @@ impl Editor {
         });
         self.rescan_timer.replace(Some(id));
     }
+}
+
+/// The page shown while a folder is open but no note is.
+fn no_note_page() -> adw::StatusPage {
+    adw::StatusPage::builder()
+        .icon_name("text-x-generic-symbolic")
+        .title("No note open")
+        .build()
 }
 
 /// One monitor per folder (GIO does not watch recursively); `folders` from `notes::folders`.
