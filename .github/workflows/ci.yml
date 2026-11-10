@@ -1,15 +1,18 @@
 name: CI
 
-# Format, lint and unit tests on every push and pull request to main, on the
+# Format, lint and unit tests on every branch push (a pull request runs it once,
+# through its branch), skipping docs-only changes, on the
 # same Ubuntu 24.04 base as the Dockerfile. Run the same checks locally with
 #   ./dev.sh cargo fmt --check
 #   ./dev.sh cargo clippy --all-targets -- -D warnings
 #   ./dev.sh cargo test
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    branches: ["**"]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "screenshots/**"
 
 permissions:
   contents: read
@@ -25,7 +28,7 @@ env:
 jobs:
   check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -42,15 +45,11 @@ jobs:
           rustup toolchain install stable --profile minimal --component clippy,rustfmt
           rustup default stable
 
-      - uses: actions/cache@v4
+      # saves a fresh cache whenever the build changed (not only Cargo.lock) and
+      # prunes stale artifacts, so target/ doesn't go stale and rebuild slowly
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings

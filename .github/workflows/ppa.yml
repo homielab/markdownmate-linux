@@ -30,6 +30,8 @@ concurrency:
 jobs:
   ppa:
     runs-on: ubuntu-24.04
+    # a run takes 2-7 min; the upload retries can add up to 17 min per series
+    timeout-minutes: 75
     env:
       PPA: ppa:homielab/markdownmate
       TAG: ${{ inputs.tag || github.ref_name }}
