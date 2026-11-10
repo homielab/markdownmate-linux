@@ -227,6 +227,86 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
             editor.refresh_preview();
         }
     ));
+
+    const CUSTOM_CSS_DEFAULT_SUBTITLE: &str =
+        "Your preview.css after the theme: preview, print and HTML / PDF exports";
+    const CUSTOM_CSS_TOO_LARGE_SUBTITLE: &str = "preview.css is over 256 KB, so it is ignored";
+
+    let custom_css_status = crate::customcss::reload(prefs.custom_css);
+    let initial_css_subtitle = if custom_css_status == crate::customcss::Status::TooLarge {
+        CUSTOM_CSS_TOO_LARGE_SUBTITLE
+    } else {
+        CUSTOM_CSS_DEFAULT_SUBTITLE
+    };
+
+    let custom_css = adw::SwitchRow::builder()
+        .title("Custom CSS")
+        .subtitle(initial_css_subtitle)
+        .active(prefs.custom_css)
+        .build();
+    custom_css.connect_active_notify(clone!(
+        #[strong]
+        editor,
+        #[weak]
+        custom_css,
+        move |r| {
+            let on = r.is_active();
+            editor.prefs.borrow_mut().custom_css = on;
+            editor.remember();
+            let status = crate::customcss::reload(on);
+            if status == crate::customcss::Status::TooLarge {
+                custom_css.set_subtitle(CUSTOM_CSS_TOO_LARGE_SUBTITLE);
+            } else {
+                custom_css.set_subtitle(CUSTOM_CSS_DEFAULT_SUBTITLE);
+            }
+            for live in crate::windows::live() {
+                if live.preview_view.get().is_some() {
+                    live.load_preview();
+                }
+            }
+        }
+    ));
+
+    let edit_css_button = gtk::Button::builder()
+        .label("Edit CSS…")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build();
+    edit_css_button.connect_clicked(clone!(
+        #[strong]
+        editor,
+        move |_| match crate::customcss::create_if_missing() {
+            Ok(path) => {
+                if let Some(app) = editor
+                    .window
+                    .application()
+                    .and_then(|a| a.downcast::<adw::Application>().ok())
+                {
+                    crate::window::build_window(&app, Some(path));
+                }
+            }
+            Err(e) => editor.toast(&format!("Could not create preview.css: {e}")),
+        }
+    ));
+
+    let show_in_files_button = gtk::Button::builder()
+        .label("Show in Files")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build();
+    show_in_files_button.connect_clicked(clone!(
+        #[strong]
+        editor,
+        move |_| {
+            let _ = crate::customcss::create_if_missing();
+            sidebar::show_in_files(&editor, &crate::customcss::path());
+        }
+    ));
+
+    let custom_css_row = adw::ActionRow::builder().title("preview.css").build();
+    custom_css_row.add_suffix(&edit_css_button);
+    custom_css_row.add_suffix(&show_in_files_button);
+
     let style = adw::ComboRow::builder()
         .title("Style")
         // Cùng thứ tự với `Style::ALL`.
@@ -288,6 +368,8 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
     let look = adw::PreferencesGroup::builder().title("Appearance").build();
     look.add(&style);
     look.add(&theme);
+    look.add(&custom_css);
+    look.add(&custom_css_row);
     look.add(&sync);
     // What the preview, print and exports make of the text; the editor keeps it as typed.
     let smart = adw::SwitchRow::builder()

@@ -132,6 +132,19 @@ fn build_window_with_session(app: &adw::Application, open: Open, mut session: st
     render::set_hard_breaks(session.prefs.hard_breaks);
     render::set_front_matter(session.prefs.front_matter);
     crate::smart::set_enabled(session.prefs.smart_punctuation);
+    crate::customcss::reload(session.prefs.custom_css);
+    crate::customcss::watch(|| {
+        let enabled = crate::windows::live()
+            .first()
+            .map(|e| e.prefs.borrow().custom_css)
+            .unwrap_or(false);
+        crate::customcss::reload(enabled);
+        for editor in crate::windows::live() {
+            if editor.preview_view.get().is_some() {
+                editor.load_preview();
+            }
+        }
+    });
     // The folder to show is scanned on its own thread while the window is built.
     let scan = match &open {
         Open::Path(target) => folder_of(target),

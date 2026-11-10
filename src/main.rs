@@ -8,6 +8,7 @@ mod blocks;
 mod broken;
 mod cli;
 mod complete;
+mod customcss;
 mod daily;
 mod dailyname;
 mod diagrams;

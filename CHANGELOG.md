@@ -7,6 +7,7 @@ lines into the App Center notes (`packaging/com.homielab.MarkdownMate.metainfo.x
 
 ## [Unreleased]
 
+- Style the preview, print and HTML / PDF exports with your own CSS file: Preferences ▸ Custom CSS.
 - Open several notes at once from Files or the command line, each in its own window; New Window in the main menu (Shift+Ctrl+N); every open window comes back at the next launch.
 
 ## [0.11.0] - 2026-11-05

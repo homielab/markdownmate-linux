@@ -270,6 +270,8 @@ pub struct Prefs {
     pub auto_pair: bool,
     /// Preferences ▸ Notes ▸ Open Today's Note at Launch (`Editor::launch_today`).
     pub open_today_at_launch: bool,
+    /// Preferences ▸ Custom CSS: style preview and exports via ~/.config/markdownmate/preview.css.
+    pub custom_css: bool,
 }
 
 pub const ZOOM_MIN: u32 = 50;
@@ -316,6 +318,7 @@ impl Default for Prefs {
             spell_check: true,
             auto_pair: true,
             open_today_at_launch: false,
+            custom_css: false,
         }
     }
 }
@@ -460,6 +463,9 @@ impl State {
                     state.prefs.open_today_at_launch =
                         v.parse().unwrap_or(state.prefs.open_today_at_launch)
                 }
+                Some(("custom_css", v)) => {
+                    state.prefs.custom_css = v.parse().unwrap_or(state.prefs.custom_css)
+                }
                 // Kept as typed (an empty value is a choice: the open folder).
                 Some(("daily_folder", v)) => state.prefs.daily_folder = v.to_string(),
                 // Preferences stores only valid patterns; a hand-edited bad one keeps the default.
@@ -549,7 +555,7 @@ impl State {
             out += &format!("font={font}\n");
         }
         out += &format!(
-            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\ndaily_name={}\ntemplates_folder={}\nattachments_folder={}\npasted_image_format={}\npasted_image_max_width={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\nsmart_punctuation={}\npreview_front_matter={}\nspell_check={}\nauto_pair={}\nopen_today_at_launch={}\n",
+            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\ndaily_name={}\ntemplates_folder={}\nattachments_folder={}\npasted_image_format={}\npasted_image_max_width={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\nsmart_punctuation={}\npreview_front_matter={}\nspell_check={}\nauto_pair={}\nopen_today_at_launch={}\ncustom_css={}\n",
             p.line_numbers,
             p.wrap,
             p.indent,
@@ -577,7 +583,8 @@ impl State {
             p.front_matter.name(),
             p.spell_check,
             p.auto_pair,
-            p.open_today_at_launch
+            p.open_today_at_launch,
+            p.custom_css
         );
         out += &format!(
             "find_match_case={}\nfind_whole_word={}\nfind_regex={}\n",
@@ -866,7 +873,7 @@ mod tests {
         };
         let text = state.serialize();
         assert!(text.is_ascii());
-        assert_eq!(text.lines().count(), 35);
+        assert_eq!(text.lines().count(), 36);
         assert_eq!(State::parse(&text), state);
     }
 
@@ -1038,6 +1045,7 @@ mod tests {
             spell_check: false,
             auto_pair: false,
             open_today_at_launch: true,
+            custom_css: true,
         };
         let state = State {
             prefs: prefs.clone(),
@@ -1074,7 +1082,7 @@ mod tests {
         assert!(!old.prefs.smart_punctuation);
         assert_eq!(old.prefs.front_matter, FrontMatter::Table);
         assert!(old.prefs.spell_check && old.prefs.auto_pair);
-        assert!(!old.prefs.open_today_at_launch);
+        assert!(!old.prefs.open_today_at_launch && !old.prefs.custom_css);
         // An invalid daily note name keeps the default.
         assert_eq!(
             State::parse("daily_name=YYYY-MM\n").prefs.daily_name,
@@ -1092,7 +1100,7 @@ mod tests {
         );
         // Broken values keep the default.
         let bad = State::parse(
-            "font= \nline_numbers=yes\nwrap=1\nindent=3\nindent=x\ntheme=neon\nstyle=dim\nsync_scroll=no\ntags=0\nignore_colours=off\ntypewriter=on\nformat_bar=yes\nfocus_mode=1\nline_spacing=1.2\nline_spacing=x\ntext_width=huge\nsidebar_sort=size\nweb_images=yes\nhard_breaks=on\nsmart_punctuation=1\npreview_front_matter=yaml\nspell_check=off\nauto_pair=invalid\n",
+            "font= \nline_numbers=yes\nwrap=1\nindent=3\nindent=x\ntheme=neon\nstyle=dim\nsync_scroll=no\ntags=0\nignore_colours=off\ntypewriter=on\nformat_bar=yes\nfocus_mode=1\nline_spacing=1.2\nline_spacing=x\ntext_width=huge\nsidebar_sort=size\nweb_images=yes\nhard_breaks=on\nsmart_punctuation=1\npreview_front_matter=yaml\nspell_check=off\nauto_pair=invalid\ncustom_css=yes\n",
         );
         assert_eq!(bad.prefs, Prefs::default());
         for t in Theme::ALL {

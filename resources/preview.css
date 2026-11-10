@@ -1,0 +1,55 @@
+/*
+  MarkdownMate custom preview CSS
+
+  Turn on Custom CSS in the preview settings to use this file. Its rules come
+  after the built-in theme, so they win. They style the preview, Print,
+  Export as HTML, Export as PDF and Export Folder as HTML. Copy as HTML,
+  Copy as Rich Text, RTF and Word keep the built-in look.
+
+  Save this file and open previews update. Remove the comment marks around
+  an example to use it.
+*/
+
+/* Text font and size
+body {
+  font-family: Georgia, serif;
+  font-size: 16px;
+}
+*/
+
+/* Heading colour
+h1, h2, h3, h4, h5, h6 {
+  color: #1f4e79;
+}
+*/
+
+/* Links
+a {
+  color: #0b6e4f;
+}
+*/
+
+/* Code
+code, pre {
+  font-family: "JetBrains Mono", monospace;
+}
+*/
+
+/* Quotes
+blockquote {
+  border-left: 4px solid #999999;
+  color: #555555;
+}
+*/
+
+/* Tables
+table {
+  border-collapse: collapse;
+}
+*/
+
+/* Width of the text
+body, article {
+  max-width: 720px;
+}
+*/

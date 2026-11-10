@@ -2841,14 +2841,25 @@ pub fn js_string(s: &str) -> String {
     out
 }
 
-fn html_page(dark: bool, theme: Theme, csp: &str, head: &str, body: &str) -> String {
+fn html_page_with(
+    dark: bool,
+    theme: Theme,
+    csp: &str,
+    head: &str,
+    body: &str,
+    custom: &str,
+) -> String {
     let scheme = if dark { "dark" } else { "light" };
     let vars = theme_vars(theme, dark);
     format!(
         "<!doctype html><html class=\"{scheme}\"><head><meta charset=\"utf-8\">\
 <meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">{head}\
-<style>{vars}{CSS}</style></head><body>{body}</body></html>"
+<style>{vars}{CSS}</style>{custom}</head><body>{body}</body></html>"
     )
+}
+
+fn html_page(dark: bool, theme: Theme, csp: &str, head: &str, body: &str) -> String {
+    html_page_with(dark, theme, csp, head, body, &crate::customcss::block())
 }
 
 /// `to` relative to the folder `from` (both absolute), e.g. `/r/a` + `/r/b/c.md` → `../b/c.md`.
@@ -4028,6 +4039,22 @@ mod tests {
             p.contains("href=\"mm-copy:3\">Copy</a><pre data-sourcepos=\"3:1-5:3\""),
             "{p}"
         );
+    }
+
+    #[test]
+    fn html_page_custom_css_placement() {
+        let p_empty = html_page_with(false, Theme::Default, PREVIEW_CSP, "", "<p>hi</p>", "");
+        assert!(p_empty.starts_with("<!doctype html><html class=\"light\"><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src file: data:; style-src 'unsafe-inline'; font-src data:\"><style>"));
+        assert!(p_empty.contains("</style></head><body><p>hi</p></body></html>"));
+        assert!(!p_empty.contains("<style id=\"custom-css\">"));
+
+        let custom = "<style id=\"custom-css\">body { font-family: serif; }</style>";
+        let p_custom = html_page_with(false, Theme::Default, PREVIEW_CSP, "", "<p>hi</p>", custom);
+        assert!(p_custom.contains(&format!("</style>{custom}</head>")));
+
+        let rendered = page("# a", false, Theme::Default, false, &|_: &str| None);
+        assert!(rendered.contains("</style></head>"));
+        assert!(!rendered.contains("<style id=\"custom-css\">"));
     }
 
     #[test]
