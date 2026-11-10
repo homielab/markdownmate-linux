@@ -5,6 +5,14 @@
 # ignored, so the next release's entry can be written ahead.
 
 [[release]]
+version = "0.12.0"
+show = true
+notes = [
+    "Style the preview, print and HTML / PDF exports with your own CSS file: Preferences ▸ Custom CSS.",
+    "Open several notes at once from Files or the command line, each in its own window; New Window in the main menu (Shift+Ctrl+N); every open window comes back at the next launch.",
+]
+
+[[release]]
 version = "0.11.0"
 show = true
 notes = [
