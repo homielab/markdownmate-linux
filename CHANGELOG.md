@@ -7,6 +7,8 @@ lines into the App Center notes (`packaging/com.homielab.MarkdownMate.metainfo.x
 
 ## [Unreleased]
 
+- Open several notes at once from Files or the command line, each in its own window; New Window in the main menu (Shift+Ctrl+N); every open window comes back at the next launch.
+
 ## [0.11.0] - 2026-11-05
 
 - New to MarkdownMate? Create Notes Folder… sets up a folder with a welcome note, a short tour and four templates.

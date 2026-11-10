@@ -320,11 +320,19 @@ impl Default for Prefs {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowState {
+    pub folder: Option<PathBuf>,
+    pub note: Option<PathBuf>,
+    pub mode: Mode,
+}
+
 #[derive(Debug, Default, PartialEq)]
 pub struct State {
     pub folder: Option<PathBuf>,
     pub note: Option<PathBuf>,
     pub mode: Mode,
+    pub windows: Vec<WindowState>,
     pub bookmarks: Vec<PathBuf>,
     pub recent: Vec<PathBuf>,
     pub prefs: Prefs,
@@ -356,6 +364,15 @@ impl State {
                 Some(("folder", v)) => state.folder = unescape(v),
                 Some(("note", v)) => state.note = unescape(v),
                 Some(("mode", v)) => state.mode = Mode::from_name(v).unwrap_or_default(),
+                Some(("window", v)) => {
+                    let parts: Vec<&str> = v.split('\t').collect();
+                    if parts.len() == 3 {
+                        let folder = unescape(parts[0]);
+                        let note = unescape(parts[1]);
+                        let mode = Mode::from_name(parts[2]).unwrap_or_default();
+                        state.windows.push(WindowState { folder, note, mode });
+                    }
+                }
                 Some(("bookmark", v)) => {
                     if let Some(p) = unescape(v) {
                         toggle_bookmark(&mut state.bookmarks, &p, true);
@@ -505,6 +522,11 @@ impl State {
             }
         }
         out += &format!("mode={}\n", self.mode.name());
+        for w in &self.windows {
+            let folder_s = w.folder.as_deref().map(escape).unwrap_or_default();
+            let note_s = w.note.as_deref().map(escape).unwrap_or_default();
+            out += &format!("window={folder_s}\t{note_s}\t{}\n", w.mode.name());
+        }
         for b in &self.bookmarks {
             out += &format!("bookmark={}\n", escape(b));
         }
@@ -588,12 +610,27 @@ impl State {
         } else {
             Mode::Edit
         };
+        let windows = self
+            .windows
+            .into_iter()
+            .filter_map(|w| {
+                let folder = w.folder.filter(|f| f.is_absolute() && f.is_dir())?;
+                let note = w.note.filter(|n| n.starts_with(&folder) && n.is_file());
+                let mode = if note.is_some() { w.mode } else { Mode::Edit };
+                Some(WindowState {
+                    folder: Some(folder),
+                    note,
+                    mode,
+                })
+            })
+            .collect();
         // Bookmarks are kept even if gone now (an unmounted drive may come back); opening one
         // that is gone only shows a toast.
         State {
             folder,
             note,
             mode,
+            windows,
             bookmarks: self.bookmarks,
             recent: self.recent,
             prefs: self.prefs,
@@ -607,6 +644,21 @@ impl State {
             favorites: self.favorites,
             last_seen_whats_new: self.last_seen_whats_new,
         }
+    }
+}
+
+/// Reopens every window recorded in the state (in opening order); if none was recorded
+/// (a file written by 0.11.0 or earlier), produces one entry from the session's folder,
+/// note and mode.
+pub fn restore_windows(state: &State) -> Vec<WindowState> {
+    if !state.windows.is_empty() {
+        state.windows.clone()
+    } else {
+        vec![WindowState {
+            folder: state.folder.clone(),
+            note: state.note.clone(),
+            mode: state.mode,
+        }]
     }
 }
 
@@ -800,6 +852,7 @@ mod tests {
                 b"/home/u/\xff=\n.md".to_vec(),
             ))),
             mode: Mode::Preview,
+            windows: Vec::new(),
             bookmarks: Vec::new(),
             recent: Vec::new(),
             prefs: Prefs::default(),
@@ -1266,5 +1319,150 @@ mod tests {
         assert_eq!(parsed.favorites[Path::new("/home/u/Notes")][2], odd);
         assert_eq!(parsed.usable().favorites, state.favorites);
         assert!(State::parse("folder=/a\n").favorites.is_empty());
+    }
+
+    #[test]
+    fn windows_round_trip_one_and_three_and_backward_compatibility() {
+        let dir = tmp("windows-rt");
+        let dir1 = dir.join("d1\t\n");
+        let dir2 = dir.join("d2");
+        let dir3 = dir.join("d3");
+        fs::create_dir_all(&dir1).unwrap();
+        fs::create_dir_all(&dir2).unwrap();
+        fs::create_dir_all(&dir3).unwrap();
+        let note1 = dir1.join("n1\t\n.md");
+        let note2 = dir2.join("n2.md");
+        fs::write(&note1, "1").unwrap();
+        fs::write(&note2, "2").unwrap();
+
+        // Round trip with 1 window
+        let w1 = WindowState {
+            folder: Some(dir1.clone()),
+            note: Some(note1.clone()),
+            mode: Mode::Split,
+        };
+        let state1 = State {
+            folder: Some(dir1.clone()),
+            note: Some(note1.clone()),
+            mode: Mode::Split,
+            windows: vec![w1.clone()],
+            ..State::default()
+        };
+        let text1 = state1.serialize();
+        assert!(text1.contains("window="));
+        let parsed1 = State::parse(&text1);
+        assert_eq!(parsed1.windows, state1.windows);
+        assert_eq!(restore_windows(&parsed1), vec![w1.clone()]);
+
+        // Round trip with 3 windows (paths with tabs and newlines escaped)
+        let w2 = WindowState {
+            folder: Some(dir2.clone()),
+            note: Some(note2.clone()),
+            mode: Mode::Preview,
+        };
+        let w3 = WindowState {
+            folder: Some(dir3.clone()),
+            note: None,
+            mode: Mode::Edit,
+        };
+        let state3 = State {
+            folder: Some(dir1.clone()),
+            note: Some(note1.clone()),
+            mode: Mode::Split,
+            windows: vec![w1.clone(), w2.clone(), w3.clone()],
+            ..State::default()
+        };
+        let text3 = state3.serialize();
+        let parsed3 = State::parse(&text3);
+        assert_eq!(parsed3.windows, state3.windows);
+        assert_eq!(
+            restore_windows(&parsed3),
+            vec![w1.clone(), w2.clone(), w3.clone()]
+        );
+
+        // An old file (no window= lines) -> restore_windows gives one window from folder/note/mode
+        let old_text = text3
+            .lines()
+            .filter(|l| !l.starts_with("window="))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let old_parsed = State::parse(&old_text);
+        assert!(old_parsed.windows.is_empty());
+        assert_eq!(old_parsed.folder, Some(dir1.clone()));
+        assert_eq!(old_parsed.note, Some(note1.clone()));
+        assert_eq!(old_parsed.mode, Mode::Split);
+        assert_eq!(
+            restore_windows(&old_parsed),
+            vec![WindowState {
+                folder: Some(dir1.clone()),
+                note: Some(note1.clone()),
+                mode: Mode::Split,
+            }]
+        );
+
+        // A new file parsed by ignoring window= lines still yields the same folder/note/mode
+        assert_eq!(old_parsed.folder, state3.folder);
+        assert_eq!(old_parsed.note, state3.note);
+        assert_eq!(old_parsed.mode, state3.mode);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn usable_drops_windows_whose_folder_is_gone() {
+        let dir = tmp("usable-windows");
+        let dir_kept = dir.join("kept");
+        let dir_gone = dir.join("gone");
+        fs::create_dir_all(&dir_kept).unwrap();
+        let note_kept = dir_kept.join("a.md");
+        fs::write(&note_kept, "kept").unwrap();
+
+        let state = State {
+            windows: vec![
+                WindowState {
+                    folder: Some(dir_kept.clone()),
+                    note: Some(note_kept.clone()),
+                    mode: Mode::Preview,
+                },
+                WindowState {
+                    folder: Some(dir_gone),
+                    note: None,
+                    mode: Mode::Edit,
+                },
+                WindowState {
+                    folder: None,
+                    note: None,
+                    mode: Mode::Edit,
+                },
+                WindowState {
+                    folder: Some(dir_kept.clone()),
+                    note: Some(dir_kept.join("missing.md")),
+                    mode: Mode::Split,
+                },
+            ],
+            ..State::default()
+        };
+
+        let usable = state.usable();
+        assert_eq!(usable.windows.len(), 2);
+        assert_eq!(
+            usable.windows[0],
+            WindowState {
+                folder: Some(dir_kept.clone()),
+                note: Some(note_kept),
+                mode: Mode::Preview,
+            }
+        );
+        assert_eq!(
+            usable.windows[1],
+            WindowState {
+                folder: Some(dir_kept),
+                note: None,
+                mode: Mode::Edit,
+            }
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

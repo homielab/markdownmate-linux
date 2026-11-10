@@ -81,17 +81,62 @@ const MODES: [(state::Mode, IconItem); 3] = [
 
 /// `target`: a folder or note given on the command line; `None` reopens the last session.
 pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
-    // Reopen last session; anything gone since is skipped silently.
+    let open = match target {
+        Some(t) => Open::Path(t),
+        None => Open::Session,
+    };
+    build_window_open(app, open);
+}
+
+pub(crate) fn build_window_empty(app: &adw::Application) {
+    build_window_open(app, Open::Empty);
+}
+
+pub(crate) fn build_window_restoring(app: &adw::Application) {
     let mut session = state::load(&state_file()).usable();
+    let entries = state::restore_windows(&session);
+    if let Some(first) = entries.first() {
+        session.folder = first.folder.clone();
+        session.note = first.note.clone();
+        session.mode = first.mode;
+    }
+    build_window_with_session(app, Open::Session, session);
+    for entry in entries.iter().skip(1) {
+        if entry.note.is_none() && entry.folder.is_none() {
+            continue;
+        }
+        // Its own folder, note and mode: the note's parent is not always the folder.
+        let mut session = state::load(&state_file()).usable();
+        session.folder = entry.folder.clone();
+        session.note = entry.note.clone();
+        session.mode = entry.mode;
+        build_window_with_session(app, Open::Session, session);
+    }
+}
+
+pub(crate) enum Open {
+    Session,
+    Path(PathBuf),
+    Empty,
+}
+
+fn build_window_open(app: &adw::Application, open: Open) {
+    // Reopen last session; anything gone since is skipped silently.
+    let session = state::load(&state_file()).usable();
+    build_window_with_session(app, open, session);
+}
+
+fn build_window_with_session(app: &adw::Application, open: Open, mut session: state::State) {
     // Before the menu is built: its What's New badge starts from this.
     crate::about::start();
     render::set_hard_breaks(session.prefs.hard_breaks);
     render::set_front_matter(session.prefs.front_matter);
     crate::smart::set_enabled(session.prefs.smart_punctuation);
     // The folder to show is scanned on its own thread while the window is built.
-    let scan = match &target {
-        Some(target) => folder_of(target),
-        None => session.folder.as_deref(),
+    let scan = match &open {
+        Open::Path(target) => folder_of(target),
+        Open::Session => session.folder.as_deref(),
+        Open::Empty => None,
     }
     .map(|dir| FolderScan::start(dir, session.prefs.sidebar_sort));
     let header = adw::HeaderBar::new();
@@ -103,6 +148,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     for items in [
         &[
             ("New File", "win.new-note"),
+            ("New Window", "win.new-window"),
             ("New Folder…", "win.new-folder"),
             ("Today's Note", "win.todays-note"),
             ("Previous Daily Note", "win.previous-daily-note"),
@@ -491,6 +537,7 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
         spelling: std::cell::OnceCell::new(),
         spell_held: Cell::new(false),
     });
+    crate::windows::register(&editor);
     // Window-wide so the rule (class `mm-editor`) beats the theme's `.monospace` font.
     gtk::style_context_add_provider_for_display(
         &gtk::prelude::WidgetExt::display(&window),
@@ -593,6 +640,23 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     ));
     window.add_action(&new_note_action);
     app.set_accels_for_action("win.new-note", &["<Control>n"]);
+
+    let new_window_action = gio::SimpleAction::new("new-window", None);
+    new_window_action.connect_activate(clone!(
+        #[strong]
+        app,
+        #[strong]
+        editor,
+        move |_, _| {
+            if let Some(dir) = editor.root.borrow().clone() {
+                build_window(&app, Some(dir));
+            } else {
+                build_window_empty(&app);
+            }
+        }
+    ));
+    window.add_action(&new_window_action);
+    app.set_accels_for_action("win.new-window", &["<Shift><Control>n"]);
 
     // Disabled until a folder is open (load_folder enables it). Ctrl+D is not bound by GTK or
     // GtkSourceView (Shift+Ctrl+D is Duplicate Line, `input.rs`).
@@ -1520,9 +1584,14 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     // so the text is not lost silently; closing again quits without saving.
     window.connect_close_request(clone!(
         #[strong]
+        app,
+        #[strong]
         editor,
         move |_| {
             if editor.save() || editor.close_anyway.replace(true) {
+                if app.windows().len() > 1 {
+                    crate::windows::unregister(&editor);
+                }
                 editor.remember();
                 glib::Propagation::Proceed
             } else {
@@ -1585,11 +1654,13 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     editor.view.add_controller(keys);
     // The note, then the folder: a scan that is already done fills the sidebar right here, so
     // it is in the window's first frame; a slower one fills it when it ends.
-    if let Some(target) = &target {
+    if let Open::Path(target) = &open {
         if !target.is_dir() {
             editor.open(target);
         }
-    } else if let Some(note) = &session.note {
+    } else if let Open::Session = &open
+        && let Some(note) = &session.note
+    {
         editor.open(note);
         if editor.path.borrow().is_some() {
             editor.set_mode(session.mode);
@@ -1815,6 +1886,7 @@ fn shortcuts_window() -> gtk::ShortcutsWindow {
                     "Files",
                     &[
                         ("<Control>n", "New file"),
+                        ("<Shift><Control>n", "New window"),
                         ("<Shift><Control><Alt>n", "New note from selection"),
                         ("<Control>d", "Today's note"),
                         ("<Control><Alt>bracketleft", "Previous daily note"),

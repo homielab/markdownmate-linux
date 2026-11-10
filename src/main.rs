@@ -69,6 +69,7 @@ mod title;
 mod url;
 mod welcome;
 mod window;
+mod windows;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -79,7 +80,7 @@ use gtk::gio;
 use gtk::glib::{self};
 
 use editor::Editor;
-use window::build_window;
+use window::{build_window, build_window_restoring};
 
 const APP_ID: &str = "com.homielab.MarkdownMate";
 /// Auto-save after this long without typing.
@@ -273,7 +274,11 @@ fn main() -> gtk::glib::ExitCode {
         launched,
         move |app| {
             let first = !launched.replace(true);
-            build_window(app, None);
+            if first {
+                build_window_restoring(app);
+            } else {
+                build_window(app, None);
+            }
             if let Some(q) = first_quick.take() {
                 run_quick(app, q);
             } else if first && let Some(window) = app.active_window() {
@@ -289,8 +294,34 @@ fn main() -> gtk::glib::ExitCode {
             .filter(|f| f.has_uri_scheme("markdownmate"))
             .collect();
         if links.is_empty() {
-            // shortcut: only the first path is used and each call opens a new window (like activate).
-            return build_window(app, files.first().and_then(|f| f.path()));
+            let targets: Vec<PathBuf> = files
+                .iter()
+                .filter_map(|f| f.path())
+                .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+                .collect();
+            let live = windows::live();
+            let shown: Vec<Option<PathBuf>> = live
+                .iter()
+                .map(|e| {
+                    e.path
+                        .borrow()
+                        .as_ref()
+                        .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
+                })
+                .collect();
+            for r in windows::route(&targets, &shown) {
+                match r {
+                    windows::Route::Present(i) => {
+                        if let Some(e) = live.get(i) {
+                            e.window.present();
+                        }
+                    }
+                    windows::Route::New(p) => {
+                        build_window(app, Some(p));
+                    }
+                }
+            }
+            return;
         }
         if app.active_window().is_none() {
             build_window(app, None);

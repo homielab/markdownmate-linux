@@ -218,10 +218,19 @@ impl Editor {
         expanded.sort();
         // Kept as the state file has them: other windows change them too.
         let saved = state::load(&state_file());
+        let windows = crate::windows::live()
+            .into_iter()
+            .map(|e| state::WindowState {
+                folder: e.root.borrow().clone(),
+                note: e.path.borrow().clone(),
+                mode: e.mode.get(),
+            })
+            .collect();
         let state = state::State {
             folder: self.root.borrow().clone(),
             note: self.path.borrow().clone(),
             mode: self.mode.get(),
+            windows,
             bookmarks: self.bookmarks.borrow().clone(),
             recent: self.recent.borrow().clone(),
             prefs: self.prefs.borrow().clone(),
