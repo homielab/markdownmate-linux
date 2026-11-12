@@ -265,7 +265,7 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
         // The visible area in buffer coordinates; lines in it are laid out, so their heights
         // are exact (the adjustment's `upper` is only an estimate until the end is shown).
         let rect = self.view.visible_rect();
-        let (end_y, end_h) = self.view.line_yrange(&self.buffer.end_iter());
+        let (end_y, end_h) = self.view.line_yrange(&self.buffer().end_iter());
         let script = if rect.y() <= 0 {
             "window.scrollTo(0, 0)".to_string()
         } else if end_y + end_h <= rect.y() + rect.height() {
@@ -339,9 +339,9 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
             0.0
         } else {
             let iter = self
-                .buffer
+                .buffer()
                 .iter_at_line(line as i32 - 1)
-                .unwrap_or_else(|| self.buffer.end_iter());
+                .unwrap_or_else(|| self.buffer().end_iter());
             let (top, height) = self.view.line_yrange(&iter);
             f64::from(top) + line.fract() * f64::from(height)
         };
@@ -393,8 +393,8 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
         &self,
         previous: Option<incremental::Preview>,
     ) -> impl FnOnce() -> (Option<incremental::Preview>, incremental::Update) + Send + 'static {
-        let (start, end) = self.buffer.bounds();
-        let text = self.buffer.text(&start, &end, true).to_string();
+        let (start, end) = self.buffer().bounds();
+        let text = self.buffer().text(&start, &end, true).to_string();
         let wiki = self.links();
         let links = {
             use std::hash::{Hash, Hasher};
@@ -429,8 +429,8 @@ document.head.replaceWith(d.head);document.body.replaceWith(d.body);{}{}scrollTo
         &self,
         style: Option<(bool, state::Theme)>,
     ) -> impl FnOnce() -> String + Send + 'static {
-        let (start, end) = self.buffer.bounds();
-        let text = self.buffer.text(&start, &end, true).to_string();
+        let (start, end) = self.buffer().bounds();
+        let text = self.buffer().text(&start, &end, true).to_string();
         let wiki = self.links();
         let (dark, theme) = style.unwrap_or_else(|| {
             (
@@ -504,8 +504,8 @@ pub(crate) fn export_html(editor: &Rc<Editor>) {
             let Some(dest) = result.ok().and_then(|f| f.path()) else {
                 return;
             };
-            let (start, end) = editor.buffer.bounds();
-            let text = editor.buffer.text(&start, &end, true).to_string();
+            let (start, end) = editor.buffer().bounds();
+            let text = editor.buffer().text(&start, &end, true).to_string();
             let wiki = render::Folder {
                 current: Some(note.clone()),
                 ..editor.links()
@@ -672,8 +672,8 @@ fn export_converted<T: AsRef<[u8]> + Send + 'static>(
             let Some(dest) = result.ok().and_then(|f| f.path()) else {
                 return;
             };
-            let (start, end) = editor.buffer.bounds();
-            let text = editor.buffer.text(&start, &end, true).to_string();
+            let (start, end) = editor.buffer().bounds();
+            let text = editor.buffer().text(&start, &end, true).to_string();
             glib::spawn_future_local(async move {
                 match gio::spawn_blocking(move || convert(&text)).await {
                     Ok(out) => write_export(&editor, dest, out),
@@ -733,10 +733,10 @@ pub(crate) fn copy_as_rich_text(editor: &Rc<Editor>) {
 /// The editor's selection, or its whole text (unsaved edits included) when nothing is selected.
 fn copy_source(editor: &Editor) -> String {
     let (start, end) = editor
-        .buffer
+        .buffer()
         .selection_bounds()
-        .unwrap_or_else(|| editor.buffer.bounds());
-    editor.buffer.text(&start, &end, true).to_string()
+        .unwrap_or_else(|| editor.buffer().bounds());
+    editor.buffer().text(&start, &end, true).to_string()
 }
 
 /// Runs `job` off the main thread, then puts its `(html, text)` on the clipboard as

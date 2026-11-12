@@ -98,14 +98,17 @@ pub(crate) fn is_list_item(line: &str) -> bool {
         .is_none_or(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{2028}' | '\u{2029}'))
 }
 
+/// Names of the focused paragraph's marks in a buffer.
+const START_MARK: &str = "mm-focus-start";
+const END_MARK: &str = "mm-focus-end";
+
 /// Focus Mode of one editor view.
 pub(crate) struct Focus {
-    buffer: sourceview5::Buffer,
+    /// The buffer the view shows (each tab has its own). The focused paragraph is kept in it
+    /// as two marks that move with edits (`START_MARK`: left gravity, `END_MARK`: right
+    /// gravity, so typing at either end stays inside); every line outside it is dimmed.
+    buffer: RefCell<sourceview5::Buffer>,
     view: glib::WeakRef<View>,
-    /// The focused paragraph (moves with edits): every line outside it is dimmed. Start: left
-    /// gravity, end: right gravity, so typing at either end stays inside.
-    start: gtk::TextMark,
-    end: gtk::TextMark,
     on: Cell<bool>,
     /// An update is queued (`schedule`).
     pending: Cell<bool>,
@@ -120,11 +123,8 @@ impl Focus {
             .buffer()
             .downcast::<sourceview5::Buffer>()
             .expect("the editor's buffer is a GtkSourceBuffer");
-        let at = buffer.start_iter();
         let focus = Rc::new(Focus {
-            start: buffer.create_mark(None, &at, true),
-            end: buffer.create_mark(None, &at, false),
-            buffer: buffer.clone(),
+            buffer: RefCell::new(buffer.clone()),
             view: view.downgrade(),
             on: Cell::new(false),
             pending: Cell::new(false),
@@ -132,7 +132,30 @@ impl Focus {
         });
         focus.set_colours(None, false);
         view.imp().focus.replace(Rc::downgrade(&focus));
+        focus.bind(&buffer);
         let weak = Rc::downgrade(&focus);
+        view.connect_buffer_notify(move |view| {
+            let buffer = view.buffer().downcast::<sourceview5::Buffer>().ok();
+            if let (Some(focus), Some(buffer)) = (weak.upgrade(), buffer) {
+                focus.bind(&buffer);
+                focus.update();
+                focus.redraw();
+            }
+        });
+        focus
+    }
+
+    /// Makes `buffer` the one Focus Mode works on; the first time, gives it the paragraph
+    /// marks and follows its cursor and edits.
+    fn bind(self: &Rc<Self>, buffer: &sourceview5::Buffer) {
+        self.buffer.replace(buffer.clone());
+        if buffer.mark(START_MARK).is_some() {
+            return;
+        }
+        let at = buffer.start_iter();
+        buffer.create_mark(Some(START_MARK), &at, true);
+        buffer.create_mark(Some(END_MARK), &at, false);
+        let weak = Rc::downgrade(self);
         buffer.connect_mark_set(move |buffer, _, mark| {
             if (*mark == buffer.get_insert() || *mark == buffer.selection_bound())
                 && let Some(focus) = weak.upgrade()
@@ -140,13 +163,24 @@ impl Focus {
                 focus.schedule();
             }
         });
-        let weak = Rc::downgrade(&focus);
+        let weak = Rc::downgrade(self);
         buffer.connect_changed(move |_| {
             if let Some(focus) = weak.upgrade() {
                 focus.schedule();
             }
         });
-        focus
+    }
+
+    fn buffer(&self) -> sourceview5::Buffer {
+        self.buffer.borrow().clone()
+    }
+
+    fn marks(&self) -> (gtk::TextMark, gtk::TextMark) {
+        let buffer = self.buffer();
+        (
+            buffer.mark(START_MARK).expect("bound buffer"),
+            buffer.mark(END_MARK).expect("bound buffer"),
+        )
     }
 
     /// Turns Focus Mode on (dims all but the cursor's paragraph) or off (undims all).
@@ -205,18 +239,17 @@ impl Focus {
         let (start, end) = self.current();
         let (old_start, old_end) = self.bright();
         if (old_start.offset(), old_end.offset()) != (start.offset(), end.offset()) {
-            self.buffer.move_mark(&self.start, &start);
-            self.buffer.move_mark(&self.end, &end);
+            let (buffer, marks) = (self.buffer(), self.marks());
+            buffer.move_mark(&marks.0, &start);
+            buffer.move_mark(&marks.1, &end);
             self.redraw();
         }
     }
 
     /// The focused paragraph as last updated; empty on a blank line.
     fn bright(&self) -> (gtk::TextIter, gtk::TextIter) {
-        (
-            self.buffer.iter_at_mark(&self.start),
-            self.buffer.iter_at_mark(&self.end),
-        )
+        let (buffer, marks) = (self.buffer(), self.marks());
+        (buffer.iter_at_mark(&marks.0), buffer.iter_at_mark(&marks.1))
     }
 
     /// Veils the visible lines outside the focused paragraph (on a blank line: outside the
@@ -248,7 +281,7 @@ impl Focus {
     /// The focused text now: the paragraphs at both ends of the selection (or the cursor's)
     /// and everything between, whole lines without the last line break; empty on a blank line.
     fn current(&self) -> (gtk::TextIter, gtk::TextIter) {
-        let buffer = &self.buffer;
+        let buffer = &self.buffer();
         let (a, b) = buffer.selection_bounds().unwrap_or_else(|| {
             let at = buffer.iter_at_mark(&buffer.get_insert());
             (at, at)
@@ -439,7 +472,7 @@ mod tests {
         if !focus.on.get() {
             return Vec::new();
         }
-        let buffer = &focus.buffer;
+        let buffer = &focus.buffer();
         let (start, end) = focus.bright();
         let (first, last) = (start.line(), end.line());
         let mut out = Vec::new();

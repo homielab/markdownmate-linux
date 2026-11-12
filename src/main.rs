@@ -62,6 +62,7 @@ mod state;
 mod stats;
 mod table;
 mod tablebar;
+mod tabs;
 mod tags;
 mod tasks;
 mod templates;
@@ -301,24 +302,54 @@ fn main() -> gtk::glib::ExitCode {
                 .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
                 .collect();
             let live = windows::live();
-            let shown: Vec<Option<PathBuf>> = live
+            let canonical = |p: PathBuf| std::fs::canonicalize(&p).unwrap_or(p);
+            let shown: Vec<windows::Shown> = live
                 .iter()
-                .map(|e| {
-                    e.path
-                        .borrow()
-                        .as_ref()
-                        .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
+                .map(|e| windows::Shown {
+                    folder: e.root.borrow().clone().map(canonical),
+                    tabs: e
+                        .tab_states()
+                        .0
+                        .into_iter()
+                        .map(|t| t.note.map(canonical))
+                        .collect(),
                 })
                 .collect();
-            for r in windows::route(&targets, &shown) {
+            let active = app.active_window().and_then(|w| {
+                live.iter()
+                    .position(|e| e.window.upcast_ref::<gtk::Window>() == &w)
+            });
+            // Open files in: Tabs or Windows (from the state file while no window is open).
+            let tabs = live.first().map_or_else(
+                || state::load(&state_file()).prefs.open_files_in,
+                |e| e.prefs.borrow().open_files_in,
+            ) == state::OpenFilesIn::Tabs;
+            for r in windows::route(&targets, &shown, active, tabs, |p| p.is_dir()) {
                 match r {
-                    windows::Route::Present(i) => {
+                    windows::Route::Present(i, tab) => {
                         if let Some(e) = live.get(i) {
+                            e.select_tab_index(tab);
                             e.window.present();
                         }
                     }
-                    windows::Route::New(p) => {
+                    windows::Route::Tab(i, p) => {
+                        if let Some(e) = live.get(i) {
+                            e.open_in_tab(&p);
+                            e.window.present();
+                        }
+                    }
+                    windows::Route::New(p, more) => {
+                        let before = windows::live().len();
                         build_window(app, Some(p));
+                        let made = windows::live();
+                        if made.len() > before
+                            && let Some(e) = made.last()
+                        {
+                            for p in &more {
+                                e.open_in_tab(p);
+                            }
+                            e.select_tab_index(0);
+                        }
                     }
                 }
             }

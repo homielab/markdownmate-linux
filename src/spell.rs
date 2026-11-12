@@ -12,7 +12,7 @@
 //! way to check the visible part first: a note over [`LARGE_NOTE`] is not checked (the status
 //! bar says so, [`HELD_HINT`]) unless the right-click menu's Check Spelling turns it on for it.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gtk::prelude::*;
@@ -30,6 +30,98 @@ pub(crate) fn too_large(bytes: usize) -> bool {
     bytes > LARGE_NOTE
 }
 
+type EnabledNotify = Box<dyn Fn(bool)>;
+
+/// The editor's spell check: one libspelling adapter per buffer (each tab has its own buffer),
+/// the one of the buffer shown being `current`.
+pub(crate) struct Spelling {
+    view: sourceview5::View,
+    adapters: RefCell<Vec<(gtk::TextBuffer, libspelling::TextBufferAdapter)>>,
+    current: RefCell<libspelling::TextBufferAdapter>,
+    menu: RefCell<Rc<Menu>>,
+    /// The view's extra menu, which the spelling items are copied to the top of.
+    extra: gio::Menu,
+    /// Called when the shown buffer's check is turned on or off.
+    enabled_notify: RefCell<Option<EnabledNotify>>,
+    /// `rebind` is changing adapters: not the user's switch.
+    quiet: Cell<bool>,
+}
+
+impl Spelling {
+    pub(crate) fn adapter(&self) -> libspelling::TextBufferAdapter {
+        self.current.borrow().clone()
+    }
+
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.adapter().is_enabled()
+    }
+
+    pub(crate) fn set_enabled(&self, on: bool) {
+        self.adapter().set_enabled(on);
+    }
+
+    pub(crate) fn connect_enabled_notify(&self, f: impl Fn(bool) + 'static) {
+        self.enabled_notify.replace(Some(Box::new(f)));
+    }
+
+    fn watch(self: &Rc<Self>, adapter: &libspelling::TextBufferAdapter) {
+        let weak = Rc::downgrade(self);
+        adapter.connect_enabled_notify(move |a| {
+            let Some(spelling) = weak.upgrade() else {
+                return;
+            };
+            if spelling.quiet.get() || *spelling.current.borrow() != *a {
+                return;
+            }
+            if let Some(f) = spelling.enabled_notify.borrow().as_ref() {
+                f(a.is_enabled());
+            }
+        });
+    }
+
+    /// The view now shows `buffer`: its adapter (a new one starts off; the caller turns it on)
+    /// serves the menu and the `spelling.*` actions.
+    pub(crate) fn rebind(self: &Rc<Self>, buffer: &sourceview5::Buffer) {
+        let key = buffer.clone().upcast::<gtk::TextBuffer>();
+        let known = self
+            .adapters
+            .borrow()
+            .iter()
+            .find(|(b, _)| *b == key)
+            .map(|(_, a)| a.clone());
+        let adapter = known.unwrap_or_else(|| {
+            let checker = self
+                .adapter()
+                .checker()
+                .unwrap_or_else(libspelling::Checker::default);
+            let adapter = libspelling::TextBufferAdapter::new(buffer, &checker);
+            self.quiet.set(true);
+            adapter.set_enabled(false);
+            self.quiet.set(false);
+            self.watch(&adapter);
+            self.adapters.borrow_mut().push((key, adapter.clone()));
+            adapter
+        });
+        if *self.current.borrow() == adapter {
+            return;
+        }
+        self.view.insert_action_group("spelling", Some(&adapter));
+        self.menu.borrow().clear();
+        self.menu
+            .replace(Menu::new(&adapter.menu_model(), self.extra.clone()));
+        self.current.replace(adapter);
+    }
+
+    /// `buffer` is gone (its tab closed): drops its adapter.
+    pub(crate) fn forget(&self, buffer: &sourceview5::Buffer) {
+        let key = buffer.clone().upcast::<gtk::TextBuffer>();
+        let current = self.adapter();
+        self.adapters
+            .borrow_mut()
+            .retain(|(b, a)| *b != key || *a == current);
+    }
+}
+
 /// Attaches the checker to `view`'s buffer, off until `set_enabled`: the underline tag, the
 /// suggestions, Add to Dictionary, Ignore, Check Spelling and Languages at the top of the
 /// right-click menu (the view's extra menu, made if it has none), and a right-click that moves
@@ -38,7 +130,7 @@ pub(crate) fn too_large(bytes: usize) -> bool {
 /// Making the checker loads the dictionary (about 16 ms), so the app attaches it after the
 /// window's first frame (`Editor::attach_spelling`); enabling it then checks the text already
 /// in the buffer.
-pub(crate) fn attach(view: &sourceview5::View) -> libspelling::TextBufferAdapter {
+pub(crate) fn attach(view: &sourceview5::View) -> Rc<Spelling> {
     let buffer = view
         .buffer()
         .downcast::<sourceview5::Buffer>()
@@ -54,19 +146,32 @@ pub(crate) fn attach(view: &sourceview5::View) -> libspelling::TextBufferAdapter
             view.set_extra_menu(Some(&menu));
             menu
         });
-    let menu = Menu::new(&adapter.menu_model(), extra);
+    let menu = Menu::new(&adapter.menu_model(), extra.clone());
     view.insert_action_group("spelling", Some(&adapter));
+    let spelling = Rc::new(Spelling {
+        view: view.clone(),
+        adapters: RefCell::new(vec![(buffer.upcast(), adapter.clone())]),
+        current: RefCell::new(adapter.clone()),
+        menu: RefCell::new(menu),
+        extra,
+        enabled_notify: RefCell::new(None),
+        quiet: Cell::new(false),
+    });
+    spelling.watch(&adapter);
     // Runs before the view's own click handler, which opens the menu; never claims the click.
     let click = gtk::GestureClick::builder()
         .button(gtk::gdk::BUTTON_SECONDARY)
         .propagation_phase(gtk::PropagationPhase::Capture)
         .build();
+    let weak = Rc::downgrade(&spelling);
     click.connect_pressed(glib::clone!(
         #[weak]
         view,
-        #[weak]
-        adapter,
         move |_, _, x, y| {
+            let Some(spelling) = weak.upgrade() else {
+                return;
+            };
+            let (adapter, menu) = (spelling.adapter(), spelling.menu.borrow().clone());
             if !adapter.is_enabled() {
                 menu.show_word(None);
                 return;
@@ -81,7 +186,7 @@ pub(crate) fn attach(view: &sourceview5::View) -> libspelling::TextBufferAdapter
         }
     ));
     view.add_controller(click);
-    adapter
+    spelling
 }
 
 /// libspelling's menu, with working Add to Dictionary / Ignore items. libspelling 0.2
@@ -94,6 +199,8 @@ struct Menu {
     /// Where the word items go, and their (label, action).
     at: i32,
     items: Vec<(String, String)>,
+    /// How many of libspelling's own items were copied.
+    copied: i32,
     shown: Cell<bool>,
 }
 
@@ -122,8 +229,17 @@ impl Menu {
             menu,
             at: at.unwrap_or(0),
             items,
+            copied: next,
             shown: Cell::new(false),
         })
+    }
+
+    /// Takes the copied items out again (another buffer's adapter replaces them).
+    fn clear(&self) {
+        self.show_word(None);
+        for _ in 0..self.copied {
+            self.menu.remove(0);
+        }
     }
 
     /// Shows the word items for `word`, or hides them (`None`).
@@ -239,7 +355,7 @@ mod tests {
         );
         buffer.set_text(text);
         let view = sourceview5::View::with_buffer(&buffer);
-        let adapter = attach(&view);
+        let adapter = attach(&view).adapter();
         adapter.set_language("en_US");
         adapter.set_enabled(true);
         let window = gtk::Window::builder().child(&view).build();

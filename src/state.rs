@@ -272,6 +272,8 @@ pub struct Prefs {
     pub open_today_at_launch: bool,
     /// Preferences ▸ Custom CSS: style preview and exports via ~/.config/markdownmate/preview.css.
     pub custom_css: bool,
+    /// Preferences ▸ General ▸ Open files in: tabs of one window, or separate windows.
+    pub open_files_in: OpenFilesIn,
 }
 
 pub const ZOOM_MIN: u32 = 50;
@@ -319,15 +321,68 @@ impl Default for Prefs {
             auto_pair: true,
             open_today_at_launch: false,
             custom_css: false,
+            open_files_in: OpenFilesIn::Tabs,
         }
     }
 }
 
+/// Where files passed to the app, Ctrl+Enter / middle click in Open Quickly and Ctrl+Shift+click
+/// on a link open (Preferences ▸ General ▸ Open files in).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum OpenFilesIn {
+    #[default]
+    Tabs,
+    Windows,
+}
+
+impl OpenFilesIn {
+    pub const ALL: [OpenFilesIn; 2] = [OpenFilesIn::Tabs, OpenFilesIn::Windows];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            OpenFilesIn::Tabs => "tabs",
+            OpenFilesIn::Windows => "windows",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<OpenFilesIn> {
+        OpenFilesIn::ALL.into_iter().find(|o| o.name() == name)
+    }
+}
+
+/// One tab of a window: its note (None: an empty tab) and view mode.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabState {
+    pub note: Option<PathBuf>,
+    pub mode: Mode,
+}
+
+/// One window: its folder, its tabs in order and the selected one (always in range).
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowState {
     pub folder: Option<PathBuf>,
-    pub note: Option<PathBuf>,
-    pub mode: Mode,
+    pub tabs: Vec<TabState>,
+    pub selected: usize,
+}
+
+impl WindowState {
+    /// A window with one tab.
+    pub fn single(folder: Option<PathBuf>, note: Option<PathBuf>, mode: Mode) -> WindowState {
+        WindowState {
+            folder,
+            tabs: vec![TabState { note, mode }],
+            selected: 0,
+        }
+    }
+
+    /// The selected tab's note and mode (what a 0.12.0 file records for the window).
+    pub fn note(&self) -> Option<&PathBuf> {
+        self.tabs.get(self.selected).and_then(|t| t.note.as_ref())
+    }
+
+    pub fn mode(&self) -> Mode {
+        self.tabs.get(self.selected).map_or(Mode::Edit, |t| t.mode)
+    }
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -362,6 +417,7 @@ pub struct Position {
 impl State {
     pub fn parse(text: &str) -> State {
         let mut state = State::default();
+        let mut implicit_tab = false;
         for line in text.lines() {
             match line.split_once('=') {
                 Some(("folder", v)) => state.folder = unescape(v),
@@ -373,8 +429,34 @@ impl State {
                         let folder = unescape(parts[0]);
                         let note = unescape(parts[1]);
                         let mode = Mode::from_name(parts[2]).unwrap_or_default();
-                        state.windows.push(WindowState { folder, note, mode });
+                        state.windows.push(WindowState::single(folder, note, mode));
+                        // Until a tab= line: the window line is its only tab (0.12.0 file).
+                        implicit_tab = true;
                     }
+                }
+                // The tabs of the window line above, in order.
+                Some(("tab", v)) => {
+                    let parts: Vec<&str> = v.split('\t').collect();
+                    if parts.len() == 2
+                        && let Some(w) = state.windows.last_mut()
+                    {
+                        if implicit_tab {
+                            w.tabs.clear();
+                            implicit_tab = false;
+                        }
+                        w.tabs.push(TabState {
+                            note: unescape(parts[0]),
+                            mode: Mode::from_name(parts[1]).unwrap_or_default(),
+                        });
+                    }
+                }
+                Some(("selected", v)) => {
+                    if let (Some(w), Ok(n)) = (state.windows.last_mut(), v.parse::<usize>()) {
+                        w.selected = n;
+                    }
+                }
+                Some(("open_files_in", v)) => {
+                    state.prefs.open_files_in = OpenFilesIn::from_name(v).unwrap_or_default()
                 }
                 Some(("bookmark", v)) => {
                     if let Some(p) = unescape(v) {
@@ -517,6 +599,9 @@ impl State {
                 _ => {}
             }
         }
+        for w in &mut state.windows {
+            w.selected = w.selected.min(w.tabs.len().saturating_sub(1));
+        }
         state
     }
 
@@ -530,8 +615,14 @@ impl State {
         out += &format!("mode={}\n", self.mode.name());
         for w in &self.windows {
             let folder_s = w.folder.as_deref().map(escape).unwrap_or_default();
-            let note_s = w.note.as_deref().map(escape).unwrap_or_default();
-            out += &format!("window={folder_s}\t{note_s}\t{}\n", w.mode.name());
+            // 0.12.0 reads the window line only: the selected tab.
+            let note_s = w.note().map(|n| escape(n)).unwrap_or_default();
+            out += &format!("window={folder_s}\t{note_s}\t{}\n", w.mode().name());
+            for t in &w.tabs {
+                let note_s = t.note.as_deref().map(escape).unwrap_or_default();
+                out += &format!("tab={note_s}\t{}\n", t.mode.name());
+            }
+            out += &format!("selected={}\n", w.selected);
         }
         for b in &self.bookmarks {
             out += &format!("bookmark={}\n", escape(b));
@@ -555,7 +646,7 @@ impl State {
             out += &format!("font={font}\n");
         }
         out += &format!(
-            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\ndaily_name={}\ntemplates_folder={}\nattachments_folder={}\npasted_image_format={}\npasted_image_max_width={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\nsmart_punctuation={}\npreview_front_matter={}\nspell_check={}\nauto_pair={}\nopen_today_at_launch={}\ncustom_css={}\n",
+            "line_numbers={}\nwrap={}\nindent={}\nzoom={}\ntheme={}\nstyle={}\nsync_scroll={}\ntags={}\nignore_colours={}\ntypewriter={}\nformat_bar={}\nfocus_mode={}\ndaily_folder={}\ndaily_name={}\ntemplates_folder={}\nattachments_folder={}\npasted_image_format={}\npasted_image_max_width={}\nline_spacing={}\ntext_width={}\nsidebar_sort={}\nweb_images={}\nhard_breaks={}\nsmart_punctuation={}\npreview_front_matter={}\nspell_check={}\nauto_pair={}\nopen_today_at_launch={}\ncustom_css={}\nopen_files_in={}\n",
             p.line_numbers,
             p.wrap,
             p.indent,
@@ -584,7 +675,8 @@ impl State {
             p.spell_check,
             p.auto_pair,
             p.open_today_at_launch,
-            p.custom_css
+            p.custom_css,
+            p.open_files_in.name()
         );
         out += &format!(
             "find_match_case={}\nfind_whole_word={}\nfind_regex={}\n",
@@ -622,12 +714,34 @@ impl State {
             .into_iter()
             .filter_map(|w| {
                 let folder = w.folder.filter(|f| f.is_absolute() && f.is_dir())?;
-                let note = w.note.filter(|n| n.starts_with(&folder) && n.is_file());
-                let mode = if note.is_some() { w.mode } else { Mode::Edit };
+                // A tab whose note is gone is dropped; the selection stays on the tab at its
+                // place (or the last one).
+                let mut tabs = Vec::new();
+                let mut selected = 0;
+                for (i, t) in w.tabs.into_iter().enumerate() {
+                    let Some(note) = t.note.filter(|n| n.starts_with(&folder) && n.is_file())
+                    else {
+                        continue;
+                    };
+                    if i < w.selected {
+                        selected += 1;
+                    }
+                    tabs.push(TabState {
+                        note: Some(note),
+                        mode: t.mode,
+                    });
+                }
+                if tabs.is_empty() {
+                    tabs.push(TabState {
+                        note: None,
+                        mode: Mode::Edit,
+                    });
+                }
+                let selected = selected.min(tabs.len() - 1);
                 Some(WindowState {
                     folder: Some(folder),
-                    note,
-                    mode,
+                    tabs,
+                    selected,
                 })
             })
             .collect();
@@ -661,11 +775,11 @@ pub fn restore_windows(state: &State) -> Vec<WindowState> {
     if !state.windows.is_empty() {
         state.windows.clone()
     } else {
-        vec![WindowState {
-            folder: state.folder.clone(),
-            note: state.note.clone(),
-            mode: state.mode,
-        }]
+        vec![WindowState::single(
+            state.folder.clone(),
+            state.note.clone(),
+            state.mode,
+        )]
     }
 }
 
@@ -873,7 +987,7 @@ mod tests {
         };
         let text = state.serialize();
         assert!(text.is_ascii());
-        assert_eq!(text.lines().count(), 36);
+        assert_eq!(text.lines().count(), 37);
         assert_eq!(State::parse(&text), state);
     }
 
@@ -1046,6 +1160,7 @@ mod tests {
             auto_pair: false,
             open_today_at_launch: true,
             custom_css: true,
+            open_files_in: OpenFilesIn::Windows,
         };
         let state = State {
             prefs: prefs.clone(),
@@ -1083,6 +1198,19 @@ mod tests {
         assert_eq!(old.prefs.front_matter, FrontMatter::Table);
         assert!(old.prefs.spell_check && old.prefs.auto_pair);
         assert!(!old.prefs.open_today_at_launch && !old.prefs.custom_css);
+        assert_eq!(old.prefs.open_files_in, OpenFilesIn::Tabs);
+        assert_eq!(
+            State::parse("open_files_in=tabs\n").prefs.open_files_in,
+            OpenFilesIn::Tabs
+        );
+        assert_eq!(
+            State::parse("open_files_in=windows\n").prefs.open_files_in,
+            OpenFilesIn::Windows
+        );
+        assert_eq!(
+            State::parse("open_files_in=panes\n").prefs.open_files_in,
+            OpenFilesIn::Tabs
+        );
         // An invalid daily note name keeps the default.
         assert_eq!(
             State::parse("daily_name=YYYY-MM\n").prefs.daily_name,
@@ -1344,11 +1472,7 @@ mod tests {
         fs::write(&note2, "2").unwrap();
 
         // Round trip with 1 window
-        let w1 = WindowState {
-            folder: Some(dir1.clone()),
-            note: Some(note1.clone()),
-            mode: Mode::Split,
-        };
+        let w1 = WindowState::single(Some(dir1.clone()), Some(note1.clone()), Mode::Split);
         let state1 = State {
             folder: Some(dir1.clone()),
             note: Some(note1.clone()),
@@ -1363,16 +1487,8 @@ mod tests {
         assert_eq!(restore_windows(&parsed1), vec![w1.clone()]);
 
         // Round trip with 3 windows (paths with tabs and newlines escaped)
-        let w2 = WindowState {
-            folder: Some(dir2.clone()),
-            note: Some(note2.clone()),
-            mode: Mode::Preview,
-        };
-        let w3 = WindowState {
-            folder: Some(dir3.clone()),
-            note: None,
-            mode: Mode::Edit,
-        };
+        let w2 = WindowState::single(Some(dir2.clone()), Some(note2.clone()), Mode::Preview);
+        let w3 = WindowState::single(Some(dir3.clone()), None, Mode::Edit);
         let state3 = State {
             folder: Some(dir1.clone()),
             note: Some(note1.clone()),
@@ -1402,11 +1518,11 @@ mod tests {
         assert_eq!(old_parsed.mode, Mode::Split);
         assert_eq!(
             restore_windows(&old_parsed),
-            vec![WindowState {
-                folder: Some(dir1.clone()),
-                note: Some(note1.clone()),
-                mode: Mode::Split,
-            }]
+            vec![WindowState::single(
+                Some(dir1.clone()),
+                Some(note1.clone()),
+                Mode::Split
+            )]
         );
 
         // A new file parsed by ignoring window= lines still yields the same folder/note/mode
@@ -1428,26 +1544,18 @@ mod tests {
 
         let state = State {
             windows: vec![
-                WindowState {
-                    folder: Some(dir_kept.clone()),
-                    note: Some(note_kept.clone()),
-                    mode: Mode::Preview,
-                },
-                WindowState {
-                    folder: Some(dir_gone),
-                    note: None,
-                    mode: Mode::Edit,
-                },
-                WindowState {
-                    folder: None,
-                    note: None,
-                    mode: Mode::Edit,
-                },
-                WindowState {
-                    folder: Some(dir_kept.clone()),
-                    note: Some(dir_kept.join("missing.md")),
-                    mode: Mode::Split,
-                },
+                WindowState::single(
+                    Some(dir_kept.clone()),
+                    Some(note_kept.clone()),
+                    Mode::Preview,
+                ),
+                WindowState::single(Some(dir_gone), None, Mode::Edit),
+                WindowState::single(None, None, Mode::Edit),
+                WindowState::single(
+                    Some(dir_kept.clone()),
+                    Some(dir_kept.join("missing.md")),
+                    Mode::Split,
+                ),
             ],
             ..State::default()
         };
@@ -1456,19 +1564,129 @@ mod tests {
         assert_eq!(usable.windows.len(), 2);
         assert_eq!(
             usable.windows[0],
-            WindowState {
-                folder: Some(dir_kept.clone()),
-                note: Some(note_kept),
-                mode: Mode::Preview,
-            }
+            WindowState::single(Some(dir_kept.clone()), Some(note_kept), Mode::Preview)
         );
         assert_eq!(
             usable.windows[1],
-            WindowState {
-                folder: Some(dir_kept),
-                note: None,
-                mode: Mode::Edit,
-            }
+            WindowState::single(Some(dir_kept), None, Mode::Edit)
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tabs_round_trip_and_old_files() {
+        let tab = |note: &str, mode| TabState {
+            note: Some(PathBuf::from(note)),
+            mode,
+        };
+        let w1 = WindowState {
+            folder: Some(PathBuf::from("/notes/a")),
+            tabs: vec![
+                tab("/notes/a/1.md", Mode::Edit),
+                tab("/notes/a/t\t2\n.md", Mode::Split),
+                tab("/notes/a/3.md", Mode::Preview),
+            ],
+            selected: 1,
+        };
+        let w2 = WindowState {
+            folder: Some(PathBuf::from("/notes/b")),
+            tabs: vec![
+                tab("/notes/b/x.md", Mode::Preview),
+                TabState {
+                    note: None,
+                    mode: Mode::Edit,
+                },
+                tab("/notes/b/z.md", Mode::Edit),
+            ],
+            selected: 2,
+        };
+        let state = State {
+            windows: vec![w1.clone(), w2.clone()],
+            ..State::default()
+        };
+        let text = state.serialize();
+        assert_eq!(State::parse(&text).windows, vec![w1.clone(), w2.clone()]);
+        // 0.12.0 reads the window line: the selected tab's note and mode.
+        assert!(text.contains("window=/notes/a\t/notes/a/t%09"));
+        assert_eq!(w1.note(), Some(&PathBuf::from("/notes/a/t\t2\n.md")));
+        assert_eq!(w1.mode(), Mode::Split);
+
+        // A 0.12.0 file (window lines only): one tab per window.
+        let old = State::parse("window=/notes/a\t/notes/a/1.md\tsplit\nwindow=/notes/b\t\tedit\n");
+        assert_eq!(
+            old.windows,
+            vec![
+                WindowState::single(
+                    Some(PathBuf::from("/notes/a")),
+                    Some(PathBuf::from("/notes/a/1.md")),
+                    Mode::Split
+                ),
+                WindowState::single(Some(PathBuf::from("/notes/b")), None, Mode::Edit),
+            ]
+        );
+        // An out-of-range selection is clamped; a tab line without a window is ignored.
+        let odd = State::parse(
+            "tab=/x.md\tedit\nwindow=/notes/a\t\tedit\ntab=/notes/a/1.md\tedit\nselected=9\n",
+        );
+        assert_eq!(odd.windows.len(), 1);
+        assert_eq!(odd.windows[0].tabs.len(), 1);
+        assert_eq!(odd.windows[0].selected, 0);
+    }
+
+    #[test]
+    fn usable_drops_tabs_whose_note_is_gone_and_clamps_selected() {
+        let dir = tmp("usable-tabs");
+        fs::create_dir_all(&dir).unwrap();
+        let (a, c) = (dir.join("a.md"), dir.join("c.md"));
+        fs::write(&a, "a").unwrap();
+        fs::write(&c, "c").unwrap();
+        let tab = |note: &PathBuf, mode| TabState {
+            note: Some(note.clone()),
+            mode,
+        };
+        let gone = dir.join("gone.md");
+        let window = |tabs, selected| State {
+            windows: vec![WindowState {
+                folder: Some(dir.clone()),
+                tabs,
+                selected,
+            }],
+            ..State::default()
+        };
+        // The selected tab itself is gone: the next one is selected.
+        let u = window(
+            vec![
+                tab(&a, Mode::Edit),
+                tab(&gone, Mode::Split),
+                tab(&c, Mode::Preview),
+            ],
+            1,
+        )
+        .usable();
+        assert_eq!(u.windows[0].tabs.len(), 2);
+        assert_eq!(u.windows[0].selected, 1);
+        assert_eq!(u.windows[0].note(), Some(&c));
+        // A tab before the selected one is gone: the selection follows its tab.
+        let u = window(
+            vec![
+                tab(&gone, Mode::Edit),
+                tab(&a, Mode::Edit),
+                tab(&c, Mode::Edit),
+            ],
+            2,
+        )
+        .usable();
+        assert_eq!(u.windows[0].selected, 1);
+        assert_eq!(u.windows[0].note(), Some(&c));
+        // The last tab is selected and gone: clamped.
+        let u = window(vec![tab(&a, Mode::Edit), tab(&gone, Mode::Edit)], 1).usable();
+        assert_eq!((u.windows[0].tabs.len(), u.windows[0].selected), (1, 0));
+        // Every note gone: the window stays with one empty tab.
+        let u = window(vec![tab(&gone, Mode::Split)], 0).usable();
+        assert_eq!(
+            u.windows,
+            vec![WindowState::single(Some(dir.clone()), None, Mode::Edit)]
         );
 
         let _ = fs::remove_dir_all(&dir);

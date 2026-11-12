@@ -29,7 +29,6 @@ enum Kind {
 /// needs two GObject subclasses and replaces only the word at the cursor, while names here
 /// hold `/` and spaces.
 pub(crate) struct Completer {
-    buffer: gtk::TextBuffer,
     view: sourceview5::View,
     overlay: gtk::Overlay,
     pub(crate) panel: gtk::Frame,
@@ -54,7 +53,6 @@ impl Completer {
             .build();
         overlay.add_overlay(&panel);
         let c = Rc::new(Self {
-            buffer: view.buffer(),
             view: view.clone(),
             overlay: overlay.clone(),
             panel,
@@ -84,7 +82,7 @@ impl Completer {
     /// matching `#query`, the languages matching ```` ```query ````) at the cursor, or hides
     /// the list.
     pub(crate) fn update(self: &Rc<Self>, editor: &Editor) {
-        let buffer = &self.buffer;
+        let buffer = &self.view.buffer();
         let cursor = buffer.iter_at_mark(&buffer.get_insert());
         let mut line_start = cursor;
         line_start.set_line_offset(0);
@@ -184,8 +182,13 @@ impl Completer {
         match path {
             Some(path) => std::fs::read_to_string(path).ok(),
             None => Some(
-                self.buffer
-                    .text(&self.buffer.start_iter(), &self.buffer.end_iter(), true)
+                self.view
+                    .buffer()
+                    .text(
+                        &self.view.buffer().start_iter(),
+                        &self.view.buffer().end_iter(),
+                        true,
+                    )
                     .into(),
             ),
         }
@@ -207,7 +210,12 @@ impl Completer {
     /// Puts the list under the cursor line, or above it when it would run off the bottom.
     pub(crate) fn place(&self) {
         let view = &self.view;
-        let rect = view.iter_location(&self.buffer.iter_at_mark(&self.buffer.get_insert()));
+        let rect = view.iter_location(
+            &self
+                .view
+                .buffer()
+                .iter_at_mark(&self.view.buffer().get_insert()),
+        );
         let (x, y) = view.buffer_to_window_coords(gtk::TextWindowType::Widget, rect.x(), rect.y());
         let point = gtk::graphene::Point::new(x as f32, y as f32);
         let Some(p) = view.compute_point(&self.overlay, &point) else {
@@ -253,7 +261,7 @@ impl Completer {
         let Some((_, name)) = self.names.borrow().get(i as usize).cloned() else {
             return;
         };
-        let buffer = &self.buffer;
+        let buffer = &self.view.buffer();
         let mut cursor = buffer.iter_at_mark(&buffer.get_insert());
         let mut end = cursor;
         if !end.ends_line() {
@@ -703,7 +711,7 @@ fn place_drop(widget: Option<&gtk::Widget>, editor: &Editor, x: f64, y: f64) {
             }
             iter
         });
-        editor.buffer.place_cursor(&iter);
+        editor.buffer().place_cursor(&iter);
     }
 }
 
@@ -740,7 +748,7 @@ fn insert_dropped(editor: &Editor, paths: &[PathBuf]) {
     if lines.is_empty() {
         return;
     }
-    let buffer = &editor.buffer;
+    let buffer = &editor.buffer();
     buffer.begin_user_action();
     buffer.delete_selection(true, true);
     buffer.insert_at_cursor(&lines.join("\n"));

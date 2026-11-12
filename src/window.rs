@@ -7,7 +7,6 @@ use std::sync::Arc;
 use adw::prelude::*;
 use gtk::gio;
 use gtk::glib::{self, clone};
-use sourceview5::prelude::*;
 use webkit6::prelude::*;
 
 use crate::a11y::{self, IconItem};
@@ -24,10 +23,7 @@ use crate::preview::{
     copy_as_html, copy_as_rich_text, export_html, export_pdf, export_rtf, export_text, export_word,
     print_note,
 };
-use crate::{
-    APP_ID, MARK_MARKER_STYLE, MARK_STYLE, MATH_STYLE, SCRIPT_WORLD, SYNC_DELAY, TABLE_STYLE,
-    TAG_STYLE, UNTITLED, state_file,
-};
+use crate::{APP_ID, SCRIPT_WORLD, SYNC_DELAY, UNTITLED, state_file};
 use crate::{choose_file, choose_folder, choose_notes_folder, folder_of};
 use crate::{hover, links, render, sidebar, state, title};
 
@@ -88,6 +84,18 @@ pub(crate) fn build_window(app: &adw::Application, target: Option<PathBuf>) {
     build_window_open(app, open);
 }
 
+/// A window on `folder` showing `note` (a tab moved out, a note opened beside the current
+/// one): the folder stays the one the note was open in, not the note's parent.
+pub(crate) fn build_window_in(app: &adw::Application, folder: Option<PathBuf>, note: PathBuf) {
+    let Some(folder) = folder else {
+        return build_window(app, Some(note));
+    };
+    let mut session = state::load(&state_file()).usable();
+    session.folder = Some(folder);
+    session.note = Some(note);
+    build_window_with_session(app, Open::Session, session, None);
+}
+
 pub(crate) fn build_window_empty(app: &adw::Application) {
     build_window_open(app, Open::Empty);
 }
@@ -95,22 +103,29 @@ pub(crate) fn build_window_empty(app: &adw::Application) {
 pub(crate) fn build_window_restoring(app: &adw::Application) {
     let mut session = state::load(&state_file()).usable();
     let entries = state::restore_windows(&session);
+    let mut first_tabs = None;
     if let Some(first) = entries.first() {
         session.folder = first.folder.clone();
-        session.note = first.note.clone();
-        session.mode = first.mode;
+        session.note = first.note().cloned();
+        session.mode = first.mode();
+        first_tabs = Some((first.tabs.clone(), first.selected));
     }
-    build_window_with_session(app, Open::Session, session);
+    build_window_with_session(app, Open::Session, session, first_tabs);
     for entry in entries.iter().skip(1) {
-        if entry.note.is_none() && entry.folder.is_none() {
+        if entry.note().is_none() && entry.folder.is_none() && entry.tabs.len() < 2 {
             continue;
         }
-        // Its own folder, note and mode: the note's parent is not always the folder.
+        // Its own folder, tabs and mode: the note's parent is not always the folder.
         let mut session = state::load(&state_file()).usable();
         session.folder = entry.folder.clone();
-        session.note = entry.note.clone();
-        session.mode = entry.mode;
-        build_window_with_session(app, Open::Session, session);
+        session.note = entry.note().cloned();
+        session.mode = entry.mode();
+        build_window_with_session(
+            app,
+            Open::Session,
+            session,
+            Some((entry.tabs.clone(), entry.selected)),
+        );
     }
 }
 
@@ -123,10 +138,16 @@ pub(crate) enum Open {
 fn build_window_open(app: &adw::Application, open: Open) {
     // Reopen last session; anything gone since is skipped silently.
     let session = state::load(&state_file()).usable();
-    build_window_with_session(app, open, session);
+    build_window_with_session(app, open, session, None);
 }
 
-fn build_window_with_session(app: &adw::Application, open: Open, mut session: state::State) {
+/// `tabs`: the window's tabs and the selected one's index, when a session is restored.
+fn build_window_with_session(
+    app: &adw::Application,
+    open: Open,
+    mut session: state::State,
+    tabs: Option<(Vec<state::TabState>, usize)>,
+) {
     // Before the menu is built: its What's New badge starts from this.
     crate::about::start();
     render::set_hard_breaks(session.prefs.hard_breaks);
@@ -162,6 +183,8 @@ fn build_window_with_session(app: &adw::Application, open: Open, mut session: st
         &[
             ("New File", "win.new-note"),
             ("New Window", "win.new-window"),
+            ("New Tab", "win.new-tab"),
+            ("Close Tab", "win.close-tab"),
             ("New Folder…", "win.new-folder"),
             ("Today's Note", "win.todays-note"),
             ("Previous Daily Note", "win.previous-daily-note"),
@@ -318,8 +341,18 @@ fn build_window_with_session(app: &adw::Application, open: Open, mut session: st
     let toasts = adw::ToastOverlay::new();
     toasts.set_child(Some(&split));
 
+    // Tabs: one page per note, shown only while there are two or more. Alt+1…9 stay Open
+    // Bookmark, so the view's own shortcuts are off (and it is not in the widget tree, so
+    // its Ctrl+PgUp / PgDn are the window actions `next-tab` / `previous-tab`).
+    let tab_view = adw::TabView::new();
+    tab_view.remove_shortcuts(adw::TabViewShortcuts::all());
+    tab_view.set_menu_model(Some(&crate::tabs::tab_menu()));
+    let tab_bar = adw::TabBar::new();
+    tab_bar.set_view(Some(&tab_view));
+    tab_bar.set_autohide(true);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&header);
+    content.append(&tab_bar);
     content.append(&toasts);
 
     let window = adw::ApplicationWindow::builder()
@@ -330,20 +363,7 @@ fn build_window_with_session(app: &adw::Application, open: Open, mut session: st
         .content(&content)
         .build();
 
-    let buffer = sourceview5::Buffer::new(None);
-    buffer.set_language(
-        sourceview5::LanguageManager::default()
-            .language("markdown")
-            .as_ref(),
-    );
-    // Readable on light and dark schemes; only the colour changes, never the text.
-    buffer.create_tag(Some(TAG_STYLE), &[("foreground", &"#3584e4")]);
-    buffer.create_tag(Some(TABLE_STYLE), &[("family", &"monospace")]);
-    // Mid-tone purple, readable on light and dark schemes like the tag blue.
-    buffer.create_tag(Some(MATH_STYLE), &[("foreground", &"#9141ac")]);
-    // Colours set per theme by `Editor::apply_scheme`.
-    buffer.create_tag(Some(MARK_STYLE), &[]);
-    buffer.create_tag(Some(MARK_MARKER_STYLE), &[]);
+    let buffer = crate::editor::new_buffer();
     let style = adw::StyleManager::default();
     // A GtkSourceView that draws Focus Mode's veil.
     let focus_view = crate::focus::View::new(&buffer);
@@ -360,17 +380,6 @@ fn build_window_with_session(app: &adw::Application, open: Open, mut session: st
         .child(&view)
         .vexpand(true)
         .build();
-    // Typing and opening a note change the buffer inside a frame (input is handled in the
-    // frame clock's event phase). GtkTextView then validates the new lines only while drawing
-    // and grows its vertical adjustment mid-snapshot, after the scrollbar was allocated: GTK
-    // warns "Trying to snapshot GtkGizmo … without a current allocation" (the scrollbar's
-    // trough). Re-allocating the view lets it validate and resize the scrollbar in the layout
-    // phase of the same frame instead.
-    buffer.connect_changed(clone!(
-        #[weak]
-        view,
-        move |_| view.queue_allocate()
-    ));
     let status = gtk::Label::builder()
         .xalign(0.0)
         .margin_start(12)
@@ -497,7 +506,8 @@ fn build_window_with_session(app: &adw::Application, open: Open, mut session: st
         preview_poll: RefCell::new(None),
         preview_y: Cell::new(0.0),
         preview_anchor: RefCell::new(None),
-        buffer: buffer.clone(),
+        buffer: RefCell::new(buffer.clone()),
+        buffer_hooks: RefCell::default(),
         view: view.clone(),
         status,
         counts: Cell::new((0, 0)),
@@ -506,6 +516,12 @@ fn build_window_with_session(app: &adw::Application, open: Open, mut session: st
         saved: RefCell::new(String::new()),
         timer: RefCell::new(None),
         close_anyway: Cell::new(false),
+        tab_view,
+        tab_data: RefCell::default(),
+        tab_current: RefCell::new(None),
+        tab_menu_page: RefCell::new(None),
+        tab_busy: Cell::new(false),
+        beside_next: Cell::new(false),
         note_monitor: RefCell::new(None),
         missing_told: Cell::new(false),
         root: RefCell::new(None),
@@ -581,31 +597,47 @@ fn build_window_with_session(app: &adw::Application, open: Open, mut session: st
     crate::editor::typewriter_scrolling(&editor, &scroll);
     crate::editor::text_width_resizing(&editor, &scroll);
 
-    buffer.connect_changed(clone!(
-        #[strong]
+    // Each tab has its own buffer: `on_buffer` wires every one of them, as it is made.
+    editor.on_buffer(clone!(
+        #[weak]
         editor,
         #[strong]
         completer,
-        move |_| {
-            editor.schedule_save();
-            editor.schedule_preview();
-            editor.schedule_status();
-            editor.schedule_outline();
-            editor.schedule_tags();
-            completer.update(&editor);
-        }
-    ));
-    buffer.connect_mark_set(clone!(
-        #[strong]
-        editor,
-        #[strong]
-        completer,
-        move |buffer, _, mark| {
-            if *mark == buffer.get_insert() || *mark == buffer.selection_bound() {
-                editor.schedule_status();
-                editor.select_outline_at_cursor();
-                completer.update(&editor);
-            }
+        move |buffer| {
+            // Typing and opening a note change the buffer inside a frame (input is handled
+            // in the frame clock's event phase). GtkTextView then validates the new lines
+            // only while drawing and grows its vertical adjustment mid-snapshot, after the
+            // scrollbar was allocated: GTK warns "Trying to snapshot GtkGizmo … without a
+            // current allocation" (the scrollbar's trough). Re-allocating the view lets it
+            // validate and resize the scrollbar in the layout phase of the same frame instead.
+            buffer.connect_changed(clone!(
+                #[weak]
+                editor,
+                #[strong]
+                completer,
+                move |_| {
+                    editor.view.queue_allocate();
+                    editor.schedule_save();
+                    editor.schedule_preview();
+                    editor.schedule_status();
+                    editor.schedule_outline();
+                    editor.schedule_tags();
+                    completer.update(&editor);
+                }
+            ));
+            buffer.connect_mark_set(clone!(
+                #[weak]
+                editor,
+                #[strong]
+                completer,
+                move |buffer, _, mark| {
+                    if *mark == buffer.get_insert() || *mark == buffer.selection_bound() {
+                        editor.schedule_status();
+                        editor.select_outline_at_cursor();
+                        completer.update(&editor);
+                    }
+                }
+            ));
         }
     ));
     let focus = gtk::EventControllerFocus::new();
@@ -670,6 +702,54 @@ fn build_window_with_session(app: &adw::Application, open: Open, mut session: st
     ));
     window.add_action(&new_window_action);
     app.set_accels_for_action("win.new-window", &["<Shift><Control>n"]);
+
+    // Tabs. Ctrl+PgUp / PgDn: GtkSourceView does not bind them (Ctrl+Tab leaves the editor
+    // for the preview, so it is not a tab key).
+    for (name, accel) in [
+        ("new-tab", "<Control>t"),
+        ("close-tab", "<Control>w"),
+        ("next-tab", "<Control>Page_Down"),
+        ("previous-tab", "<Control>Page_Up"),
+    ] {
+        let action = gio::SimpleAction::new(name, None);
+        let weak = Rc::downgrade(&editor);
+        action.connect_activate(move |_, _| {
+            let Some(editor) = weak.upgrade() else {
+                return;
+            };
+            match name {
+                "new-tab" => {
+                    editor.new_tab();
+                }
+                "close-tab" => editor.close_tab(),
+                "next-tab" => {
+                    editor.tab_view.select_next_page();
+                }
+                _ => {
+                    editor.tab_view.select_previous_page();
+                }
+            }
+        });
+        window.add_action(&action);
+        app.set_accels_for_action(&format!("win.{name}"), &[accel]);
+    }
+    let move_tab = gio::SimpleAction::new("move-tab-to-window", None);
+    let weak = Rc::downgrade(&editor);
+    move_tab.connect_activate(move |_, _| {
+        if let Some(editor) = weak.upgrade() {
+            editor.move_tab_to_window();
+        }
+    });
+    window.add_action(&move_tab);
+    let close_others = gio::SimpleAction::new("close-other-tabs", None);
+    let weak = Rc::downgrade(&editor);
+    close_others.connect_activate(move |_, _| {
+        if let Some(editor) = weak.upgrade() {
+            editor.close_other_tabs();
+        }
+    });
+    window.add_action(&close_others);
+    editor.init_tabs();
 
     // Disabled until a folder is open (load_folder enables it). Ctrl+D is not bound by GTK or
     // GtkSourceView (Shift+Ctrl+D is Duplicate Line, `input.rs`).
@@ -825,10 +905,16 @@ fn build_window_with_session(app: &adw::Application, open: Open, mut session: st
     ));
     window.add_action(&extract_action);
     app.set_accels_for_action("win.new-note-from-selection", &["<Shift><Control><Alt>n"]);
-    editor.buffer.connect_has_selection_notify(clone!(
+    editor.on_buffer(clone!(
         #[weak]
         editor,
-        move |_| editor.update_selection_actions()
+        move |buffer| {
+            buffer.connect_has_selection_notify(clone!(
+                #[weak]
+                editor,
+                move |_| editor.update_selection_actions()
+            ));
+        }
     ));
 
     // Disabled until a folder is open (load_folder enables it).
@@ -916,7 +1002,7 @@ fn build_window_with_session(app: &adw::Application, open: Open, mut session: st
             if editor.mode.get() == state::Mode::Preview {
                 editor.set_mode(state::Mode::Edit);
             }
-            if insert_table(editor.buffer.upcast_ref()) {
+            if insert_table(editor.buffer().upcast_ref()) {
                 editor.view.grab_focus();
             } else {
                 editor.toast("Cannot insert a table inside a code block");
@@ -1011,10 +1097,10 @@ fn build_window_with_session(app: &adw::Application, open: Open, mut session: st
                     editor.set_mode(state::Mode::Edit);
                 }
                 editor.view.grab_focus();
-                if table_command(editor.buffer.upcast_ref(), command) {
+                if table_command(editor.buffer().upcast_ref(), command) {
                     editor
                         .view
-                        .scroll_mark_onscreen(&editor.buffer.get_insert());
+                        .scroll_mark_onscreen(&editor.buffer().get_insert());
                 } else {
                     editor.view.error_bell();
                 }
@@ -1031,7 +1117,7 @@ fn build_window_with_session(app: &adw::Application, open: Open, mut session: st
         #[strong]
         format_bar,
         move || {
-            let on = in_table(editor.buffer.upcast_ref());
+            let on = in_table(editor.buffer().upcast_ref());
             let in_format_bar = format_bar.is_visible();
             if format_table.is_visible() != on {
                 format_table.set_visible(on);
@@ -1045,18 +1131,24 @@ fn build_window_with_session(app: &adw::Application, open: Open, mut session: st
             }
         }
     ));
-    editor.buffer.connect_changed(clone!(
+    editor.on_buffer(clone!(
         #[strong]
         table_context,
-        move |_| table_context()
-    ));
-    editor.buffer.connect_mark_set(clone!(
-        #[strong]
-        table_context,
-        move |buffer, _, mark| {
-            if *mark == buffer.get_insert() || *mark == buffer.selection_bound() {
-                table_context();
-            }
+        move |buffer| {
+            buffer.connect_changed(clone!(
+                #[strong]
+                table_context,
+                move |_| table_context()
+            ));
+            buffer.connect_mark_set(clone!(
+                #[strong]
+                table_context,
+                move |buffer, _, mark| {
+                    if *mark == buffer.get_insert() || *mark == buffer.selection_bound() {
+                        table_context();
+                    }
+                }
+            ));
         }
     ));
 
@@ -1491,7 +1583,13 @@ fn build_window_with_session(app: &adw::Application, open: Open, mut session: st
         };
         if let Some(target) = editor.link_at(x, y) {
             click.set_state(gtk::EventSequenceState::Claimed);
+            // Ctrl+Shift+click: a note opens beside this one (a tab or a window).
+            let shift = click
+                .current_event_state()
+                .contains(gtk::gdk::ModifierType::SHIFT_MASK);
+            editor.beside_next.set(shift);
             editor.open_editor_link(target);
+            editor.beside_next.set(false);
         } else if let Some(tag) = editor.tag_at(x, y) {
             click.set_state(gtk::EventSequenceState::Claimed);
             editor.show_tag(&tag);
@@ -1525,10 +1623,16 @@ fn build_window_with_session(app: &adw::Application, open: Open, mut session: st
     ));
     editor.view.add_controller(motion);
 
-    editor.buffer.connect_changed(clone!(
+    editor.on_buffer(clone!(
         #[strong]
         hover,
-        move |_| hover.text_changed()
+        move |buffer| {
+            buffer.connect_changed(clone!(
+                #[strong]
+                hover,
+                move |_| hover.text_changed()
+            ));
+        }
     ));
 
     // Hovering an image link shows a thumbnail (max 320x240) of an image in the open folder,
@@ -1678,6 +1782,9 @@ fn build_window_with_session(app: &adw::Application, open: Open, mut session: st
         if editor.path.borrow().is_some() {
             editor.set_mode(session.mode);
         }
+    }
+    if let (Open::Session, Some((tabs, selected))) = (&open, &tabs) {
+        editor.restore_tabs(tabs, *selected);
     }
     if let Some(scan) = scan {
         editor.load_scan(scan);
@@ -1900,6 +2007,10 @@ fn shortcuts_window() -> gtk::ShortcutsWindow {
                     &[
                         ("<Control>n", "New file"),
                         ("<Shift><Control>n", "New window"),
+                        ("<Control>t", "New tab"),
+                        ("<Control>w", "Close tab"),
+                        ("<Control>Page_Down", "Next tab"),
+                        ("<Control>Page_Up", "Previous tab"),
                         ("<Shift><Control><Alt>n", "New note from selection"),
                         ("<Control>d", "Today's note"),
                         ("<Control><Alt>bracketleft", "Previous daily note"),

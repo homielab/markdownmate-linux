@@ -306,7 +306,10 @@ impl Hover {
             .file_stem()
             .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
         if key.note.as_ref() == Some(&path) {
-            let text = excerpt(buffer_lines(editor.buffer.upcast_ref()), heading.as_deref());
+            let text = excerpt(
+                buffer_lines(editor.buffer().upcast_ref()),
+                heading.as_deref(),
+            );
             return State::Ready {
                 peek: Some(Peek { name, text }),
                 open: true,

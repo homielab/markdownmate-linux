@@ -308,7 +308,7 @@ fn spell_typing() {
     );
     buffer.set_text(&md);
     let view = sourceview5::View::with_buffer(&buffer);
-    let spelling = crate::spell::attach(&view);
+    let spelling = crate::spell::attach(&view).adapter();
     spelling.set_language("en_US");
     let scroll = gtk::ScrolledWindow::builder().child(&view).build();
     let window = gtk::Window::builder()

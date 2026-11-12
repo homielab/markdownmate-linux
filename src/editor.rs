@@ -94,7 +94,10 @@ pub(crate) struct Editor {
     /// Heading id the preview scrolls to once the page being loaded is shown (a link to
     /// another note's heading, `go_to_heading`).
     pub(crate) preview_anchor: RefCell<Option<String>>,
-    pub(crate) buffer: sourceview5::Buffer,
+    /// The selected tab's text (`buffer()`); every tab has its own, so each keeps its undo
+    /// history and cursor. `buffer_hooks` wire each new one (`on_buffer`).
+    pub(crate) buffer: RefCell<sourceview5::Buffer>,
+    pub(crate) buffer_hooks: RefCell<Vec<BufferHook>>,
     pub(crate) view: sourceview5::View,
     /// Status bar under the editor (hidden with it in Preview / when no note is open), the
     /// word/character counts it shows and their pending recount.
@@ -184,10 +187,42 @@ pub(crate) struct Editor {
     pub(crate) focus: Rc<crate::focus::Focus>,
     /// Spell check (Preferences ▸ Editor ▸ Check Spelling), on while `prefs.spell_check` and
     /// not `spell_held`. Attached after the window's first frame (`attach_spelling`).
-    pub(crate) spelling: std::cell::OnceCell<libspelling::TextBufferAdapter>,
+    pub(crate) spelling: std::cell::OnceCell<Rc<crate::spell::Spelling>>,
     /// The open note is over `spell::LARGE_NOTE`: spell check stays off for it until the
     /// right-click menu's Check Spelling turns it on (which clears this).
     pub(crate) spell_held: Cell<bool>,
+    /// Tabs: the pages (one note each; only the selected one is loaded in the editor), the
+    /// others' path and mode, the page the editor shows, and the page of the open tab menu.
+    pub(crate) tab_view: adw::TabView,
+    pub(crate) tab_data: RefCell<Vec<(adw::TabPage, crate::tabs::TabData)>>,
+    pub(crate) tab_current: RefCell<Option<adw::TabPage>>,
+    pub(crate) tab_menu_page: RefCell<Option<adw::TabPage>>,
+    /// A tab switch is loading its note (not a visit for the history, not a new tab).
+    pub(crate) tab_busy: Cell<bool>,
+    /// The next wiki-link click opens the note beside (Ctrl+Shift+click).
+    pub(crate) beside_next: Cell<bool>,
+}
+
+/// Connects the signals of one tab's buffer (`Editor::on_buffer`).
+pub(crate) type BufferHook = Box<dyn Fn(&sourceview5::Buffer)>;
+
+/// An empty Markdown buffer with the editor's own tags.
+pub(crate) fn new_buffer() -> sourceview5::Buffer {
+    let buffer = sourceview5::Buffer::new(None);
+    buffer.set_language(
+        sourceview5::LanguageManager::default()
+            .language("markdown")
+            .as_ref(),
+    );
+    // Readable on light and dark schemes; only the colour changes, never the text.
+    buffer.create_tag(Some(TAG_STYLE), &[("foreground", &"#3584e4")]);
+    buffer.create_tag(Some(TABLE_STYLE), &[("family", &"monospace")]);
+    // Mid-tone purple, readable on light and dark schemes like the tag blue.
+    buffer.create_tag(Some(MATH_STYLE), &[("foreground", &"#9141ac")]);
+    // Colours set per theme by `Editor::apply_scheme`.
+    buffer.create_tag(Some(MARK_STYLE), &[]);
+    buffer.create_tag(Some(MARK_MARKER_STYLE), &[]);
+    buffer
 }
 
 impl Editor {
@@ -197,8 +232,8 @@ impl Editor {
 
     /// The editor's whole text.
     pub(crate) fn text(&self) -> String {
-        let (start, end) = self.buffer.bounds();
-        self.buffer.text(&start, &end, true).to_string()
+        let (start, end) = self.buffer().bounds();
+        self.buffer().text(&start, &end, true).to_string()
     }
 
     /// Writes the open folder, note and view mode for the next launch. Errors are
@@ -220,10 +255,13 @@ impl Editor {
         let saved = state::load(&state_file());
         let windows = crate::windows::live()
             .into_iter()
-            .map(|e| state::WindowState {
-                folder: e.root.borrow().clone(),
-                note: e.path.borrow().clone(),
-                mode: e.mode.get(),
+            .map(|e| {
+                let (tabs, selected) = e.tab_states();
+                state::WindowState {
+                    folder: e.root.borrow().clone(),
+                    tabs,
+                    selected,
+                }
             })
             .collect();
         let state = state::State {
@@ -257,12 +295,43 @@ impl Editor {
     }
 
     /// Ghi vị trí con trỏ (dòng:cột 1-based) của note đang mở vào `positions`.
-    fn keep_position(&self) {
+    pub(crate) fn keep_position(&self) {
         if let Some(path) = self.path.borrow().as_deref() {
-            let at = self.buffer.iter_at_mark(&self.buffer.get_insert());
+            let at = self.buffer().iter_at_mark(&self.buffer().get_insert());
             let (line, column) = (at.line() as usize + 1, at.line_offset() as usize + 1);
             state::push_position(&mut self.positions.borrow_mut(), path, line, column);
         }
+    }
+
+    /// The text of the selected tab.
+    pub(crate) fn buffer(&self) -> sourceview5::Buffer {
+        self.buffer.borrow().clone()
+    }
+
+    /// Runs `hook` on the buffer now and on every buffer made later (one per tab): the place
+    /// to connect a buffer's signals.
+    pub(crate) fn on_buffer(&self, hook: impl Fn(&sourceview5::Buffer) + 'static) {
+        hook(&self.buffer());
+        self.buffer_hooks.borrow_mut().push(Box::new(hook));
+    }
+
+    /// A wired, empty buffer for a tab.
+    pub(crate) fn make_buffer(&self) -> sourceview5::Buffer {
+        let buffer = new_buffer();
+        for hook in self.buffer_hooks.borrow().iter() {
+            hook(&buffer);
+        }
+        buffer
+    }
+
+    /// Shows `buffer` in the editor view (a tab switch). The caller sets the note's state.
+    pub(crate) fn set_buffer(&self, buffer: &sourceview5::Buffer) {
+        self.buffer.replace(buffer.clone());
+        self.view.set_buffer(Some(buffer));
+        if let Some(spelling) = self.spelling.get() {
+            spelling.rebind(buffer);
+        }
+        self.apply_scheme();
     }
 
     /// Scheme GtkSourceView của theme, theo sáng/tối hiện tại của app (`Style`).
@@ -275,10 +344,10 @@ impl Editor {
             eprintln!("markdownmate: style scheme {id} not found");
             manager.scheme(state::Theme::Default.scheme(dark))
         });
-        self.buffer.set_style_scheme(scheme.as_ref());
+        self.buffer().set_style_scheme(scheme.as_ref());
         self.focus.set_colours(scheme.as_ref(), dark);
         let (fill, marker) = render::editor_mark_colours(self.prefs.borrow().theme, dark);
-        let tags = self.buffer.tag_table();
+        let tags = self.buffer().tag_table();
         if let Some(tag) = tags.lookup(MARK_STYLE) {
             tag.set_background(Some(fill));
         }
@@ -367,9 +436,9 @@ impl Editor {
     /// Typewriter scrolling on: scrolls the cursor's line to the middle of the editor (not
     /// with a selection, so selecting does not jump).
     pub(crate) fn typewriter_scroll(&self) {
-        if self.prefs.borrow().typewriter && !self.buffer.has_selection() {
+        if self.prefs.borrow().typewriter && !self.buffer().has_selection() {
             self.view
-                .scroll_to_mark(&self.buffer.get_insert(), 0.0, true, 0.0, 0.5);
+                .scroll_to_mark(&self.buffer().get_insert(), 0.0, true, 0.0, 0.5);
         }
     }
 
@@ -390,12 +459,12 @@ impl Editor {
         let id = glib::timeout_add_local_once(STATUS_DELAY, move || {
             editor.status_timer.take();
             let (start, end) = editor
-                .buffer
+                .buffer()
                 .selection_bounds()
-                .unwrap_or_else(|| editor.buffer.bounds());
+                .unwrap_or_else(|| editor.buffer().bounds());
             editor
                 .counts
-                .set(stats::count(&editor.buffer.text(&start, &end, true)));
+                .set(stats::count(&editor.buffer().text(&start, &end, true)));
             editor.show_status();
         });
         self.status_timer.replace(Some(id));
@@ -426,7 +495,7 @@ impl Editor {
         let editor = Rc::clone(self);
         let id = glib::timeout_add_local_once(OUTLINE_DELAY, move || {
             editor.tag_timer.take();
-            let buffer = &editor.buffer;
+            let buffer = &editor.buffer();
             let (start, end) = buffer.bounds();
             buffer.remove_tag_by_name(TAG_STYLE, &start, &end);
             let text = buffer.text(&start, &end, true);
@@ -482,8 +551,8 @@ impl Editor {
         while let Some(row) = self.outline.first_child() {
             self.outline.remove(&row);
         }
-        let (start, end) = self.buffer.bounds();
-        let headings = outline::headings(&self.buffer.text(&start, &end, true));
+        let (start, end) = self.buffer().bounds();
+        let headings = outline::headings(&self.buffer().text(&start, &end, true));
         for h in &headings {
             let label = gtk::Label::builder()
                 .label(&h.title)
@@ -593,8 +662,9 @@ impl Editor {
         let Some(path) = self.path.borrow().clone() else {
             return;
         };
-        let (start, end) = self.buffer.bounds();
-        let Some(fragment) = render::heading_fragment(&self.buffer.text(&start, &end, true), line)
+        let (start, end) = self.buffer().bounds();
+        let Some(fragment) =
+            render::heading_fragment(&self.buffer().text(&start, &end, true), line)
         else {
             return;
         };
@@ -612,7 +682,10 @@ impl Editor {
         if self.mode.get() == state::Mode::Preview {
             return None;
         }
-        let line = self.buffer.iter_at_mark(&self.buffer.get_insert()).line();
+        let line = self
+            .buffer()
+            .iter_at_mark(&self.buffer().get_insert())
+            .line();
         blocks::block_at(text, line as usize + 1)
     }
 
@@ -642,7 +715,10 @@ impl Editor {
                     std::hash::BuildHasher::hash_one(&std::hash::RandomState::new(), Instant::now())
                 });
                 // The cursor stays where it was, not after the inserted id.
-                let cursor = self.buffer.iter_at_mark(&self.buffer.get_insert()).offset();
+                let cursor = self
+                    .buffer()
+                    .iter_at_mark(&self.buffer().get_insert())
+                    .offset();
                 let at = text[..place.range.start].chars().count() as i32;
                 self.edit_buffer(
                     &text,
@@ -651,8 +727,8 @@ impl Editor {
                         text: place.text(&id),
                     }],
                 );
-                self.buffer
-                    .place_cursor(&self.buffer.iter_at_offset(cursor.min(at)));
+                self.buffer()
+                    .place_cursor(&self.buffer().iter_at_offset(cursor.min(at)));
                 id
             }
         };
@@ -869,7 +945,11 @@ impl Editor {
         if !self.outline_panel.is_visible() {
             return;
         }
-        let line = self.buffer.iter_at_mark(&self.buffer.get_insert()).line() as usize + 1;
+        let line = self
+            .buffer()
+            .iter_at_mark(&self.buffer().get_insert())
+            .line() as usize
+            + 1;
         let row = outline::current(&self.outline_lines.borrow(), line)
             .and_then(|i| self.outline.row_at_index(i as i32));
         self.outline.select_row(row.as_ref());
@@ -885,7 +965,7 @@ impl Editor {
     }
 
     pub(crate) fn show_status(&self) {
-        let cursor = self.buffer.iter_at_mark(&self.buffer.get_insert());
+        let cursor = self.buffer().iter_at_mark(&self.buffer().get_insert());
         let (line, col) = (cursor.line() + 1, cursor.line_offset() + 1);
         let mut text = stats::status_text(line as usize, col as usize, self.counts.get());
         if self.spell_held.get() && self.prefs.borrow().spell_check {
@@ -920,11 +1000,10 @@ impl Editor {
         // switch. On a held large note it turns spell check on for that note; holding it off
         // is not saved.
         let weak = Rc::downgrade(self);
-        spelling.connect_enabled_notify(move |a| {
+        spelling.connect_enabled_notify(move |on| {
             let Some(editor) = weak.upgrade() else {
                 return;
             };
-            let on = a.is_enabled();
             if on && editor.spell_held.replace(false) {
                 editor.show_status();
             } else if !on && editor.spell_held.get() {
@@ -965,8 +1044,8 @@ impl Editor {
         let Some(path) = self.path.borrow().clone() else {
             return true;
         };
-        let (start, end) = self.buffer.bounds();
-        let text = self.buffer.text(&start, &end, true).to_string();
+        let (start, end) = self.buffer().bounds();
+        let text = self.buffer().text(&start, &end, true).to_string();
         let result = save::save_checked(&path, &self.saved.borrow(), &text);
         match result {
             Ok(outcome) => {
@@ -1014,10 +1093,10 @@ impl Editor {
         };
         match store(&self.image_dest(&note)) {
             Ok(link) => {
-                self.buffer.begin_user_action();
-                self.buffer.delete_selection(true, true);
-                self.buffer.insert_at_cursor(&link);
-                self.buffer.end_user_action();
+                self.buffer().begin_user_action();
+                self.buffer().delete_selection(true, true);
+                self.buffer().insert_at_cursor(&link);
+                self.buffer().end_user_action();
             }
             Err(e) => self.toast(&format!("Cannot add image: {e}")),
         }
@@ -1026,7 +1105,14 @@ impl Editor {
     /// Saves the current note, then shows `path`. Stays on the current note if it cannot be
     /// saved or `path` cannot be read (e.g. not UTF-8).
     pub(crate) fn open(self: &Rc<Self>, path: &Path) {
-        if self.path.borrow().as_deref() == Some(path) || !self.save() {
+        if self.path.borrow().as_deref() == Some(path) {
+            return;
+        }
+        // Already in another tab: show that one.
+        if !self.tab_busy.get() && self.select_tab_with(path) {
+            return;
+        }
+        if !self.save() {
             return;
         }
         // Rời note cũ: nhớ con trỏ của nó (save có thể đã chuyển sang bản conflict).
@@ -1042,9 +1128,9 @@ impl Editor {
         self.saved.replace(text.clone());
         self.fit_spelling(text.len());
         // Irreversible: Ctrl+Z must not bring the previous note's text into this one.
-        self.buffer.begin_irreversible_action();
-        self.buffer.set_text(&text);
-        self.buffer.end_irreversible_action();
+        self.buffer().begin_irreversible_action();
+        self.buffer().set_text(&text);
+        self.buffer().end_irreversible_action();
         // set_text fired "changed"; nothing to save yet.
         self.cancel_timer();
         self.restore_position(path);
@@ -1052,12 +1138,45 @@ impl Editor {
         if self.note_box.parent().is_none() {
             self.split.set_content(Some(&self.note_box));
         }
-        self.record_shown(path);
+        if !self.tab_busy.get() {
+            self.record_shown(path);
+        }
         self.refresh_preview();
         self.remember();
         self.refresh_backlinks();
         self.refresh_mentions();
         timing::mark(|| format!("note opened {}", file_name(path)));
+    }
+
+    /// Forgets the open note without touching the buffer: a tab switch is about to put
+    /// another buffer in the view, and no save may write it to this note.
+    pub(crate) fn leave_note(&self) {
+        self.cancel_timer();
+        self.path.replace(None);
+        self.saved.replace(String::new());
+        self.note_monitor.replace(None);
+    }
+
+    /// Shows `path` whose text is already in the buffer (its tab is selected again), `saved`
+    /// being that text as last written; reloads it if it changed on disk meanwhile.
+    pub(crate) fn show_loaded(self: &Rc<Self>, path: &Path, saved: String) {
+        self.show_path(path);
+        self.fit_spelling(saved.len());
+        self.saved.replace(saved);
+        if self.note_box.parent().is_none() {
+            self.split.set_content(Some(&self.note_box));
+        }
+        self.view
+            .scroll_to_mark(&self.buffer().get_insert(), 0.0, true, 0.0, 0.3);
+        self.schedule_status();
+        self.schedule_outline();
+        self.schedule_tags();
+        self.update_selection_actions();
+        self.refresh_preview();
+        self.remember();
+        self.refresh_backlinks();
+        self.refresh_mentions();
+        self.check_disk();
     }
 
     /// Adds the note `open` just showed to the history; a Back / Forward moves to its entry
@@ -1166,23 +1285,23 @@ impl Editor {
             .find(|p| p.note == path)
             .map(|p| (p.line, p.column));
         let Some((line, column)) = at else {
-            self.buffer.place_cursor(&self.buffer.start_iter());
+            self.buffer().place_cursor(&self.buffer().start_iter());
             return;
         };
-        self.buffer
+        self.buffer()
             .place_cursor(&self.line_iter(line, Some(column)));
         // scroll_to_mark đợi tới khi layout xong (buffer vừa nạp, view có thể chưa hiện).
         self.view
-            .scroll_to_mark(&self.buffer.get_insert(), 0.0, true, 0.0, 0.3);
+            .scroll_to_mark(&self.buffer().get_insert(), 0.0, true, 0.0, 0.3);
     }
 
     /// Iter at 1-based `line` / `column`, clamped to the last line / the line end.
     fn line_iter(&self, line: usize, column: Option<usize>) -> gtk::TextIter {
         let line = i32::try_from(line.saturating_sub(1)).unwrap_or(i32::MAX);
         let mut iter = self
-            .buffer
+            .buffer()
             .iter_at_line(line)
-            .unwrap_or_else(|| self.buffer.end_iter());
+            .unwrap_or_else(|| self.buffer().end_iter());
         if let Some(column) = column {
             let mut end = iter;
             if !end.ends_line() {
@@ -1217,6 +1336,7 @@ impl Editor {
             });
         }
         self.note_monitor.replace(monitor);
+        self.sync_tab();
     }
 
     /// The open note changed on disk: reload it if the editor has no unsaved changes
@@ -1225,8 +1345,8 @@ impl Editor {
         let Some(path) = self.path.borrow().clone() else {
             return;
         };
-        let (start, end) = self.buffer.bounds();
-        if self.buffer.text(&start, &end, true) != self.saved.borrow().as_str() {
+        let (start, end) = self.buffer().bounds();
+        if self.buffer().text(&start, &end, true) != self.saved.borrow().as_str() {
             return;
         }
         match save::read_note(&path) {
@@ -1271,7 +1391,10 @@ impl Editor {
     /// Shows `disk` (just read from the open note) as its saved text, keeping the cursor's
     /// line. Irreversible: reloading clears the undo history.
     fn load_text(self: &Rc<Self>, disk: String) {
-        let line = self.buffer.iter_at_mark(&self.buffer.get_insert()).line();
+        let line = self
+            .buffer()
+            .iter_at_mark(&self.buffer().get_insert())
+            .line();
         // Same note: keep its spell check (held, or turned on from the menu) unless it crossed
         // the size limit.
         if crate::spell::too_large(disk.len()) != crate::spell::too_large(self.saved.borrow().len())
@@ -1280,16 +1403,16 @@ impl Editor {
         }
         // Baseline for save_checked: auto-save neither rewrites it nor makes a conflict copy.
         self.saved.replace(disk.clone());
-        self.buffer.begin_irreversible_action();
-        self.buffer.set_text(&disk);
-        self.buffer.end_irreversible_action();
+        self.buffer().begin_irreversible_action();
+        self.buffer().set_text(&disk);
+        self.buffer().end_irreversible_action();
         // set_text fired "changed" (auto-save scheduled): nothing to save.
         self.cancel_timer();
         let iter = self
-            .buffer
+            .buffer()
             .iter_at_line(line)
-            .unwrap_or_else(|| self.buffer.end_iter());
-        self.buffer.place_cursor(&iter);
+            .unwrap_or_else(|| self.buffer().end_iter());
+        self.buffer().place_cursor(&iter);
         self.refresh_preview();
     }
 
@@ -1299,13 +1422,13 @@ impl Editor {
             self.view
                 .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
         let iter = self.view.iter_at_location(bx, by)?;
-        let start = self.buffer.iter_at_line(iter.line())?;
+        let start = self.buffer().iter_at_line(iter.line())?;
         let mut end = start;
         end.forward_to_line_end();
-        let line = self.buffer.text(&start, &end, true);
+        let line = self.buffer().text(&start, &end, true);
         links::at_lazy(&line, iter.line_offset() as usize, || {
-            self.buffer
-                .text(&self.buffer.start_iter(), &start, true)
+            self.buffer()
+                .text(&self.buffer().start_iter(), &start, true)
                 .to_string()
         })
     }
@@ -1317,19 +1440,19 @@ impl Editor {
             self.view
                 .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
         let iter = self.view.iter_at_location(bx, by)?;
-        let start = self.buffer.iter_at_line(iter.line())?;
+        let start = self.buffer().iter_at_line(iter.line())?;
         let mut end = start;
         if !end.ends_line() {
             end.forward_to_line_end();
         }
-        let row = self.buffer.text(&start, &end, true);
+        let row = self.buffer().text(&start, &end, true);
         tags::at_row(
             &row,
             iter.line() as usize,
             iter.line_index() as usize,
             || {
-                self.buffer
-                    .text(&self.buffer.start_iter(), &self.buffer.end_iter(), true)
+                self.buffer()
+                    .text(&self.buffer().start_iter(), &self.buffer().end_iter(), true)
                     .to_string()
             },
         )
@@ -1363,12 +1486,12 @@ impl Editor {
             self.view
                 .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
         let iter = self.view.iter_at_location(bx, by)?;
-        let start = self.buffer.iter_at_line(iter.line())?;
+        let start = self.buffer().iter_at_line(iter.line())?;
         let mut end = start;
         if !end.ends_line() {
             end.forward_to_line_end();
         }
-        let line = self.buffer.text(&start, &end, true);
+        let line = self.buffer().text(&start, &end, true);
         match links::at("", &line, iter.line_offset() as usize)? {
             links::Target::Wiki(name) => Some(name),
             links::Target::Href(_) => None,
@@ -1482,9 +1605,14 @@ impl Editor {
                     Some(note) => {
                         let editor = self.clone();
                         let heading = render::link_fragment(uri);
+                        let beside = self.beside_next.take();
                         glib::idle_add_local_once(move || {
                             let reload = editor.path.borrow().as_deref() != Some(&note);
-                            editor.open(&note);
+                            if beside {
+                                editor.open_beside(&note);
+                            } else {
+                                editor.open(&note);
+                            }
                             let opened = editor.path.borrow().as_deref() == Some(&note);
                             if let Some(heading) = heading.filter(|_| opened) {
                                 editor.go_to_heading(&heading, reload);
@@ -1500,9 +1628,11 @@ impl Editor {
                 glib::idle_add_local_once(move || editor.toggle_task(line));
             }
             render::Link::Copy(line) => {
-                let md = self
-                    .buffer
-                    .text(&self.buffer.start_iter(), &self.buffer.end_iter(), true);
+                let md = self.buffer().text(
+                    &self.buffer().start_iter(),
+                    &self.buffer().end_iter(),
+                    true,
+                );
                 match render::code_block_at(&md, line) {
                     Some(code) => {
                         self.window.clipboard().set_text(&code);
@@ -1538,8 +1668,8 @@ impl Editor {
     /// `reload` (a new page is loading) and the preview shows, it scrolls there once loaded;
     /// in Preview alone with the page already loaded, it scrolls there now.
     pub(crate) fn go_to_heading(&self, fragment: &str, reload: bool) {
-        let (start, end) = self.buffer.bounds();
-        let text = self.buffer.text(&start, &end, true);
+        let (start, end) = self.buffer().bounds();
+        let text = self.buffer().text(&start, &end, true);
         let found = match crate::blocks::block_ref(fragment) {
             Some(id) => crate::blocks::find(&text, id)
                 .map(|block| (*block.lines.start(), format!("^{}", block.id)))
@@ -1551,9 +1681,9 @@ impl Editor {
             Ok(found) => found,
             Err(message) => return self.toast(&message),
         };
-        self.buffer.place_cursor(&self.line_iter(line, None));
+        self.buffer().place_cursor(&self.line_iter(line, None));
         self.view
-            .scroll_to_mark(&self.buffer.get_insert(), 0.0, true, 0.0, 0.3);
+            .scroll_to_mark(&self.buffer().get_insert(), 0.0, true, 0.0, 0.3);
         if reload && self.mode.get() != state::Mode::Edit {
             self.preview_anchor.replace(Some(id));
         } else if !reload
@@ -1603,10 +1733,10 @@ impl Editor {
         if self.mode.get() == state::Mode::Preview {
             self.set_mode(state::Mode::Edit);
         }
-        self.buffer.place_cursor(&self.line_iter(line, column));
+        self.buffer().place_cursor(&self.line_iter(line, column));
         self.view.grab_focus();
         self.view
-            .scroll_to_mark(&self.buffer.get_insert(), 0.0, true, 0.0, 0.3);
+            .scroll_to_mark(&self.buffer().get_insert(), 0.0, true, 0.0, 0.3);
     }
 
     /// Shows the panes for `mode`; called by the `win.mode` action only.
@@ -1648,7 +1778,7 @@ impl Editor {
             && let Ok(a) = a.downcast::<gio::SimpleAction>()
         {
             a.set_enabled(
-                self.buffer.has_selection()
+                self.buffer().has_selection()
                     && self.mode.get() != state::Mode::Preview
                     && self.path.borrow().is_some(),
             );
@@ -2025,7 +2155,7 @@ impl Editor {
         let Some(mut start) = line
             .checked_sub(1)
             .and_then(|l| i32::try_from(l).ok())
-            .and_then(|l| self.buffer.iter_at_line(l))
+            .and_then(|l| self.buffer().iter_at_line(l))
         else {
             return;
         };
@@ -2033,34 +2163,34 @@ impl Editor {
         if !end.ends_line() {
             end.forward_to_line_end();
         }
-        let Some((at, new)) = lists::toggle_task(&self.buffer.text(&start, &end, true)) else {
+        let Some((at, new)) = lists::toggle_task(&self.buffer().text(&start, &end, true)) else {
             return;
         };
         start.forward_chars(at as i32);
         let mut next = start;
         next.forward_char();
-        self.buffer.begin_user_action();
-        self.buffer.delete(&mut start, &mut next);
-        self.buffer.insert(&mut start, &new.to_string());
-        self.buffer.end_user_action();
+        self.buffer().begin_user_action();
+        self.buffer().delete(&mut start, &mut next);
+        self.buffer().insert(&mut start, &new.to_string());
+        self.buffer().end_user_action();
         self.save();
         self.refresh_preview();
     }
 
     /// Adds `text` at the end of the open note on a new line, as one undoable edit.
     pub(crate) fn append(self: &Rc<Self>, text: &str) {
-        let mut end = self.buffer.end_iter();
+        let mut end = self.buffer().end_iter();
         let text = if end.starts_line() {
             text.to_string()
         } else {
             format!("\n{text}")
         };
-        self.buffer.begin_user_action();
-        self.buffer.insert(&mut end, &text);
-        self.buffer.end_user_action();
-        self.buffer.place_cursor(&self.buffer.end_iter());
+        self.buffer().begin_user_action();
+        self.buffer().insert(&mut end, &text);
+        self.buffer().end_user_action();
+        self.buffer().place_cursor(&self.buffer().end_iter());
         self.view
-            .scroll_to_mark(&self.buffer.get_insert(), 0.0, false, 0.0, 0.0);
+            .scroll_to_mark(&self.buffer().get_insert(), 0.0, false, 0.0, 0.0);
         self.refresh_preview();
     }
 
@@ -2199,9 +2329,9 @@ impl Editor {
         self.load_folder(dir);
         self.open(&welcome);
         if self.path.borrow().as_deref() == Some(welcome.as_path()) {
-            self.buffer.place_cursor(&self.buffer.end_iter());
+            self.buffer().place_cursor(&self.buffer().end_iter());
             self.view
-                .scroll_to_mark(&self.buffer.get_insert(), 0.0, true, 0.0, 0.3);
+                .scroll_to_mark(&self.buffer().get_insert(), 0.0, true, 0.0, 0.3);
         }
     }
 
@@ -2231,9 +2361,9 @@ impl Editor {
         if self.path.borrow().as_deref() != Some(selection.note.as_path()) {
             return;
         }
-        let start = self.buffer.iter_at_offset(selection.start);
-        let end = self.buffer.iter_at_offset(selection.end);
-        if self.buffer.text(&start, &end, true) != selection.text.as_str() {
+        let start = self.buffer().iter_at_offset(selection.start);
+        let end = self.buffer().iter_at_offset(selection.end);
+        if self.buffer().text(&start, &end, true) != selection.text.as_str() {
             return self.toast("The note changed, so nothing was moved. Select the text again.");
         }
         let Some(text) = extract::note_text(&selection.text) else {
@@ -2255,16 +2385,16 @@ impl Editor {
             .unwrap_or_else(|| dir.to_path_buf());
         let link = extract::link(&complete::link_name(&path, &self.note_list.borrow(), &root));
         let (mut start, mut end) = (start, end);
-        self.buffer.begin_user_action();
-        self.buffer.delete(&mut start, &mut end);
-        self.buffer
+        self.buffer().begin_user_action();
+        self.buffer().delete(&mut start, &mut end);
+        self.buffer()
             .insert(&mut start, &extract::replacement(&selection.text, &link));
-        self.buffer.end_user_action();
+        self.buffer().end_user_action();
         let link_start = selection.start + extract::link_start(&selection.text) as i32;
         let link_end = link_start + link.chars().count() as i32;
-        self.buffer.select_range(
-            &self.buffer.iter_at_offset(link_end),
-            &self.buffer.iter_at_offset(link_start),
+        self.buffer().select_range(
+            &self.buffer().iter_at_offset(link_end),
+            &self.buffer().iter_at_offset(link_start),
         );
         self.view.grab_focus();
         self.expand_to(dir);
@@ -2293,10 +2423,10 @@ impl Editor {
     /// the end = the end) and scrolls to it.
     fn place_new_note_cursor(&self, offset: usize) {
         let offset = i32::try_from(offset).unwrap_or(i32::MAX);
-        self.buffer
-            .place_cursor(&self.buffer.iter_at_offset(offset));
+        self.buffer()
+            .place_cursor(&self.buffer().iter_at_offset(offset));
         self.view
-            .scroll_to_mark(&self.buffer.get_insert(), 0.0, true, 0.0, 0.3);
+            .scroll_to_mark(&self.buffer().get_insert(), 0.0, true, 0.0, 0.3);
     }
 
     /// `markdownmate --new` / `--today` (the dock menu): in the open folder; while the
@@ -2594,6 +2724,7 @@ impl Editor {
                     self.show_path(&new);
                 }
                 self.history.borrow_mut().retarget(|p| moved(p, from, &to));
+                self.retarget_tabs(|p| moved(p, from, &to));
                 self.update_history_actions();
                 let mut expanded = self.expanded.borrow_mut();
                 *expanded = expanded
@@ -2727,7 +2858,7 @@ impl Editor {
         let (Some(first), Some(last)) = (edits.first(), edits.last()) else {
             return;
         };
-        self.buffer.begin_user_action();
+        self.buffer().begin_user_action();
         if edits.len() <= 100 {
             // Char offsets counted once, front to back; edited back to front.
             let (mut byte, mut chars) = (0, 0);
@@ -2740,10 +2871,10 @@ impl Editor {
                 offsets.push((start as i32, chars as i32));
             }
             for (edit, &(start, end)) in edits.iter().zip(&offsets).rev() {
-                let mut start = self.buffer.iter_at_offset(start);
-                let mut end = self.buffer.iter_at_offset(end);
-                self.buffer.delete(&mut start, &mut end);
-                self.buffer.insert(&mut start, &edit.text);
+                let mut start = self.buffer().iter_at_offset(start);
+                let mut end = self.buffer().iter_at_offset(end);
+                self.buffer().delete(&mut start, &mut end);
+                self.buffer().insert(&mut start, &edit.text);
             }
         } else {
             // Many edits (a large note): the span from the first to the last replaced at once,
@@ -2761,20 +2892,23 @@ impl Editor {
             let from = text[..span.start].chars().count() as i32;
             let old_len = text[span].chars().count() as i32;
             let new_len = new.chars().count() as i32;
-            let cursor = self.buffer.iter_at_mark(&self.buffer.get_insert()).offset();
-            let mut start = self.buffer.iter_at_offset(from);
-            let mut end = self.buffer.iter_at_offset(from + old_len);
-            self.buffer.delete(&mut start, &mut end);
-            self.buffer.insert(&mut start, &new);
+            let cursor = self
+                .buffer()
+                .iter_at_mark(&self.buffer().get_insert())
+                .offset();
+            let mut start = self.buffer().iter_at_offset(from);
+            let mut end = self.buffer().iter_at_offset(from + old_len);
+            self.buffer().delete(&mut start, &mut end);
+            self.buffer().insert(&mut start, &new);
             let cursor = if cursor >= from + old_len {
                 cursor - old_len + new_len
             } else {
                 cursor.min(from + new_len)
             };
-            self.buffer
-                .place_cursor(&self.buffer.iter_at_offset(cursor));
+            self.buffer()
+                .place_cursor(&self.buffer().iter_at_offset(cursor));
         }
-        self.buffer.end_user_action();
+        self.buffer().end_user_action();
     }
 
     /// Sidebar Tags ▸ Rename Tag…: asks for the new name of `#old` (checked as it is typed),
@@ -3111,6 +3245,7 @@ impl Editor {
                 if open.is_some() {
                     self.close_note();
                 }
+                self.close_tabs_under(target);
                 let t = target.to_path_buf();
                 self.change_favorites(move |list, root| favorites::remove_under(list, root, &t));
                 self.update_note_list(Some(target), None);
@@ -3131,12 +3266,13 @@ impl Editor {
         self.path.replace(None);
         self.saved.replace(String::new());
         self.fit_spelling(0);
-        self.buffer.begin_irreversible_action();
-        self.buffer.set_text("");
-        self.buffer.end_irreversible_action();
+        self.buffer().begin_irreversible_action();
+        self.buffer().set_text("");
+        self.buffer().end_irreversible_action();
         self.cancel_timer();
         self.window.set_title(Some(&title::window_title(None)));
         self.split.set_content(Some(&no_note_page()));
+        self.sync_tab();
         self.remember();
     }
 
@@ -3425,14 +3561,18 @@ pub(crate) fn typewriter_scrolling(editor: &Rc<Editor>, scroll: &gtk::ScrolledWi
             });
         }
     });
-    let c = Rc::clone(&center);
-    editor.buffer.connect_mark_set(move |buffer, _, mark| {
-        if *mark == buffer.get_insert() {
-            c();
-        }
+    let on_move = Rc::clone(&center);
+    editor.on_buffer(move |buffer| {
+        let center = &on_move;
+        let c = Rc::clone(center);
+        buffer.connect_mark_set(move |buffer, _, mark| {
+            if *mark == buffer.get_insert() {
+                c();
+            }
+        });
+        let c = Rc::clone(center);
+        buffer.connect_changed(move |_| c());
     });
-    let c = Rc::clone(&center);
-    editor.buffer.connect_changed(move |_| c());
     let legacy = gtk::EventControllerLegacy::new();
     legacy.set_propagation_phase(gtk::PropagationPhase::Capture);
     legacy.connect_event(move |_, event| {

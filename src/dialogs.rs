@@ -640,12 +640,46 @@ pub(crate) fn preferences_dialog(editor: &Rc<Editor>) {
     page.add(&tag_group);
     page.add(&notes_group);
     page.add(&privacy);
+    page.add(&open_files_group(editor));
     page.add(&default_app_group(editor));
     let dialog = adw::PreferencesDialog::new();
     dialog.set_search_enabled(true);
     dialog.add(&page);
     dialog.add(&crate::about::about_page(editor, &dialog));
     dialog.present(Some(&editor.window));
+}
+
+/// Preferences ▸ General ▸ Open files in: where files opened from outside, Ctrl+Enter in Open
+/// Quickly and Ctrl+Shift+click on a link go (a tab of the window, or a window of their own).
+fn open_files_group(editor: &Rc<Editor>) -> adw::PreferencesGroup {
+    let row = adw::ComboRow::builder()
+        .title("Open Files in")
+        .subtitle(
+            "Files you open from outside, Ctrl+Enter in Open Quickly, Ctrl+Shift+click on a link",
+        )
+        // Same order as `OpenFilesIn::ALL`.
+        .model(&gtk::StringList::new(&["Tabs", "Windows"]))
+        .selected(
+            state::OpenFilesIn::ALL
+                .iter()
+                .position(|m| *m == editor.prefs.borrow().open_files_in)
+                .unwrap_or(0) as u32,
+        )
+        .build();
+    row.connect_selected_notify(clone!(
+        #[strong]
+        editor,
+        move |r| {
+            editor.prefs.borrow_mut().open_files_in = state::OpenFilesIn::ALL
+                .get(r.selected() as usize)
+                .copied()
+                .unwrap_or_default();
+            editor.remember();
+        }
+    ));
+    let group = adw::PreferencesGroup::builder().title("Windows").build();
+    group.add(&row);
+    group
 }
 
 /// The MIME types the .desktop file lists for Markdown notes.
@@ -856,8 +890,8 @@ pub(crate) fn reload_note(editor: &Rc<Editor>) {
     if editor.path.borrow().is_none() {
         return;
     }
-    let (start, end) = editor.buffer.bounds();
-    if editor.buffer.text(&start, &end, true) == editor.saved.borrow().as_str() {
+    let (start, end) = editor.buffer().bounds();
+    if editor.buffer().text(&start, &end, true) == editor.saved.borrow().as_str() {
         return editor.reload();
     }
     // Pending auto-save would write the edits (or a conflict copy) while the dialog is open.
@@ -1066,8 +1100,8 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
             && let Some(editor) = weak.upgrade()
         {
             let open = editor.path.borrow().clone().map(|path| {
-                let (start, end) = editor.buffer.bounds();
-                (path, editor.buffer.text(&start, &end, true).to_string())
+                let (start, end) = editor.buffer().bounds();
+                (path, editor.buffer().text(&start, &end, true).to_string())
             });
             let job = editor.links_job(move |index| {
                 index.headings(open.as_ref().map(|(p, t)| (p.as_path(), t.as_str())))
@@ -1090,7 +1124,7 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
     let choose = {
         let (editor, dialog, list, shown) =
             (editor.clone(), dialog.downgrade(), list.clone(), shown);
-        move |query: &str| {
+        move |query: &str, beside: bool| {
             let index = list.selected_row().map(|r| r.index());
             let picked = index.and_then(|i| shown.borrow().get(i as usize).cloned());
             if let Some(dialog) = dialog.upgrade() {
@@ -1099,12 +1133,17 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
             match picked {
                 Some((path, Some(heading))) => {
                     let reload = editor.path.borrow().as_deref() != Some(path.as_path());
-                    editor.open(&path);
+                    if beside {
+                        editor.open_beside(&path);
+                    } else {
+                        editor.open(&path);
+                    }
                     if editor.path.borrow().as_deref() == Some(path.as_path()) {
                         editor.go_to_heading(&heading, reload);
                     }
                 }
                 Some((path, None)) if path.is_dir() => editor.show_in_sidebar(&path),
+                Some((path, None)) if beside => editor.open_beside(&path),
                 Some((path, None)) => editor.open(&path),
                 // A heading query never creates a note.
                 None if quick::heading_query(query).is_some() => {}
@@ -1120,16 +1159,56 @@ pub(crate) fn open_quickly(editor: &Rc<Editor>) {
     entry.connect_activate(clone!(
         #[strong]
         choose,
-        move |e| choose(&e.text())
+        move |e| choose(&e.text(), false)
     ));
     list.connect_row_activated(clone!(
+        #[strong]
+        choose,
         #[weak]
         entry,
         move |list, row| {
             list.select_row(Some(row));
-            choose(&entry.text());
+            choose(&entry.text(), false);
         }
     ));
+    // Ctrl+Enter or a middle click opens the note beside the current one (a tab or a window,
+    // Preferences ▸ General ▸ Open files in).
+    let ctrl_enter = gtk::EventControllerKey::new();
+    ctrl_enter.set_propagation_phase(gtk::PropagationPhase::Capture);
+    ctrl_enter.connect_key_pressed(clone!(
+        #[strong]
+        choose,
+        #[weak]
+        entry,
+        #[upgrade_or]
+        glib::Propagation::Proceed,
+        move |_, key, _, state| {
+            let enter = matches!(key, gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter);
+            if enter && state.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+                choose(&entry.text(), true);
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        }
+    ));
+    entry.add_controller(ctrl_enter);
+    let middle = gtk::GestureClick::builder().button(2).build();
+    middle.connect_pressed(clone!(
+        #[strong]
+        choose,
+        #[weak]
+        entry,
+        #[weak]
+        list,
+        move |_, _, _, y| {
+            if let Some(row) = list.row_at_y(y as i32) {
+                list.select_row(Some(&row));
+                choose(&entry.text(), true);
+            }
+        }
+    ));
+    list.add_controller(middle);
 
     // Up/Down move the selection while typing stays in the search box.
     let keys = gtk::EventControllerKey::new();

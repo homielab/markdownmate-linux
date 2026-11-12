@@ -1,6 +1,7 @@
 //! Tìm / thay thế trong note (Ctrl+F, Ctrl+H): thanh trên editor, dùng `SearchContext` của
 //! GtkSourceView (không phân biệt hoa thường, vòng lại đầu/cuối, tô sáng mọi kết quả).
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -32,13 +33,14 @@ struct Bar {
     replace_row: gtk::Box,
     replace: gtk::Entry,
     label: gtk::Label,
-    context: sourceview5::SearchContext,
+    /// Of the buffer the editor shows (each tab has its own).
+    context: RefCell<sourceview5::SearchContext>,
 }
 
 impl Bar {
     /// Vùng chọn hiện tại (kết quả đang chọn), hoặc con trỏ.
     fn bounds(&self) -> (gtk::TextIter, gtk::TextIter) {
-        let buffer = &self.editor.buffer;
+        let buffer = &self.editor.buffer();
         buffer.selection_bounds().unwrap_or_else(|| {
             let at = buffer.iter_at_mark(&buffer.get_insert());
             (at, at)
@@ -47,25 +49,42 @@ impl Bar {
 
     fn select(&self, found: Option<(gtk::TextIter, gtk::TextIter, bool)>) {
         if let Some((start, end, _)) = found {
-            self.editor.buffer.select_range(&start, &end);
-            self.editor
-                .view
-                .scroll_to_mark(&self.editor.buffer.get_insert(), 0.0, true, 0.0, 0.3);
+            self.editor.buffer().select_range(&start, &end);
+            self.editor.view.scroll_to_mark(
+                &self.editor.buffer().get_insert(),
+                0.0,
+                true,
+                0.0,
+                0.3,
+            );
         }
         self.update_label();
+    }
+
+    fn watch_count(self: &Rc<Self>) {
+        self.context
+            .borrow()
+            .connect_occurrences_count_notify(clone!(
+                #[weak(rename_to = bar)]
+                self,
+                move |_| bar.update_label()
+            ));
     }
 
     fn update_label(&self) {
         if !self.widget.is_visible() {
             return;
         }
-        let count = self.context.occurrences_count();
+        let count = self.context.borrow().occurrences_count();
         let (start, end) = self.bounds();
         let empty = self.find.text().is_empty();
         let text = if empty {
             String::new()
         } else {
-            match_label(self.context.occurrence_position(&start, &end), count)
+            match_label(
+                self.context.borrow().occurrence_position(&start, &end),
+                count,
+            )
         };
         self.label.set_text(&text);
         if !empty && count == 0 {
@@ -78,23 +97,23 @@ impl Bar {
     /// Đặt chuỗi tìm theo ô nhập rồi chọn kết quả gần nhất từ đầu vùng chọn/con trỏ.
     fn search(&self) {
         let text = self.find.text();
-        let settings = self.context.settings();
+        let settings = self.context.borrow().settings();
         settings.set_search_text((!text.is_empty()).then_some(text.as_str()));
         if text.is_empty() {
             self.update_label();
             return;
         }
-        let found = self.context.forward(&self.bounds().0);
+        let found = self.context.borrow().forward(&self.bounds().0);
         self.select(found);
     }
 
     fn next(&self) {
-        let found = self.context.forward(&self.bounds().1);
+        let found = self.context.borrow().forward(&self.bounds().1);
         self.select(found);
     }
 
     fn previous(&self) {
-        let found = self.context.backward(&self.bounds().0);
+        let found = self.context.borrow().backward(&self.bounds().0);
         self.select(found);
     }
 
@@ -106,10 +125,11 @@ impl Bar {
         if editor.mode.get() == state::Mode::Preview {
             editor.set_mode(state::Mode::Edit);
         }
-        if let Some((start, end)) = editor.buffer.selection_bounds()
+        if let Some((start, end)) = editor.buffer().selection_bounds()
             && start.line() == end.line()
         {
-            self.find.set_text(&editor.buffer.text(&start, &end, false));
+            self.find
+                .set_text(&editor.buffer().text(&start, &end, false));
         }
         self.widget.set_visible(true);
         self.replace_row.set_visible(replace);
@@ -129,7 +149,7 @@ impl Bar {
     fn close(&self) {
         self.widget.set_visible(false);
         // Bỏ tô sáng và không đếm kết quả nữa khi thanh đóng.
-        self.context.settings().set_search_text(None);
+        self.context.borrow().settings().set_search_text(None);
         if self.editor.mode.get() != state::Mode::Preview {
             self.editor.view.grab_focus();
         }
@@ -154,20 +174,20 @@ impl Bar {
 
     fn replace_one(&self) {
         let (mut start, mut end) = self.bounds();
-        if self.context.occurrence_position(&start, &end) > 0 {
+        if self.context.borrow().occurrence_position(&start, &end) > 0 {
             let text = self.replace.text();
-            if let Err(e) = self.context.replace(&mut start, &mut end, &text) {
+            if let Err(e) = self.context.borrow().replace(&mut start, &mut end, &text) {
                 self.editor.toast(&format!("Cannot replace: {e}"));
                 return;
             }
-            self.editor.buffer.place_cursor(&end);
+            self.editor.buffer().place_cursor(&end);
         }
         self.next();
     }
 
     fn replace_all(&self) {
         // Một bước undo: GtkSourceView bọc replace_all trong một user action.
-        if let Err(e) = self.context.replace_all(&self.replace.text()) {
+        if let Err(e) = self.context.borrow().replace_all(&self.replace.text()) {
             self.editor.toast(&format!("Cannot replace: {e}"));
         }
         self.update_label();
@@ -209,7 +229,7 @@ pub(crate) fn find_bar(editor: &Rc<Editor>, pane: &gtk::Box, app: &adw::Applicat
         .case_sensitive(false)
         .wrap_around(true)
         .build();
-    let context = sourceview5::SearchContext::new(&editor.buffer, Some(&settings));
+    let context = sourceview5::SearchContext::new(&editor.buffer(), Some(&settings));
     let find = gtk::Entry::builder()
         .placeholder_text("Find")
         .primary_icon_name("system-search-symbolic")
@@ -265,7 +285,7 @@ pub(crate) fn find_bar(editor: &Rc<Editor>, pane: &gtk::Box, app: &adw::Applicat
         replace_row,
         replace,
         label,
-        context,
+        context: RefCell::new(context),
     });
 
     bar.find.connect_changed(clone!(
@@ -273,18 +293,34 @@ pub(crate) fn find_bar(editor: &Rc<Editor>, pane: &gtk::Box, app: &adw::Applicat
         bar,
         move |_| bar.search()
     ));
-    bar.context.connect_occurrences_count_notify(clone!(
+    bar.watch_count();
+    // Another tab's buffer: search it with the same settings.
+    editor.view.connect_buffer_notify(clone!(
         #[weak]
         bar,
-        move |_| bar.update_label()
-    ));
-    editor.buffer.connect_mark_set(clone!(
-        #[weak]
-        bar,
-        move |buffer, _, mark| {
-            if *mark == buffer.get_insert() {
+        move |view| {
+            if let Ok(buffer) = view.buffer().downcast::<sourceview5::Buffer>() {
+                let settings = bar.context.borrow().settings();
+                bar.context
+                    .replace(sourceview5::SearchContext::new(&buffer, Some(&settings)));
+                bar.watch_count();
                 bar.update_label();
             }
+        }
+    ));
+    editor.on_buffer(clone!(
+        #[weak]
+        bar,
+        move |buffer| {
+            buffer.connect_mark_set(clone!(
+                #[weak]
+                bar,
+                move |buffer, _, mark| {
+                    if *mark == buffer.get_insert() {
+                        bar.update_label();
+                    }
+                }
+            ));
         }
     ));
     prev.connect_clicked(clone!(

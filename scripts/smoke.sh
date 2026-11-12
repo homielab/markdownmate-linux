@@ -1353,5 +1353,106 @@ bad=0
 grep -qx "folder=$TMP/marked" "$XDG_CONFIG_HOME/markdownmate/state" || { echo "FAIL url: bookmarked note not opened"; bad=1; }
 if grep -E 'CRITICAL|panicked|size_allocate' "$OUT/url.log"; then echo "FAIL url: warning in url.log"; bad=1; fi
 [ $bad = 0 ] && echo "ok   url -> screenshots/url.png" || fail=1
+# Tabs: Ctrl+T, a file passed to the app becomes a tab of the window on its folder, each tab
+# keeps its undo history, a tab whose note changed on disk reloads when shown, Ctrl+W, and the
+# session restores the tabs.
+bus() {
+    local pid
+    pid=$(pgrep -f -- "^$BIN" | head -1)
+    tr '\0' '\n' < "/proc/$pid/environ" | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p'
+}
+STATE="$XDG_CONFIG_HOME/markdownmate/state"
+tabs_are() { [ "$(grep -c '^tab=' "$STATE" 2>/dev/null)" = "$1" ]; }
+act_tabs() {
+    timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
+    xdotool mousemove 400 150 click 1 key ctrl+End type 'AAA'
+    wait_for 10 file_tail_is "$NOTES/Welcome.md" 1 'AAA' || { echo "FAIL tabs: typing not saved"; bad=1; }
+    xdotool key ctrl+t
+    wait_for 5 tabs_are 2 || { echo "FAIL tabs: Ctrl+T made no tab"; bad=1; }
+    scrot -o "$OUT/tabs-new.png"
+    DBUS_SESSION_BUS_ADDRESS=$(bus) "$BIN" "$NOTES/Target.md" "$NOTES/Projects/Plan.md" > /dev/null 2>&1 || true
+    wait_for 5 tabs_are 3 || { echo "FAIL tabs: files passed to the app are not tabs"; grep -E '^(window|tab|selected)=' "$STATE"; bad=1; }
+    [ "$(grep -c '^window=' "$STATE")" = 1 ] || { echo "FAIL tabs: a second window opened"; bad=1; }
+    sleep 1
+    scrot -o "$OUT/tabs-three.png"
+    # The tab bar with the mouse: a click selects, a right click opens the tab's menu.
+    xdotool mousemove 155 75 click 1
+    wait_for 5 grep -qx 'selected=0' "$STATE" || { echo "FAIL tabs: a click on a tab did not select it"; bad=1; }
+    xdotool mousemove 450 75 click 3
+    sleep 1
+    scrot -o "$OUT/tabs-menu.png"
+    xdotool key Escape
+    xdotool mousemove 743 75 click 1
+    wait_for 5 grep -qx 'selected=2' "$STATE" || { echo "FAIL tabs: third tab not selected"; bad=1; }
+    # Plan.md is shown: type in it, go back two tabs to Welcome and undo there.
+    xdotool mousemove 400 200 click 1 key ctrl+End type 'PPP'
+    xdotool key ctrl+Page_Up ctrl+Page_Up
+    wait_for 10 file_has "$NOTES/Projects/Plan.md" 'PPP' || { echo "FAIL tabs: leaving a tab did not save it"; bad=1; }
+    sleep 1
+    xdotool key ctrl+z ctrl+z ctrl+z
+    wait_for 10 file_lacks "$NOTES/Welcome.md" 'AAA' || { echo "FAIL tabs: undo lost on a tab switch"; bad=1; }
+    file_has "$NOTES/Welcome.md" 'Paragraph 60' || { echo "FAIL tabs: undo went past the note's own edits"; bad=1; }
+    # Plan.md changes on disk while its tab is not shown: reloaded when shown.
+    printf 'from disk\n' > "$NOTES/Projects/Plan.md"
+    xdotool key ctrl+Page_Down ctrl+Page_Down
+    sleep 1
+    xdotool key ctrl+End type 'X'
+    wait_for 10 file_is "$NOTES/Projects/Plan.md" "$(printf 'from disk\nX')" || { echo "FAIL tabs: reload of a tab: $(cat "$NOTES/Projects/Plan.md")"; bad=1; }
+    scrot -o "$OUT/tabs-reload.png"
+    xdotool mousemove 873 75 click 1
+    wait_for 5 tabs_are 2 || { echo "FAIL tabs: the tab's close button closed no tab"; bad=1; }
+    grep -qx 'selected=1' "$STATE" || { echo "FAIL tabs: selected tab not kept"; grep -E '^(tab|selected)=' "$STATE"; bad=1; }
+    sleep 1
+    scrot -o "$OUT/tabs.png"
+}
+run tabs mode=edit
+# Restart: both tabs are back, Target.md selected; the other one loads when shown.
+act_tabs_restore() {
+    timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
+    tabs_are 2 || { echo "FAIL tabs_restore: tabs not restored"; bad=1; }
+    xdotool mousemove 400 200 click 1 key ctrl+End type 'RRR'
+    wait_for 10 file_has "$NOTES/Target.md" 'RRR' || { echo "FAIL tabs_restore: selected tab is not Target.md"; bad=1; }
+    xdotool key ctrl+Page_Up
+    sleep 1
+    xdotool key ctrl+End type 'QQQ'
+    wait_for 10 file_has "$NOTES/Welcome.md" 'QQQ' || { echo "FAIL tabs_restore: first tab did not load"; bad=1; }
+    # Move to New Window keeps the folder; Close Other Tabs leaves one tab.
+    xdotool key ctrl+t ctrl+t
+    wait_for 5 tabs_are 4 || { echo "FAIL tabs_restore: new tabs"; bad=1; }
+    xdotool key ctrl+w
+    wait_for 5 tabs_are 3 || { echo "FAIL tabs_restore: Ctrl+W closed no tab"; bad=1; }
+    xdotool key ctrl+Page_Up ctrl+Page_Up ctrl+Page_Up
+    sleep 1
+    action close-other-tabs
+    wait_for 5 tabs_are 1 || { echo "FAIL tabs_restore: Close Other Tabs"; grep -E "^(window|tab|selected)=" "$STATE"; bad=1; }
+    DBUS_SESSION_BUS_ADDRESS=$(bus) "$BIN" "$NOTES/Projects/Ideas/Idea.md" > /dev/null 2>&1 || true
+    wait_for 5 tabs_are 2 || { echo "FAIL tabs_restore: file not opened as a tab"; bad=1; }
+    action move-tab-to-window
+    wait_for 5 eval '[ "$(grep -c "^window=$NOTES	" "$STATE")" = 2 ]' || { echo "FAIL tabs_restore: Move to New Window lost the folder"; grep -E '^(window|tab)=' "$STATE"; bad=1; }
+    sleep 1
+    scrot -o "$OUT/tabs_restore.png"
+}
+KEEP_STATE=1 run tabs_restore mode=edit
+# Not running, three files of one folder: one window with three tabs (Open files in: Tabs);
+# with Windows, three windows.
+cold() {
+    local name=$1 want_windows=$2 bad=0
+    dbus-run-session -- "$BIN" "$NOTES/Target.md" "$NOTES/Todo.md" "$NOTES/Tasks.md" > "$OUT/$name.log" 2>&1 &
+    local pid=$!
+    wait_for 15 tabs_are 3 || { echo "FAIL $name: not three tabs"; bad=1; }
+    sleep 2
+    scrot -o "$OUT/$name.png"
+    [ "$(grep -c '^window=' "$STATE")" = "$want_windows" ] || { echo "FAIL $name: windows"; grep -E '^(window|tab)=' "$STATE"; bad=1; }
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    pkill -f -- "$BIN" 2>/dev/null || true
+    for _ in $(seq 50); do pgrep -f -- "$BIN" >/dev/null || break; sleep 0.1; done
+    if grep -E 'CRITICAL|panicked|size_allocate' "$OUT/$name.log"; then echo "FAIL $name: warning in the log"; bad=1; fi
+    [ $bad = 0 ] && echo "ok   $name -> screenshots/$name.png" || fail=1
+}
+printf 'mode=edit\n' > "$STATE"
+cold tabs_cold 1
+printf 'mode=edit\nopen_files_in=windows\n' > "$STATE"
+cold tabs_cold_windows 3
 if ls "$NOTES"/*conflict* "$NOTES"/*/*conflict* 2>/dev/null; then echo "FAIL: conflict copy written"; fail=1; fi
 exit $fail

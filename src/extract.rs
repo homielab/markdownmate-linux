@@ -154,10 +154,10 @@ pub(crate) fn ask(editor: &Rc<Editor>) {
     let Some(note) = editor.path.borrow().clone() else {
         return;
     };
-    let Some((start, end)) = editor.buffer.selection_bounds() else {
+    let Some((start, end)) = editor.buffer().selection_bounds() else {
         return;
     };
-    let text = editor.buffer.text(&start, &end, true).to_string();
+    let text = editor.buffer().text(&start, &end, true).to_string();
     if note_text(&text).is_none() {
         return editor.toast("The selection has no text to move");
     }

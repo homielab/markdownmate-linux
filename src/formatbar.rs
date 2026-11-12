@@ -158,13 +158,13 @@ pub(crate) fn add_actions(window: &adw::ApplicationWindow, editor: &Rc<Editor>) 
                 }
                 editor.view.grab_focus();
                 let done = match run {
-                    Run::Inline(f) => format_selection(editor.buffer.upcast_ref(), f),
+                    Run::Inline(f) => format_selection(editor.buffer().upcast_ref(), f),
                     Run::Line(command) => line_command(editor.view.upcast_ref(), command),
                 };
                 if done {
                     editor
                         .view
-                        .scroll_mark_onscreen(&editor.buffer.get_insert());
+                        .scroll_mark_onscreen(&editor.buffer().get_insert());
                 } else {
                     editor.view.error_bell();
                 }
