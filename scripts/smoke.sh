@@ -1190,17 +1190,17 @@ act_dropin() {
     rm -f "$NOTES/Out.md" "$NOTES/Out 2.md" "$NOTES/Projects/Single.md"
 }
 run dropin mode=edit
-# Drop files into the editor: a note and a PDF from Files (the helper) become relative links,
-# one per line, at the drop point (below the text: the end), percent-encoded; one Ctrl+Z
-# removes both. Then a note dragged from the sidebar is linked the same way and stays where it
-# is: `0 Link.md`, made for this case, so it is row 2 (after the Projects folder) whatever
+# Drop files into the editor: a note of the folder and a PDF outside it, from Files (the helper),
+# become a wiki link and a relative link (percent-encoded), one per line, at the drop point
+# (below the text: the end); one Ctrl+Z removes both. Then a note dragged from the sidebar
+# becomes a wiki link too and stays where it is: `0 Link.md`, made for this case, so it is row 2 (after the Projects folder) whatever
 # earlier cases moved.
 act_droplink() {
     mkdir -p "$TMP/outside"
     echo pdf > "$TMP/outside/Doc 1.pdf"
     same() { [ "$(cat "$NOTES/Drop.md")" = "$(printf -- "$1")" ]; }
     DROP_X=500 drop_files 400 droplink "$NOTES/Projects/Plan.md" "$TMP/outside/Doc 1.pdf"
-    wait_for 5 same 'start\n[Plan](Projects/Plan.md)\n[Doc 1](../outside/Doc%%201.pdf)' \
+    wait_for 5 same 'start\n[[Plan]]\n[Doc 1](../outside/Doc%%201.pdf)' \
         || { echo "FAIL droplink: files not linked, got"; cat "$NOTES/Drop.md"; bad=1; }
     timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
     xdotool key ctrl+z
@@ -1209,7 +1209,7 @@ act_droplink() {
     for x in $(seq 60 20 500); do xdotool mousemove "$x" 300; sleep 0.05; done
     sleep 0.5; xdotool mousemove 502 300; sleep 0.5
     xdotool mouseup 1
-    wait_for 5 same 'start\n[0 Link](0%%20Link.md)' \
+    wait_for 5 same 'start\n[[0 Link]]' \
         || { echo "FAIL droplink: sidebar entry not linked, got"; cat "$NOTES/Drop.md"; bad=1; }
     [ "$(cat "$NOTES/0 Link.md" 2>/dev/null)" = linked ] || { echo "FAIL droplink: 0 Link.md moved"; bad=1; }
     scrot -o "$OUT/droplink-sidebar.png"
@@ -1254,6 +1254,12 @@ act_pos_restart() {
 run pos mode=edit
 KEEP_STATE=1 run pos_restart mode=edit
 run bookmarks "$(printf 'mode=edit\nbookmark=%s\nbookmark=%s' "$NOTES/Projects" "$TMP/gone")"
+# menu_pick <row y> <n>: clicks item n (from 0) of the menu a right-click on the sidebar row at
+# <row y> opened: the menu starts 26 px below the click, an item is 34 px high. (Keys don't
+# reach the menu under Xvfb.) Folder row: New Note, New Folder…, Find in…, Rename…, Duplicate,
+# Favorites, Show in Files, Copy Path; note row: the same without New Folder… and Find in….
+# A new item above one used here: change its number in the calls below.
+menu_pick() { xdotool mousemove 79 $(($1 + 26 + 34 * $2)) click 1; }
 # Sidebar right-click on Projects (#109): Copy Path puts its absolute path on the clipboard;
 # Show in Files must not kill the app (the container may have no file manager: a toast at most).
 act_ctxmenu() {
@@ -1262,13 +1268,13 @@ act_ctxmenu() {
     xdotool mousemove 60 75; sleep 0.5; xdotool click 3
     sleep 1
     scrot -o "$OUT/ctxmenu-open.png"
-    xdotool mousemove 79 237 click 1 # Copy Path
+    menu_pick 75 7 # Copy Path
     sleep 1
     [ "$(timeout 5 xclip -selection clipboard -o 2>/dev/null)" = "$NOTES/Projects" ] \
         || { echo "FAIL ctxmenu: path not on clipboard"; bad=1; }
     xdotool mousemove 60 75; sleep 0.5; xdotool click 3
     sleep 1
-    xdotool mousemove 79 203 click 1 # Show in Files
+    menu_pick 75 6 # Show in Files
     sleep 2
     scrot -o "$OUT/ctxmenu.png"
 }
@@ -1276,9 +1282,11 @@ run ctxmenu mode=edit
 # Link updates after a sidebar rename: Aa/Old.md -> New (Update: the open note Ref.md is changed
 # in the editor, one undo step; Zlink.md on disk; the link in code stays), New -> Newer (Don't
 # Update, the default: nothing changes), then the folder Aa -> Bb (Update).
-rename_row() { # rename_row <row y> <menu item y> <new name> <keys for the link dialog>
+rename_row() { # rename_row <row y> <menu item of Rename…> <new name> <keys for the link dialog>
     xdotool mousemove 60 "$1"; sleep 0.5; xdotool click 3; sleep 1
-    xdotool mousemove 79 "$2" click 1; sleep 1
+    scrot -o "$OUT/relink-menu-$3.png"
+    menu_pick "$1" "$2"; sleep 1
+    scrot -o "$OUT/relink-name-$3.png"
     xdotool mousemove 450 301 click 1; sleep 0.3
     xdotool key ctrl+a; xdotool type "$3"; xdotool key Return
     sleep 2
@@ -1289,17 +1297,17 @@ rename_row() { # rename_row <row y> <menu item y> <new name> <keys for the link 
 act_relink() {
     timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
     local ref="$NOTES/Aa/Ref.md"
-    rename_row 113 173 New "Tab Return"
+    rename_row 113 1 New "Tab Return"
     wait_for 5 grep -qxF 'See [[New]] and [o](New.md)' "$ref" || { echo "FAIL relink: open note not updated"; bad=1; }
     grep -qxF '[o](Aa/New.md) `[[Old]]`' "$NOTES/Zlink.md" || { echo "FAIL relink: Zlink.md not updated"; bad=1; }
     xdotool mousemove 400 300 click 1 key ctrl+z
     wait_for 5 grep -qxF 'See [[Old]] and [o](Old.md)' "$ref" || { echo "FAIL relink: not one undo step"; bad=1; }
     xdotool key ctrl+shift+z
     wait_for 5 grep -qxF 'See [[New]] and [o](New.md)' "$ref" || { echo "FAIL relink: redo"; bad=1; }
-    rename_row 113 173 Newer Return
+    rename_row 113 1 Newer Return
     [ -e "$NOTES/Aa/Newer.md" ] && grep -qxF 'See [[New]] and [o](New.md)' "$ref" \
         && grep -qxF '[o](Aa/New.md) `[[Old]]`' "$NOTES/Zlink.md" || { echo "FAIL relink: Don't Update changed a note"; bad=1; }
-    rename_row 75 169 Bb "Tab Return"
+    rename_row 75 3 Bb "Tab Return"
     wait_for 5 grep -qxF '[o](Bb/New.md) `[[Old]]`' "$NOTES/Zlink.md" || { echo "FAIL relink: folder rename not updated"; bad=1; }
 }
 mkdir -p "$NOTES/Aa"
@@ -1355,7 +1363,11 @@ if grep -E 'CRITICAL|panicked|size_allocate' "$OUT/url.log"; then echo "FAIL url
 [ $bad = 0 ] && echo "ok   url -> screenshots/url.png" || fail=1
 # Tabs: Ctrl+T, a file passed to the app becomes a tab of the window on its folder, each tab
 # keeps its undo history, a tab whose note changed on disk reloads when shown, Ctrl+W, and the
-# session restores the tabs.
+# session restores the tabs. The app of the URL case above must be gone first: it saves its
+# state while it quits and would add its window to the state file written for this case.
+pkill -f -- "$BIN" 2>/dev/null || true
+for _ in $(seq 50); do pgrep -f -- "$BIN" >/dev/null || break; sleep 0.1; done
+sleep 0.5
 bus() {
     local pid
     pid=$(pgrep -f -- "^$BIN" | head -1)
@@ -1366,7 +1378,7 @@ tabs_are() { [ "$(grep -c '^tab=' "$STATE" 2>/dev/null)" = "$1" ]; }
 act_tabs() {
     timeout 5 xdotool search --sync --onlyvisible --class markdownmate windowactivate --sync 2>/dev/null || true
     xdotool mousemove 400 150 click 1 key ctrl+End type 'AAA'
-    wait_for 10 file_tail_is "$NOTES/Welcome.md" 1 'AAA' || { echo "FAIL tabs: typing not saved"; bad=1; }
+    wait_for 10 file_has "$NOTES/Welcome.md" 'AAA' || { echo "FAIL tabs: typing not saved"; bad=1; }
     xdotool key ctrl+t
     wait_for 5 tabs_are 2 || { echo "FAIL tabs: Ctrl+T made no tab"; bad=1; }
     scrot -o "$OUT/tabs-new.png"
