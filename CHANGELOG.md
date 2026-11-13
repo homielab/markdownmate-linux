@@ -7,6 +7,8 @@ lines into the App Center notes (`packaging/com.homielab.MarkdownMate.metainfo.x
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-13
+
 - Open notes as tabs of one window, or in separate windows (Preferences ▸ General ▸ Open files in).
 
 ## [0.12.0] - 2026-11-11

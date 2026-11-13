@@ -5,6 +5,13 @@
 # ignored, so the next release's entry can be written ahead.
 
 [[release]]
+version = "0.13.0"
+show = true
+notes = [
+    "Open notes as tabs of one window, or in separate windows (Preferences ▸ General ▸ Open files in).",
+]
+
+[[release]]
 version = "0.12.0"
 show = true
 notes = [

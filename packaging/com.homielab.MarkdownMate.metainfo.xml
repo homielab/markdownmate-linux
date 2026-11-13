@@ -106,6 +106,13 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.13.0" date="2026-11-13">
+      <description>
+        <ul>
+          <li>Open notes as tabs of one window, or in separate windows (Preferences ▸ General ▸ Open files in).</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.12.0" date="2026-11-11">
       <description>
         <ul>
