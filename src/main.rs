@@ -54,6 +54,7 @@ mod retag;
 mod rtf;
 mod save;
 mod search;
+mod sectionmove;
 mod sidebar;
 mod site;
 mod smart;

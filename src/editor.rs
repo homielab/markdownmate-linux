@@ -20,8 +20,8 @@ use crate::{
 };
 use crate::{
     aliases, backlinks, blocks, complete, extract, favorites, find, images, links, lists, mentions,
-    multisel, naming, notes, outline, quick, reheading, relink, render, retag, save, sidebar,
-    state, stats, tags, templates, timing, title, url,
+    multisel, naming, notes, outline, quick, reheading, relink, render, retag, save, sectionmove,
+    sidebar, state, stats, tags, templates, timing, title, url,
 };
 
 /// Find in Folder's scope setter (`Editor::find_set_scope`).
@@ -578,8 +578,8 @@ impl Editor {
         self.select_outline_at_cursor();
     }
 
-    /// Right-click / long-press on an outline heading: a menu with Copy Link to Heading and
-    /// Rename Heading….
+    /// Right-click / long-press on an outline heading: a menu with Copy Link to Heading,
+    /// Rename Heading… and Move Section Up / Down (insensitive without a sibling to swap with).
     pub(crate) fn outline_menu(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
         let show = Rc::new(move |x: f64, y: f64| -> bool {
@@ -602,14 +602,28 @@ impl Editor {
                 .label("Rename Heading…")
                 .has_frame(false)
                 .build();
-            for button in [&copy, &rename] {
+            let headings = outline::headings(&editor.text());
+            let index = headings.iter().position(|h| h.line == line);
+            let can_move = |direction| {
+                index.is_some_and(|i| sectionmove::sibling(&headings, i, direction).is_some())
+            };
+            let up = gtk::Button::builder()
+                .label("Move Section Up")
+                .has_frame(false)
+                .sensitive(can_move(sectionmove::Direction::Up))
+                .build();
+            let down = gtk::Button::builder()
+                .label("Move Section Down")
+                .has_frame(false)
+                .sensitive(can_move(sectionmove::Direction::Down))
+                .build();
+            let items = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            for button in [&copy, &rename, &up, &down] {
                 if let Some(label) = button.child().and_downcast::<gtk::Label>() {
                     label.set_xalign(0.0);
                 }
+                items.append(button);
             }
-            let items = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            items.append(&copy);
-            items.append(&rename);
             let popover = gtk::Popover::builder()
                 .child(&items)
                 .has_arrow(false)
@@ -635,6 +649,18 @@ impl Editor {
                     editor.rename_heading(line);
                 }
             });
+            for (button, direction) in [
+                (&up, sectionmove::Direction::Up),
+                (&down, sectionmove::Direction::Down),
+            ] {
+                let (p, weak) = (popover.clone(), Rc::downgrade(&editor));
+                button.connect_clicked(move |_| {
+                    p.popdown();
+                    if let Some(editor) = weak.upgrade() {
+                        editor.move_section(line, direction);
+                    }
+                });
+            }
             popover.popup();
             true
         });
@@ -3051,6 +3077,20 @@ impl Editor {
             });
             editor.load_tags();
         });
+    }
+
+    /// Outline ▸ Move Section Up / Down: one undo step, the cursor on the moved heading,
+    /// scrolled to it; the outline row follows the cursor.
+    pub(crate) fn move_section(&self, line: usize, direction: sectionmove::Direction) {
+        let text = self.text();
+        let Some((edit, at)) = sectionmove::move_section(&text, line, direction) else {
+            return;
+        };
+        self.edit_buffer(&text, &[edit]);
+        self.buffer().place_cursor(&self.line_iter(at, None));
+        self.view
+            .scroll_to_mark(&self.buffer().get_insert(), 0.0, true, 0.0, 0.3);
+        self.select_outline_at_cursor();
     }
 
     /// Outline ▸ Rename Heading…: asks for the new text of the heading on 1-based `line` of
