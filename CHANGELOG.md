@@ -7,6 +7,8 @@ lines into the App Center notes (`packaging/com.homielab.MarkdownMate.metainfo.x
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-17
+
 - Move a whole section up or down: right-click its heading in the outline ▸ Move Section Up / Down.
 
 ## [0.13.0] - 2026-11-13
