@@ -1,18 +1,15 @@
 name: CI
 
-# Format, lint and unit tests on every branch push (a pull request runs it once,
-# through its branch), skipping docs-only changes, on the
+# Format, lint and unit tests on release tags (v*) or by hand, on the
 # same Ubuntu 24.04 base as the Dockerfile. Run the same checks locally with
 #   ./dev.sh cargo fmt --check
 #   ./dev.sh cargo clippy --all-targets -- -D warnings
 #   ./dev.sh cargo test
+# Release tags only (Boss 2026-11-21: no CI on push to main).
 on:
   push:
-    branches: ["**"]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "screenshots/**"
+    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
