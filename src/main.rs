@@ -20,6 +20,7 @@ mod extract;
 mod favorites;
 mod find;
 mod focus;
+mod folderview;
 mod format;
 mod formatbar;
 mod frontmatter;

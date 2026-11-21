@@ -7,6 +7,8 @@ lines into the App Center notes (`packaging/com.homielab.MarkdownMate.metainfo.x
 
 ## [Unreleased]
 
+- Click a folder in the sidebar to see what's inside: subfolders first, then notes with their dates. Click to dive in, Alt+Left to come back.
+
 ## [0.14.0] - 2026-11-17
 
 - Move a whole section up or down: right-click its heading in the outline ▸ Move Section Up / Down.

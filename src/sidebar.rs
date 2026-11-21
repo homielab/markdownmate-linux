@@ -4,7 +4,8 @@
 //! “Folder”…, Rename…, Duplicate, Add to / Remove from Favorites, Move to Trash, Move to
 //! Folder…, Sort By. Drag an entry onto a folder (or empty space = the open folder) to move it.
 //! Ctrl / Shift-click and Shift+↑↓ select several entries (`gtk::MultiSelection`); a plain click
-//! opens a note or opens/closes a folder. With several selected, the right-click menu, Delete
+//! opens a note, or opens a folder and shows its contents (`folderview`; a second click on the
+//! folder shown closes it). With several selected, the right-click menu, Delete
 //! and a drag act on all of them (`multisel`).
 //! Entries are in the scan's order (`notes::SortOrder`); under a date order a note whose date
 //! changed moves in place (`resort_note`). Above it, the Favorites panel (`favorites_panel`);
@@ -75,6 +76,39 @@ fn store(nodes: &[notes::Node], dir: &Path) -> gio::ListStore {
     let store = gio::ListStore::new::<glib::BoxedAnyObject>();
     store.extend_from_slice(&items);
     store
+}
+
+/// The entries directly in folder `dir` (`root` or a folder under it), as the sidebar lists
+/// them (folders first by name, then notes in the sidebar's order): name, path, is a folder.
+/// None when the sidebar does not list `dir`. Only `dir`'s own entries are visited.
+pub fn children(
+    store: &gio::ListStore,
+    root: &Path,
+    dir: &Path,
+) -> Option<Vec<(String, PathBuf, bool)>> {
+    let mut store = store.clone();
+    for part in dir.strip_prefix(root).ok()?.components() {
+        let name = part.as_os_str().to_string_lossy();
+        let next = (0..store.n_items()).find_map(|i| {
+            let obj = store.item(i)?;
+            let it = item(&obj);
+            if it.name == name {
+                it.children.clone()
+            } else {
+                None
+            }
+        })?;
+        store = next;
+    }
+    Some(
+        (0..store.n_items())
+            .filter_map(|i| store.item(i))
+            .map(|obj| {
+                let it = item(&obj);
+                (it.name.clone(), it.path.clone(), it.children.is_some())
+            })
+            .collect(),
+    )
 }
 
 /// Moves note `path` (under `root`, whose entries are `store`) to its place in `order` after
@@ -327,10 +361,19 @@ pub fn sidebar(editor: &Rc<Editor>, tree: &[notes::Node], root: &Path) -> gtk::S
         .build()
 }
 
-/// A plain click or Enter on `row`: a folder opens/closes, a note opens in the editor.
+/// A plain click or Enter on `row`: a folder opens and its contents are shown in place of the
+/// note (the folder already shown opens/closes instead), a note opens in the editor.
 fn activate(editor: &Weak<Editor>, row: &gtk::TreeListRow) {
-    if folder_path(row).is_some() {
-        row.set_expanded(!row.is_expanded());
+    if let Some(path) = folder_path(row) {
+        let Some(editor) = editor.upgrade() else {
+            return;
+        };
+        if editor.shown_folder().as_deref() == Some(path.as_path()) {
+            row.set_expanded(!row.is_expanded());
+        } else {
+            row.set_expanded(true);
+            editor.show_folder_contents(&path);
+        }
     } else if let (Some(editor), Some(obj)) = (editor.upgrade(), row.item()) {
         let path = item(&obj).path.clone();
         editor.open(&path);
@@ -1234,7 +1277,7 @@ pub fn fill_favorites(list: &gtk::ListBox, panel: &gtk::Box, entries: &[(PathBuf
     panel.set_visible(!entries.is_empty());
 }
 
-/// Favorites rows: a click (or Enter) opens the note, shows the folder in the tree, or removes
+/// Favorites rows: a click (or Enter) opens the note, shows the folder (tree and contents), or removes
 /// a favourite that is gone (`Editor::open_favorite`); right-click ▸ Remove from Favorites.
 /// Row i is `Editor::favorites[i]`.
 pub fn connect_favorites(list: &gtk::ListBox, editor: &Weak<Editor>) {
@@ -1486,6 +1529,41 @@ mod tests {
         folders(&store(&tree, Path::new("/r")), 1, &mut out);
         let p = PathBuf::from;
         assert_eq!(out, [(p("/r/b"), 1), (p("/r/b/c"), 2), (p("/r/a"), 1)]);
+    }
+
+    #[test]
+    fn children_lists_one_folder_as_the_sidebar_does() {
+        let note = |name: &str, dir: &str| notes::Node::Note {
+            name: name.into(),
+            path: PathBuf::from(format!("{dir}/{name}")),
+            date: None,
+        };
+        let tree = [
+            notes::Node::Dir {
+                name: "b".into(),
+                children: vec![
+                    notes::Node::Dir {
+                        name: "c".into(),
+                        children: vec![note("n.md", "/r/b/c")],
+                    },
+                    note("m.md", "/r/b"),
+                ],
+            },
+            note("top.md", "/r"),
+        ];
+        let entries = store(&tree, Path::new("/r"));
+        let p = PathBuf::from;
+        let root = Path::new("/r");
+        assert_eq!(
+            children(&entries, root, Path::new("/r/b")),
+            Some(vec![
+                ("c".into(), p("/r/b/c"), true),
+                ("m.md".into(), p("/r/b/m.md"), false)
+            ])
+        );
+        assert_eq!(children(&entries, root, root).map(|c| c.len()), Some(2));
+        assert_eq!(children(&entries, root, Path::new("/r/x")), None);
+        assert_eq!(children(&entries, root, Path::new("/elsewhere")), None);
     }
 
     #[test]

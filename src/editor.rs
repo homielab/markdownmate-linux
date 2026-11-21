@@ -163,6 +163,8 @@ pub(crate) struct Editor {
     pub(crate) history: RefCell<history::History>,
     /// The history entry a Back / Forward is opening (`open` moves there instead of adding one).
     pub(crate) history_target: Cell<Option<usize>>,
+    /// The folder whose contents are shown in place of the note (`folderview`).
+    pub(crate) folder_shown: RefCell<Option<crate::folderview::Shown>>,
     /// An entry the next sidebar build scrolls to and focuses (`reveal_in_sidebar`).
     pub(crate) sidebar_reveal: RefCell<Option<PathBuf>>,
     /// Entries the next sidebar build selects instead of the current selection (after a move:
@@ -1132,6 +1134,17 @@ impl Editor {
     /// saved or `path` cannot be read (e.g. not UTF-8).
     pub(crate) fn open(self: &Rc<Self>, path: &Path) {
         if self.path.borrow().as_deref() == Some(path) {
+            // Under a folder's contents: the note comes back as it was.
+            if self.shown_folder().is_some() {
+                self.hide_folder_contents();
+                self.split.set_content(Some(&self.note_box));
+                self.window
+                    .set_title(Some(&title::window_title(Some(&file_name(path)))));
+                self.view.grab_focus();
+                if !self.tab_busy.get() {
+                    self.record_shown(path);
+                }
+            }
             return;
         }
         // Already in another tab: show that one.
@@ -1160,6 +1173,7 @@ impl Editor {
         // set_text fired "changed"; nothing to save yet.
         self.cancel_timer();
         self.restore_position(path);
+        self.hide_folder_contents();
         // Only after "No note open": setting it again while shown is a GTK CRITICAL.
         if self.note_box.parent().is_none() {
             self.split.set_content(Some(&self.note_box));
@@ -1189,6 +1203,7 @@ impl Editor {
         self.show_path(path);
         self.fit_spelling(saved.len());
         self.saved.replace(saved);
+        self.hide_folder_contents();
         if self.note_box.parent().is_none() {
             self.split.set_content(Some(&self.note_box));
         }
@@ -1205,9 +1220,9 @@ impl Editor {
         self.check_disk();
     }
 
-    /// Adds the note `open` just showed to the history; a Back / Forward moves to its entry
-    /// instead.
-    fn record_shown(&self, path: &Path) {
+    /// Adds the note `open` (or the folder `show_folder_contents`) just showed to the history;
+    /// a Back / Forward moves to its entry instead.
+    pub(crate) fn record_shown(&self, path: &Path) {
         let mut history = self.history.borrow_mut();
         match self.history_target.take() {
             Some(i) if history.entries().get(i).map(PathBuf::as_path) == Some(path) => {
@@ -1219,16 +1234,31 @@ impl Editor {
         self.update_history_actions();
     }
 
+    /// Whether history entry `p` can be gone to: a note that exists, or a folder in the open one
+    /// (its contents are shown).
+    fn can_go_to(&self) -> impl Fn(&Path) -> bool + use<> {
+        let root = self.root.borrow().clone();
+        move |p: &Path| {
+            p.is_file() || (p.is_dir() && root.as_deref().is_some_and(|r| p.starts_with(r)))
+        }
+    }
+
     /// Back (Alt+Left) / Forward (Alt+Right): opens the nearest note in the window's history
-    /// that still exists, with its folder if it is outside the open one. Nothing to go to: bell.
+    /// that still exists, with its folder if it is outside the open one, or shows a folder's
+    /// contents. Nothing to go to: bell.
     pub(crate) fn go(self: &Rc<Self>, direction: Direction) {
-        let target = self.history.borrow().target(direction, Path::is_file);
+        let target = self.history.borrow().target(direction, self.can_go_to());
         let Some(i) = target else {
             self.window.error_bell();
             return self.update_history_actions();
         };
         let path = self.history.borrow().entries()[i].clone();
         self.history_target.set(Some(i));
+        if path.is_dir() {
+            self.show_folder_contents(&path);
+            self.history_target.set(None);
+            return self.update_history_actions();
+        }
         self.open(&path);
         self.history_target.set(None);
         let outside = !self
@@ -1289,6 +1319,7 @@ impl Editor {
             }
         }
         let history = self.history.borrow();
+        let can_go_to = self.can_go_to();
         for (name, direction) in [
             ("go-back", Direction::Back),
             ("go-forward", Direction::Forward),
@@ -1296,7 +1327,7 @@ impl Editor {
             if let Some(a) = self.window.lookup_action(name)
                 && let Ok(a) = a.downcast::<gio::SimpleAction>()
             {
-                a.set_enabled(history.target(direction, Path::is_file).is_some());
+                a.set_enabled(history.target(direction, &can_go_to).is_some());
             }
         }
     }
@@ -1952,6 +1983,7 @@ impl Editor {
     ) {
         let changed = self.root.borrow().as_deref() != Some(dir);
         if changed {
+            self.hide_folder_contents();
             // Giữ những thư mục bên trong `dir` (khôi phục phiên đặt sẵn trước khi quét xong).
             self.expanded.borrow_mut().retain(|d| d.starts_with(dir));
         }
@@ -2015,6 +2047,8 @@ impl Editor {
             });
         }
         self.split.set_sidebar(Some(&side));
+        // The folder shown follows the new listing.
+        self.refresh_folder_contents();
         self.load_tags();
         self.load_aliases();
         // Show it at once, not animated: libadwaita 1.5 starts the slide-in with velocity
@@ -2751,6 +2785,11 @@ impl Editor {
                 }
                 self.history.borrow_mut().retarget(|p| moved(p, from, &to));
                 self.retarget_tabs(|p| moved(p, from, &to));
+                if let Some(shown) = self.folder_shown.borrow_mut().as_mut()
+                    && let Some(new) = moved(&shown.dir, from, &to)
+                {
+                    shown.dir = new;
+                }
                 self.update_history_actions();
                 let mut expanded = self.expanded.borrow_mut();
                 *expanded = expanded
@@ -3310,8 +3349,11 @@ impl Editor {
         self.buffer().set_text("");
         self.buffer().end_irreversible_action();
         self.cancel_timer();
-        self.window.set_title(Some(&title::window_title(None)));
-        self.split.set_content(Some(&no_note_page()));
+        // A folder's contents shown stay (the note was trashed from the sidebar).
+        if self.shown_folder().is_none() {
+            self.window.set_title(Some(&title::window_title(None)));
+            self.split.set_content(Some(&no_note_page()));
+        }
         self.sync_tab();
         self.remember();
     }
@@ -3368,8 +3410,8 @@ impl Editor {
             .collect()
     }
 
-    /// A click on Favorites row `index`: opens the note, shows the folder in the tree, or
-    /// removes a favourite that is gone (with a toast).
+    /// A click on Favorites row `index`: opens the note, shows the folder in the tree and its
+    /// contents, or removes a favourite that is gone (with a toast).
     pub(crate) fn open_favorite(self: &Rc<Self>, index: usize) {
         let (Some(root), Some(rel)) = (
             self.root.borrow().clone(),
@@ -3384,6 +3426,7 @@ impl Editor {
             self.toast(&format!("“{name}” is gone and was removed from Favorites"));
         } else if path.is_dir() {
             self.show_in_sidebar(&path);
+            self.show_folder_contents(&path);
         } else {
             self.open(&path);
         }
@@ -3475,6 +3518,9 @@ impl Editor {
             return;
         };
         sidebar::resort_note(&store, &root, path, order);
+        if self.shown_folder().as_deref() == path.parent() {
+            self.refill_folder_contents();
+        }
     }
 
     /// Rescans the open folder after RESCAN_DELAY of quiet (debounce).

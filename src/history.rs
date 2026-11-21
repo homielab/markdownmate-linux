@@ -1,6 +1,7 @@
 //! Back / Forward (Alt+Left / Alt+Right): the notes one window showed, in order, like a
 //! browser's history. `Editor::open` records every note it shows (sidebar, links, Open
-//! Quickly, backlinks, Today's Note…) with `visit`, and Back / Forward with `move_to`. Pure.
+//! Quickly, backlinks, Today's Note…) with `visit`, and Back / Forward with `move_to`; a folder
+//! whose contents were shown (`folderview`) is an entry too. Pure.
 
 use std::path::{Path, PathBuf};
 

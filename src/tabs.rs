@@ -199,6 +199,8 @@ impl Editor {
         // The note shown until now is saved; nothing of it may follow into the next buffer
         // (an auto-save would write that buffer over it).
         self.leave_note();
+        // A folder's contents shown belong to the tab being left.
+        self.hide_folder_contents();
         match (data.path, data.text) {
             (Some(path), Some((buffer, saved))) => {
                 self.set_buffer(&buffer);

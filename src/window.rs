@@ -551,6 +551,7 @@ fn build_window_with_session(
         positions: RefCell::default(),
         history: RefCell::default(),
         history_target: Cell::new(None),
+        folder_shown: RefCell::new(None),
         sidebar_reveal: RefCell::new(None),
         sidebar_select: RefCell::new(None),
         find_match_case: Cell::new(false),
