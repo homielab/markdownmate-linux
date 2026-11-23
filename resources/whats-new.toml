@@ -5,6 +5,13 @@
 # ignored, so the next release's entry can be written ahead.
 
 [[release]]
+version = "0.15.1"
+show = false
+notes = [
+    "MarkdownMate for Ubuntu is now open source under the MIT license.",
+]
+
+[[release]]
 version = "0.15.0"
 show = true
 notes = [

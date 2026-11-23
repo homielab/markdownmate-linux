@@ -7,6 +7,8 @@ lines into the App Center notes (`packaging/com.homielab.MarkdownMate.metainfo.x
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-11-24
+
 - MarkdownMate for Ubuntu is now open source under the MIT license.
 
 ## [0.15.0] - 2026-11-24

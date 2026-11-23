@@ -1,6 +1,6 @@
 [package]
 name = "markdownmate"
-version = "0.15.0"
+version = "0.15.1"
 edition = "2024"
 description = "A lightweight, local-first, native markdown note-taking app for Ubuntu"
 license = "MIT"
