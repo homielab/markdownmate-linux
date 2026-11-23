@@ -3,7 +3,8 @@ name = "markdownmate"
 version = "0.15.0"
 edition = "2024"
 description = "A lightweight, local-first, native markdown note-taking app for Ubuntu"
-# All rights reserved (see debian/copyright); never published to crates.io.
+license = "MIT"
+# Never published to crates.io.
 publish = false
 
 [dependencies]

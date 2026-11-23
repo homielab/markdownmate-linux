@@ -3,7 +3,7 @@
 <component type="desktop-application">
   <id>com.homielab.MarkdownMate</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>LicenseRef-proprietary</project_license>
+  <project_license>MIT</project_license>
 
   <name>MarkdownMate</name>
   <summary>Write notes as plain Markdown files in your own folders</summary>

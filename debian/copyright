@@ -1,12 +1,11 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: markdownmate
 Upstream-Contact: HomieLab <contact@homielab.com>
-Source: https://markdownmate.homielab.com/
+Source: https://github.com/homielab/markdownmate-linux
 
 Files: *
 Copyright: 2026 HomieLab
-License: proprietary
- Copyright 2026 HomieLab. All rights reserved.
+License: Expat
 
 Files: resources/mermaid/*
 Copyright: 2014-2022 Knut Sveidqvist and the Mermaid contributors

@@ -65,7 +65,7 @@ Support the project: https://ko-fi.com/homielab
 - **Long description:** dùng đúng phần `<description>` của metainfo (đoạn giới thiệu + danh sách "Features"), sửa ở metainfo trước rồi chép sang đây.
 - **Keywords:** markdown, notes, editor, wiki, writing, local-first, plain text, GNOME, GTK, Ubuntu
 - **Category:** Office / Text Editor
-- **Licence:** All rights reserved (proprietary, free to download)
+- **Licence:** MIT (open source, free to download)
 - **Links:** website https://markdownmate.homielab.com/ · donate https://ko-fi.com/homielab · contact contact@homielab.com
 
 ## Website / README

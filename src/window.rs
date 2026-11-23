@@ -1952,8 +1952,7 @@ fn about_dialog(editor: &Rc<Editor>) {
         .website("https://markdownmate.homielab.com/")
         .support_url(crate::about::feedback_uri())
         .copyright("© 2026 HomieLab")
-        .license_type(gtk::License::Custom)
-        .license("All rights reserved.")
+        .license_type(gtk::License::MitX11)
         .build();
     // The newest bundled What's New notes (`about.rs`).
     if let Some((version, notes)) = crate::about::release_notes() {

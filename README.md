@@ -252,4 +252,10 @@ To time opening and previewing 1 MB and 5 MB notes (and compare the rendered HTM
 
 ---
 
+## 📄 License
+
+MarkdownMate for Ubuntu is open source under the [MIT License](LICENSE). The bundled Mermaid, KaTeX and TypeScript syntax definitions keep their own licenses (see [`debian/copyright`](debian/copyright)).
+
+---
+
 Built with ❤️ by [HomieLab](https://homielab.com).

@@ -1,6 +1,6 @@
 # Releasing
 
-Releases go to the PPA `ppa:homielab/markdownmate`. A PPA only takes a source package; Launchpad builds it itself, offline: on noble with Ubuntu's `rustc-1.91`/`cargo-1.91`, on later series with their default `rustc`/`cargo` (1.91 or newer). The packaging is in `debian/` (licence: all rights reserved, see `debian/copyright`).
+Releases go to the PPA `ppa:homielab/markdownmate`. A PPA only takes a source package; Launchpad builds it itself, offline: on noble with Ubuntu's `rustc-1.91`/`cargo-1.91`, on later series with their default `rustc`/`cargo` (1.91 or newer). The packaging is in `debian/` (licence: MIT, see `LICENSE` and `debian/copyright`).
 
 Each release is uploaded once per Ubuntu series in the `SERIES` list at the top of `.github/workflows/ppa.yml` (currently `noble resolute stonking`), as version `<version>-0ppa1~<series>1`, so a newer series always has the higher version. Keep the list to the series Launchpad supports ([launchpad.net/ubuntu/+series](https://launchpad.net/ubuntu/+series)): drop one at its end of life (Launchpad rejects uploads to it), add a new release once Launchpad opens it, and update "Install from the PPA" in the [README](../README.md#install-from-the-ppa).
 
