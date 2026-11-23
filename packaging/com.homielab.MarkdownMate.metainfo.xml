@@ -106,6 +106,13 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.15.0" date="2026-11-24">
+      <description>
+        <ul>
+          <li>Click a folder in the sidebar to see what's inside: subfolders first, then notes with their dates. Click to dive in, Alt+Left to come back.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.14.0" date="2026-11-17">
       <description>
         <ul>
